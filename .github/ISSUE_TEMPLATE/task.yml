@@ -1,0 +1,34 @@
+name: Task
+description: One piece of work for the board
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Alert engine
+        - Public app
+        - Agency side
+        - Shared
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What
+      description: What needs to be built or decided, in a sentence or two.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: How we'll know it's finished. Something anyone on the team could check.
+      placeholder: "- New NWS alerts appear in the database within 60 seconds"
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Links, dependencies, or anything else useful (optional).
