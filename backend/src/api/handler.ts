@@ -17,13 +17,14 @@ import type { TokenKey } from '../tokens/index.js';
 import { loadKeyring } from '../config/secrets.js';
 import { DataApiExecutor } from '../db/sql.js';
 import { createApi, type ApiDeps, type ApiEvent, type ApiResult } from './index.js';
+import { PostgresCellIndexOutbox } from '../scale/cell-index/outbox.js';
 import { secretsManagerOriginGuard, type OriginGuard } from './origin-guard.js';
 import { routeOf } from './router.js';
 
 /** The stores the API needs that come from AWS (Aurora, Amazon Location). */
 export type StoreDeps = Pick<
   ApiDeps,
-  'devices' | 'places' | 'alerts' | 'geocoder' | 'checkins' | 'cellIndex' | 'repairQueue'
+  'devices' | 'places' | 'alerts' | 'geocoder' | 'checkins' | 'cellIndex' | 'repairQueue' | 'outbox'
 > & {
   /** When set, requests without CloudFront's secret header are refused (REQUIRE_ORIGIN_HEADER). */
   originGuard?: OriginGuard;
@@ -196,6 +197,7 @@ export const awsStores: StoreFactory = () => {
       : {}),
     devices: new PostgresDeviceStore(db),
     places: new PostgresPlaceStore(db),
+    outbox: new PostgresCellIndexOutbox(db),
     alerts: new PostgresAlertStore(db),
     geocoder: new LocationGeocoder(new LocationClient({}), index),
     checkins: new DynamoCheckInStore(

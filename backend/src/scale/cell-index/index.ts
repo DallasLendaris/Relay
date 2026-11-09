@@ -15,3 +15,12 @@ export {
   type DeviceTruth,
   type SyncDeviceCellsInput,
 } from './sync-device-cells.js';
+export {
+  PostgresCellIndexOutbox,
+  insertOutboxRow,
+  type CellIndexOutbox,
+  type OutboxEntry,
+  type OutboxRow,
+  type OutboxStats,
+} from './outbox.js';
+export { drainOutbox, type DrainerDeps, type DrainResult } from './drainer.js';

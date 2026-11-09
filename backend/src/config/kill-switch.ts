@@ -1,30 +1,100 @@
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
+import { configMetric, errorName, logStaleServed } from './stale.js';
 
 const TTL_MS = 30 * 1000;
+/** How long the last good value is served when SSM cannot be read (throttling, an outage). */
+export const KILL_SWITCH_STALE_MS = 10 * 60 * 1000;
+/** After a failed read, wait this long before asking SSM again. */
+const RETRY_MS = 5 * 1000;
+
+export interface KillSwitchOptions {
+  /**
+   * Random delay (0 to this many ms) before the first SSM read of a container, so hundreds of
+   * cold shard workers do not read the parameter in the same instant. Default 0.
+   */
+  coldJitterMs?: number;
+  /** Staleness limit for the last good value. Default 10 minutes. */
+  staleMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  random?: () => number;
+}
 
 /**
- * Kill switch backed by an SSM String parameter. The value "paused" stops all
- * delivery; anything else means running. Returns () => Promise<boolean> (true = paused),
- * cached for 30 seconds. A missing parameter means running; any other read error throws
- * (planDelivery's caller logs it and sends nothing, so a failed read never sends).
+ * Kill switch backed by an SSM String parameter. Returns () => Promise<boolean> (true = paused),
+ * cached for 30 seconds.
+ *
+ * Only exactly "running" or "paused" (after trim and lower-casing) are understood. Any other
+ * value ("pause", "true", "") is treated as PAUSED, so a typo stops delivery instead of leaving
+ * it running; it is logged as `killswitch.invalid_value` (error, with a metric). A missing
+ * parameter means running.
+ *
+ * When SSM cannot be read, the last good value is served for up to 10 minutes
+ * (`config.stale_value_served`). With no usable value (never loaded, or older than that) the
+ * switch fails closed: paused. It never throws.
  */
 export function createKillSwitch(
   paramName: string,
   client: Pick<SSMClient, 'send'> = new SSMClient({}),
   now: () => number = Date.now,
+  opts: KillSwitchOptions = {},
 ): () => Promise<boolean> {
-  let cached: { at: number; paused: boolean } | undefined;
-  return async () => {
-    if (cached && now() - cached.at < TTL_MS) return cached.paused;
-    let paused: boolean;
+  const staleMs = opts.staleMs ?? KILL_SWITCH_STALE_MS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const random = opts.random ?? Math.random;
+  let cached: { at: number; paused: boolean; retryAt?: number } | undefined;
+  let inflight: Promise<boolean> | undefined;
+
+  async function read(): Promise<boolean> {
+    if (!cached && opts.coldJitterMs) await sleep(Math.floor(random() * opts.coldJitterMs));
+    const t = now();
     try {
       const out = await client.send(new GetParameterCommand({ Name: paramName }));
-      paused = out.Parameter?.Value?.trim().toLowerCase() === 'paused';
+      const raw = out.Parameter?.Value;
+      const value = raw?.trim().toLowerCase();
+      let paused: boolean;
+      if (value === 'running') paused = false;
+      else if (value === 'paused') paused = true;
+      else {
+        paused = true;
+        console.error(
+          JSON.stringify({
+            level: 'error',
+            msg: 'killswitch.invalid_value',
+            length: raw?.length ?? 0,
+          }),
+        );
+        console.log(configMetric('KillSwitchInvalidValue', 'killswitch', t));
+      }
+      cached = { at: now(), paused };
+      return paused;
     } catch (err) {
-      if ((err as { name?: string }).name !== 'ParameterNotFound') throw err;
-      paused = false;
+      if ((err as { name?: string }).name === 'ParameterNotFound') {
+        cached = { at: now(), paused: false };
+        return false;
+      }
+      if (cached && t - cached.at < staleMs) {
+        cached = { ...cached, retryAt: t + RETRY_MS };
+        logStaleServed('killswitch', t - cached.at, err, t);
+        return cached.paused;
+      }
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          msg: 'killswitch.read_failed_closed',
+          error: errorName(err),
+        }),
+      );
+      return true;
     }
-    cached = { at: now(), paused };
-    return paused;
+  }
+
+  return async () => {
+    const t = now();
+    if (cached && t - cached.at < TTL_MS) return cached.paused;
+    if (cached && cached.retryAt !== undefined && t < cached.retryAt && t - cached.at < staleMs) {
+      return cached.paused;
+    }
+    inflight ??= read().finally(() => (inflight = undefined));
+    return inflight;
   };
 }

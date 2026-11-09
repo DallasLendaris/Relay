@@ -79,14 +79,14 @@ function scalerEnv(): string[] {
 describe('FanoutStack', () => {
   const { t, stack } = synth('dev');
 
-  it('has plan, urgent and standard queues with DLQs and SSE, plus the shard DLQ', () => {
-    t.resourceCountIs('AWS::SQS::Queue', 7);
+  it('has plan, urgent and standard queues with DLQs and SSE, plus the shard DLQ and the paused queue with its DLQ', () => {
+    t.resourceCountIs('AWS::SQS::Queue', 9);
     const queues = Object.values(t.findResources('AWS::SQS::Queue')) as Res[];
     expect(queues.every((q) => q.Properties.SqsManagedSseEnabled === true)).toBe(true);
     // Send queues: 30 s visibility.
     expect(queues.filter((q) => q.Properties.VisibilityTimeout === 30)).toHaveLength(2);
-    // plan, urgent and standard have a RedrivePolicy; the four DLQs have none.
-    expect(queues.filter((q) => q.Properties.RedrivePolicy)).toHaveLength(3);
+    // plan, urgent, standard and paused have a RedrivePolicy; the five DLQs have none.
+    expect(queues.filter((q) => q.Properties.RedrivePolicy)).toHaveLength(4);
     t.hasResourceProperties('AWS::SQS::Queue', {
       VisibilityTimeout: 30,
       RedrivePolicy: { maxReceiveCount: 100, deadLetterTargetArn: Match.anyValue() },
@@ -126,7 +126,8 @@ describe('FanoutStack', () => {
   });
 
   it('planner is SQS-triggered (batch 1, item failures); the shard worker has no SQS trigger', () => {
-    t.resourceCountIs('AWS::Lambda::EventSourceMapping', 1);
+    // The planner (plan queue) and the paused consumer (paused queue).
+    t.resourceCountIs('AWS::Lambda::EventSourceMapping', 2);
     t.hasResourceProperties('AWS::Lambda::EventSourceMapping', {
       BatchSize: 1,
       FunctionResponseTypes: ['ReportBatchItemFailures'],
@@ -172,7 +173,11 @@ describe('FanoutStack', () => {
       expect(actions).toContain(a);
     }
     expect(actions).not.toContain('dynamodb:Query');
-    expect(actions).not.toContain('sqs:SendMessage');
+    // It may send to the paused queue (parking a paused AlertReady) and nowhere else.
+    const sends = st.filter((s) => actionsOf([s]).includes('sqs:SendMessage'));
+    expect(sends).toHaveLength(1);
+    expect(JSON.stringify(sends[0]?.Resource)).toContain('ShardPausedQueue');
+    expect(JSON.stringify(sends[0]?.Resource)).not.toMatch(/Urgent|Standard|PlanQueue/);
   });
 
   it('planner may only UpdateService/DescribeServices, on the sender service, nothing wider', () => {
@@ -284,11 +289,12 @@ describe('FanoutStack', () => {
     }
   });
 
-  it('alarms on each of the four DLQs, including urgent and standard send', () => {
-    t.resourceCountIs('AWS::CloudWatch::Alarm', 4);
+  it('alarms on each of the five DLQs, including urgent and standard send and the paused DLQ', () => {
+    // 5 DLQ alarms + the outbox-stuck alarm + the drainer-not-running alarm.
+    t.resourceCountIs('AWS::CloudWatch::Alarm', 7);
     const alarms = Object.values(t.findResources('AWS::CloudWatch::Alarm')) as Res[];
-    const watched = alarms.map((a) => JSON.stringify(a.Properties.Dimensions));
-    for (const dlq of ['UrgentDlq', 'StandardDlq', 'PlanDlq', 'ShardDlq']) {
+    const watched = alarms.map((a) => JSON.stringify(a.Properties.Dimensions ?? ''));
+    for (const dlq of ['UrgentDlq', 'StandardDlq', 'PlanDlq', 'ShardDlq', 'ShardPausedDlq']) {
       expect(watched.some((w) => w.includes(dlq))).toBe(true);
     }
     t.hasResourceProperties('AWS::CloudWatch::Alarm', {
@@ -296,6 +302,86 @@ describe('FanoutStack', () => {
       Namespace: 'AWS/SQS',
       Threshold: 0,
       ComparisonOperator: 'GreaterThanThreshold',
+    });
+  });
+
+  describe('REL-2: paused queue and consumer', () => {
+    it('names the queue relay-<stage>-shard-paused, with a DLQ after 3 receives (receives are rare: it re-parks as a new message)', () => {
+      t.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'relay-dev-shard-paused',
+        RedrivePolicy: { maxReceiveCount: 3, deadLetterTargetArn: Match.anyValue() },
+      });
+      expect(synth('prod').stack.pausedQueueUrl).toBeDefined();
+    }, 60_000);
+
+    it('the shard worker and planner get PAUSED_QUEUE_URL; the shard worker may send to it', () => {
+      for (const h of ['shardHandler', 'plannerHandler']) {
+        expect(fnByHandler(t, h).Properties.Environment.Variables).toHaveProperty(
+          'PAUSED_QUEUE_URL',
+        );
+      }
+      const sends = statementsFor(t, 'shardHandler').filter((s) =>
+        JSON.stringify(s.Resource).includes('ShardPausedQueue'),
+      );
+      expect(actionsOf(sends)).toContain('sqs:SendMessage');
+    });
+
+    it('the consumer: reads the paused queue (batch 10, item failures), checks the switch, re-dispatches', () => {
+      t.hasResourceProperties('AWS::Lambda::EventSourceMapping', {
+        BatchSize: 10,
+        FunctionResponseTypes: ['ReportBatchItemFailures'],
+      });
+      const consumer = Object.values(t.findResources('AWS::Lambda::Function')).find((f) =>
+        JSON.stringify((f as Res).Properties.Environment?.Variables ?? {}).includes(
+          'PLAN_QUEUE_URL',
+        ),
+      ) as Res;
+      expect(Object.keys(consumer.Properties.Environment.Variables).sort()).toEqual([
+        'KILL_SWITCH_PARAM',
+        'PAUSED_QUEUE_URL',
+        'PLAN_QUEUE_URL',
+        'SHARD_FUNCTION_NAME',
+      ]);
+    });
+  });
+
+  describe('REL-3: outbox drainer', () => {
+    const drainerFn = () =>
+      Object.values(t.findResources('AWS::Lambda::Function')).find(
+        (f) =>
+          JSON.stringify((f as Res).Properties.Environment?.Variables ?? {}).includes(
+            'CELL_INDEX_TABLE',
+          ) && !(f as Res).Properties.Handler.includes('shardHandler'),
+      ) as Res;
+
+    it('runs every minute with DB access and cell-index write access', () => {
+      t.hasResourceProperties('AWS::Events::Rule', { ScheduleExpression: 'rate(1 minute)' });
+      const vars = drainerFn().Properties.Environment.Variables;
+      expect(Object.keys(vars).sort()).toEqual([
+        'CELL_INDEX_TABLE',
+        'DB_CLUSTER_ARN',
+        'DB_NAME',
+        'DB_SECRET_ARN',
+      ]);
+      const roleRef = (drainerFn().Properties.Role['Fn::GetAtt'] as string[])[0];
+      const st = (Object.values(t.findResources('AWS::IAM::Policy')) as Res[])
+        .filter((p) => JSON.stringify(p.Properties.Roles).includes(String(roleRef)))
+        .flatMap((p) => p.Properties.PolicyDocument.Statement as Array<Record<string, any>>);
+      const actions = actionsOf(st);
+      for (const a of ['rds-data:ExecuteStatement', 'dynamodb:PutItem', 'dynamodb:DeleteItem']) {
+        expect(actions).toContain(a);
+      }
+      expect(actions).not.toContain('sqs:SendMessage');
+    });
+
+    it('alarms (a plain alarm) when an outbox row reaches 10 attempts', () => {
+      t.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        Namespace: 'Relay/CellIndex',
+        MetricName: 'OutboxMaxAttempts',
+        Statistic: 'Maximum',
+        Threshold: 9,
+        ComparisonOperator: 'GreaterThanThreshold',
+      });
     });
   });
 

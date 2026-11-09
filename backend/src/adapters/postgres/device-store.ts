@@ -82,7 +82,32 @@ export class PostgresDeviceStore implements DeviceStore {
     deviceId: string,
     target: PushTarget,
     language: 'en' | 'es',
-  ): Promise<{ displaced: string[] }> {
+    opts?: { outbox?: boolean },
+  ): Promise<{ displaced: string[]; outboxIds?: Record<string, string> }> {
+    if (opts?.outbox) {
+      // The target change and the outbox rows commit together or not at all.
+      return this.db.transaction(async (tx) => {
+        const result = await new PostgresDeviceStore(tx).assignPushTarget(
+          deviceId,
+          target,
+          language,
+        );
+        // Only devices with places have cell-index entries to update.
+        const ids = [deviceId, ...result.displaced];
+        const rows = await tx.query<{ id: string; device_id: string }>(
+          `INSERT INTO cell_index_outbox (device_id, op, payload)
+           SELECT d::uuid, 'update', '{"h3Cell":"","placeId":""}'::jsonb
+             FROM jsonb_array_elements_text($1::jsonb) AS d
+            WHERE EXISTS (SELECT 1 FROM places WHERE device_id = d::uuid)
+           RETURNING id, device_id`,
+          [JSON.stringify(ids)],
+        );
+        return {
+          ...result,
+          outboxIds: Object.fromEntries(rows.map((r) => [r.device_id, r.id])),
+        };
+      });
+    }
     // One statement (Data API runs one per call). The main UPDATE reads `cleared` in a
     // subquery, which forces the other devices' targets to be cleared first, so the unique
     // indexes never see two holders. Expo keeps expo_push_token in step with push_token.
