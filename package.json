@@ -6,6 +6,7 @@
     "node": ">=22"
   },
   "workspaces": [
+    "loadtest",
     "packages/*",
     "backend",
     "infra"

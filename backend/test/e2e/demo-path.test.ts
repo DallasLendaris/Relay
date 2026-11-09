@@ -205,7 +205,7 @@ describe('demo path', () => {
         { alertId, deviceId: 'inside', now: clock.now() },
         tokenKeys.all,
       ),
-    ).toEqual({ ok: true });
+    ).toEqual({ ok: true, h3Cell: cellForPoint(INSIDE.lat, INSIDE.lng) }); // v2: the matched cell is bound in
 
     // The stored alert is signed, verifies, and has both summaries.
     const stored = await s.alertStore.get(alertId);

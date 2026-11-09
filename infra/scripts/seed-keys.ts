@@ -64,5 +64,5 @@ if (stage !== 'dev' && stage !== 'prod') {
   console.error('usage: npm run seed-keys -- <dev|prod> [--rotate]');
   process.exit(1);
 }
-for (const name of ['token-keys', 'alert-keys'])
+for (const name of ['token-keys', 'alert-keys', 'device-credential-keys'])
   seed(`relay/${stage}/${name}`, flag === '--rotate');

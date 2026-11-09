@@ -1,53 +1,40 @@
 import { App } from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
-import { ApiStack } from '../lib/api-stack.js';
-import { ConfigStack } from '../lib/config-stack.js';
-import { DataStack } from '../lib/data-stack.js';
-import { DeliveryStack } from '../lib/delivery-stack.js';
-import { IngestStack } from '../lib/ingest-stack.js';
+import { buildRelayApp, type RelayAppOptions } from '../lib/relay-app.js';
+import { SKIP_IMAGE_CONTEXT } from '../lib/sender-stack.js';
 
-/** Builds the whole app the same way bin/relay.ts does and returns each stack's template. */
-export function synthAll(stage: 'dev' | 'prod' = 'dev') {
-  const app = new App();
-  const env = { region: 'us-west-2' };
-  const data = new DataStack(app, `data-${stage}`, { env, stage });
-  const db = {
-    clusterArn: data.clusterArn,
-    secretArn: data.secretArn,
-    databaseName: data.databaseName,
-  };
-  const config = new ConfigStack(app, `config-${stage}`, { env, stage });
-  const delivery = new DeliveryStack(app, `delivery-${stage}`, {
-    env,
+type Stacks = ReturnType<typeof buildRelayApp>;
+export type Templates = { [K in keyof Stacks]: Template };
+
+/**
+ * Builds the whole app through the same function bin/relay.ts uses and returns each stack's
+ * template (plus the stack objects). The context flag keeps the Docker image asset out of tests.
+ * Results are cached per option set: a full synth is slow.
+ */
+const cache = new Map<string, { stacks: Stacks; templates: Templates }>();
+
+type Options = Partial<Pick<RelayAppOptions, 'throttle' | 'fanoutMode' | 'capacity'>>;
+
+export function synthApp(stage: 'dev' | 'prod' = 'dev', options: Options = {}) {
+  const key = JSON.stringify([stage, options]);
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const app = new App({ context: { [SKIP_IMAGE_CONTEXT]: 'true' } });
+  const stacks = buildRelayApp(app, {
     stage,
-    db,
-    expoSecretArn: config.expoSecretArn,
-    alertKeysSecretArn: config.alertKeysSecretArn,
-    killSwitchParamName: config.killSwitchParamName,
-    killSwitchParamArn: config.killSwitchParamArn,
+    env: { account: '111111111111', region: 'us-west-2' },
+    edgeEnv: { account: '111111111111', region: 'us-east-1' },
+    prefix: stage,
+    ...options,
   });
-  const ingest = new IngestStack(app, `ingest-${stage}`, {
-    env,
-    stage,
-    db,
-    deliveryQueueArn: delivery.queueArn,
-    deliveryQueueUrl: delivery.queueUrl,
-    tokenKeysSecretArn: config.tokenKeysSecretArn,
-    alertKeysSecretArn: config.alertKeysSecretArn,
-    killSwitchParamName: config.killSwitchParamName,
-    killSwitchParamArn: config.killSwitchParamArn,
-  });
-  const api = new ApiStack(app, `api-${stage}`, {
-    env,
-    stage,
-    db,
-    tokenKeysSecretArn: config.tokenKeysSecretArn,
-  });
-  return {
-    data: Template.fromStack(data),
-    config: Template.fromStack(config),
-    delivery: Template.fromStack(delivery),
-    ingest: Template.fromStack(ingest),
-    api: Template.fromStack(api),
-  };
+  const templates = Object.fromEntries(
+    Object.entries(stacks).map(([name, stack]) => [name, Template.fromStack(stack)]),
+  ) as Templates;
+  const built = { stacks, templates };
+  cache.set(key, built);
+  return built;
+}
+
+export function synthAll(stage: 'dev' | 'prod' = 'dev', options: Options = {}): Templates {
+  return synthApp(stage, options).templates;
 }

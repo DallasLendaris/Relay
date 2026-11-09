@@ -20,9 +20,28 @@ export interface IngestStackProps extends StackProps {
   alertKeysSecretArn: string;
   killSwitchParamName: string;
   killSwitchParamArn: string;
+  /** Public alert bucket (edge stack, us-east-1), named deterministically so no cross-region reference is needed. */
+  publicAlerts: { bucketName: string; region: string };
+  /** Plan queue (FanoutStack): ingest sends AlertReady here when FANOUT_MODE is "queue". */
+  planQueueArn: string;
+  planQueueUrl: string;
+  /** "queue" hands fan-out to the planner; "inline" fans out inside ingest. Default: prod queue, dev inline. */
+  fanoutMode?: FanoutMode;
 }
 
+/** Ingest Lambda memory (CPU scales with it: JSON signing, zone geometry and the S3 fan-out). */
+export const INGEST_MEMORY_MB = 1024;
+
+export type FanoutMode = 'queue' | 'inline';
+
+/** Where ingest reads the zone pack from (fixed key, see backend/src/geo/s3-zone-provider.ts). */
+export const ZONE_PACK_KEY = 'zones/v1/california.json.gz';
+
 export class IngestStack extends Stack {
+  /** Private bucket holding the zone pack (zones/v1/*). Exposed for the publish script. */
+  readonly zonePackBucket: Bucket;
+  readonly zonePackBucketName: string;
+
   constructor(scope: Construct, id: string, props: IngestStackProps) {
     super(scope, id, props);
     const isProd = props.stage === 'prod';
@@ -43,6 +62,17 @@ export class IngestStack extends Stack {
       autoDeleteObjects: !isProd,
     });
 
+    // Zone pack (NWS zone / county polygons as one gzip), uploaded by the pack publisher and read
+    // by ingest. Same region as ingest. Private: only the ingest role reads it.
+    this.zonePackBucket = new Bucket(this, 'ZonePackBucket', {
+      blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      encryption: BucketEncryption.S3_MANAGED,
+      removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+      autoDeleteObjects: !isProd,
+    });
+    this.zonePackBucketName = this.zonePackBucket.bucketName;
+
     // Dedupe state only: what ingest has already seen. The full alert record
     // goes to Aurora later (ticket S-07).
     const stateTable = new Table(this, 'StateTable', {
@@ -54,6 +84,11 @@ export class IngestStack extends Stack {
       removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
     });
 
+    const fanoutMode = props.fanoutMode ?? (isProd ? 'queue' : 'inline');
+    if (fanoutMode !== 'queue' && fanoutMode !== 'inline') {
+      throw new Error(`fanoutMode must be "queue" or "inline", got "${String(fanoutMode)}"`);
+    }
+
     const ingestFn = new NodejsFunction(this, 'IngestFunction', {
       entry: fileURLToPath(new URL('../../backend/src/ingest/handler.ts', import.meta.url)),
       // npm workspaces keep one lockfile at the repo root.
@@ -64,7 +99,7 @@ export class IngestStack extends Stack {
       runtime: Runtime.NODEJS_22_X,
       architecture: Architecture.ARM_64,
       timeout: Duration.seconds(70), // 5 polls x 12 s plus headroom
-      memorySize: 256,
+      memorySize: INGEST_MEMORY_MB, // the post-AlertReady CDN publish runs 16 uploads at once
       reservedConcurrentExecutions: 1, // never two overlapping pollers
       logGroup: new LogGroup(this, 'IngestLogs', {
         retention: RetentionDays.ONE_MONTH,
@@ -81,17 +116,29 @@ export class IngestStack extends Stack {
         TOKEN_KEYS_SECRET_ARN: props.tokenKeysSecretArn,
         ALERT_KEYS_SECRET_ARN: props.alertKeysSecretArn,
         KILL_SWITCH_PARAM: props.killSwitchParamName,
+        FANOUT_MODE: fanoutMode,
+        PLAN_QUEUE_URL: props.planQueueUrl,
+        ZONE_PACK_BUCKET: this.zonePackBucket.bucketName,
+        PUBLIC_ALERTS_BUCKET: props.publicAlerts.bucketName,
+        PUBLIC_ALERTS_REGION: props.publicAlerts.region,
       },
     });
 
     // Least privilege: write-only on the bucket, read/write on the table.
-    rawBucket.grantWrite(ingestFn);
-    stateTable.grantReadWriteData(ingestFn);
+    // Explicit actions only (the bucket and table grant helpers expand to wildcards).
+    allow(ingestFn, ['s3:PutObject'], [rawBucket.arnForObjects('*')]);
+    allow(ingestFn, ['dynamodb:GetItem', 'dynamodb:PutItem'], [stateTable.tableArn]);
     grantDb(ingestFn, props.db);
-    allow(ingestFn, ['sqs:SendMessage'], [props.deliveryQueueArn]);
+    allow(ingestFn, ['sqs:SendMessage'], [props.deliveryQueueArn, props.planQueueArn]);
+    allow(ingestFn, ['s3:GetObject'], [this.zonePackBucket.arnForObjects('zones/v1/*')]);
     grantSecretRead(ingestFn, props.tokenKeysSecretArn);
     grantSecretRead(ingestFn, props.alertKeysSecretArn);
     allow(ingestFn, ['ssm:GetParameter'], [props.killSwitchParamArn]);
+    allow(
+      ingestFn,
+      ['s3:PutObject'],
+      [`arn:aws:s3:::${props.publicAlerts.bucketName}/alerts/v1/*`],
+    );
 
     // No retries: the next minute's run catches up on anything missed.
     new Rule(this, 'EveryMinute', {
@@ -149,6 +196,7 @@ export class IngestStack extends Stack {
     });
 
     new CfnOutput(this, 'RawBucketName', { value: rawBucket.bucketName });
+    new CfnOutput(this, 'ZonePackBucketName', { value: this.zonePackBucketName });
     new CfnOutput(this, 'StateTableName', { value: stateTable.tableName });
 
     Tags.of(this).add('project', 'relay');

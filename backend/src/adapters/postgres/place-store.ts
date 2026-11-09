@@ -83,20 +83,20 @@ export class PostgresPlaceStore implements PlaceStore {
 
   async listMatchesForCells(
     cells: string[],
-  ): Promise<Array<{ placeId: string; deviceId: string }>> {
-    const out: Array<{ placeId: string; deviceId: string }> = [];
+  ): Promise<Array<{ placeId: string; deviceId: string; h3Cell: string }>> {
+    const out: Array<{ placeId: string; deviceId: string; h3Cell: string }> = [];
     for (const part of chunk([...new Set(cells)], CELL_CHUNK)) {
       // Keyset pagination: each page asks for ids after the last one seen, so no single
       // response passes the Data API's 1 MB limit however many places match.
       let after = NIL_UUID;
       for (;;) {
-        const rows = await this.db.query<{ id: string; device_id: string }>(
-          `SELECT id, device_id FROM places
+        const rows = await this.db.query<{ id: string; device_id: string; h3_cell: string }>(
+          `SELECT id, device_id, h3_cell FROM places
             WHERE h3_cell = ANY(${textArrayParam(1)}) AND id > $2::uuid
             ORDER BY id LIMIT $3::int`,
           [JSON.stringify(part), after, this.pageSize],
         );
-        for (const r of rows) out.push({ placeId: r.id, deviceId: r.device_id });
+        for (const r of rows) out.push({ placeId: r.id, deviceId: r.device_id, h3Cell: r.h3_cell });
         const last = rows[rows.length - 1];
         if (!last || rows.length < this.pageSize) break;
         after = last.id;

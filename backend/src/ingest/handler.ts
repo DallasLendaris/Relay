@@ -149,6 +149,33 @@ const REQUIRED_ENV = [
   'NWS_USER_AGENT',
 ] as const;
 
+/**
+ * Optional scale env vars (see the integration contract):
+ *   FANOUT_MODE          "queue" | "inline" (unset means inline)
+ *   PLAN_QUEUE_URL       required only when FANOUT_MODE=queue
+ *   PUBLIC_ALERTS_BUCKET publish signed alerts for the CDN when set
+ *   PUBLIC_ALERTS_REGION region of that bucket (the Lambda's own region when unset)
+ *   ZONE_PACK_BUCKET     read zone geometry from the pack when set (NWS fills misses)
+ * Throws on a bad combination so a misconfigured deploy fails on its first invocation.
+ */
+export function validateScaleEnv(source: Record<string, string | undefined>): void {
+  const mode = source.FANOUT_MODE;
+  if (mode !== undefined && mode !== '' && mode !== 'queue' && mode !== 'inline') {
+    throw new Error(`FANOUT_MODE must be "queue" or "inline", got "${mode}"`);
+  }
+  if (mode === 'queue' && !source.PLAN_QUEUE_URL) {
+    throw new Error('PLAN_QUEUE_URL must be set when FANOUT_MODE=queue');
+  }
+  if (source.PUBLIC_ALERTS_BUCKET && !source.PUBLIC_ALERTS_REGION) {
+    console.warn(
+      JSON.stringify({
+        level: 'warn',
+        msg: 'PUBLIC_ALERTS_REGION not set; using the Lambda region for the public alerts bucket',
+      }),
+    );
+  }
+}
+
 /** The real AWS-backed dependencies. Built once, on the first invocation, and reused while warm. */
 interface Runtime {
   env: Record<(typeof REQUIRED_ENV)[number], string>;
@@ -160,6 +187,7 @@ function buildRuntime(source: Record<string, string | undefined>): Runtime {
   const missing = REQUIRED_ENV.filter((k) => !source[k]);
   if (missing.length > 0) throw new Error(`Missing environment variables: ${missing.join(', ')}`);
   const env = Object.fromEntries(REQUIRED_ENV.map((k) => [k, source[k]])) as Runtime['env'];
+  validateScaleEnv(source);
 
   const db = new DataApiExecutor(
     new RDSDataClient({}),

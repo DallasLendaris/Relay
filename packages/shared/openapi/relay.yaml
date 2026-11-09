@@ -44,7 +44,10 @@ paths:
     put:
       tags: [devices]
       operationId: setPushToken
-      summary: Store the Expo push token and preferred language for this device.
+      summary: Store this device's push target and preferred language.
+      description: |
+        Send either the legacy body (expoPushToken) or the native body (platform and token).
+        A token held by another device moves to this one.
       security:
         - deviceAuth: []
       requestBody:
@@ -331,11 +334,33 @@ components:
           description: Secret bearer credential. Store in secure storage; shown only once.
 
     PushTokenRequest:
+      oneOf:
+        - $ref: '#/components/schemas/ExpoPushTokenRequest'
+        - $ref: '#/components/schemas/NativePushTokenRequest'
+
+    ExpoPushTokenRequest:
       type: object
       required: [expoPushToken, language]
       properties:
         expoPushToken:
           type: string
+        language:
+          type: string
+          enum: [en, es]
+
+    NativePushTokenRequest:
+      type: object
+      required: [platform, token, language]
+      properties:
+        platform:
+          type: string
+          enum: [ios, android, expo]
+        token:
+          type: string
+          description: |
+            ios: APNs device token, 64 to 200 hex characters.
+            android: FCM registration token, 100 to 4096 characters of A-Z a-z 0-9 _ : -.
+            expo: ExponentPushToken[...].
         language:
           type: string
           enum: [en, es]

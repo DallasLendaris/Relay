@@ -22,9 +22,14 @@ describe('PostgresDeviceStore', () => {
     const store = new PostgresDeviceStore(db);
     expect(await store.get(DEVICE_ID)).toBeNull();
     await store.create(device());
-    expect(await store.get(DEVICE_ID)).toEqual(device());
+    // A device with only the legacy Expo token also gets the matching native target.
+    expect(await store.get(DEVICE_ID)).toEqual(
+      device({ pushPlatform: 'expo', pushToken: 'ExponentPushToken[abc]' }),
+    );
     await store.update(device({ language: 'es', expoPushToken: null }));
-    expect(await store.get(DEVICE_ID)).toEqual(device({ language: 'es', expoPushToken: null }));
+    expect(await store.get(DEVICE_ID)).toEqual(
+      device({ language: 'es', expoPushToken: null, pushPlatform: null, pushToken: null }),
+    );
   });
 
   it('rejects a duplicate credential hash', async () => {
@@ -135,7 +140,11 @@ describe('PostgresPlaceStore', () => {
       await small.add(place({ id, h3Cell: i === 7 ? 'other' : '872830828ffffff' }));
     }
     const found = await spy.listMatchesForCells(['872830828ffffff', '872830828ffffff']);
-    expect(found).toEqual(ids.slice(0, 6).map((id) => ({ placeId: id, deviceId: DEVICE_ID })));
+    expect(found).toEqual(
+      ids
+        .slice(0, 6)
+        .map((id) => ({ placeId: id, deviceId: DEVICE_ID, h3Cell: '872830828ffffff' })),
+    );
     expect(queries).toHaveLength(3); // 3 + 3 + an empty page (6 is a multiple of 3)
     expect(await small.listMatchesForCells([])).toEqual([]);
     // The default page size works too.

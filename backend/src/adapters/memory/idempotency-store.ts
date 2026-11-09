@@ -49,4 +49,15 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
     // Only give back a lease that is still ours.
     if (existing?.state === 'leased' && existing.attempt === attempt) this.entries.delete(key);
   }
+
+  async extend(key: string, leaseUntil: Date): Promise<boolean> {
+    const attempt = this.attempts.get(key);
+    const existing = this.entries.get(key);
+    // Only our own claim, and only while it is still a lease (never a sent key).
+    if (attempt === undefined || existing?.state !== 'leased' || existing.attempt !== attempt) {
+      return false;
+    }
+    existing.until = leaseUntil.getTime();
+    return true;
+  }
 }

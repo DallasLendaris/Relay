@@ -9,7 +9,7 @@ Values move between stacks as plain props (ARNs and names) wired in `bin/relay.t
 | Stack      | Creates                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `data`     | Aurora Serverless v2 PostgreSQL (Data API, isolated VPC, no NAT) and its generated credentials secret.                                                                                                                                                                                                                                                                                                   |
-| `config`   | Secrets Manager: `relay/<stage>/token-keys`, `relay/<stage>/alert-keys` (keyrings), `relay/<stage>/expo-access-token` (placeholder). SSM parameter `/relay/<stage>/delivery-kill-switch` (default `running`).                                                                                                                                                                                            |
+| `config`   | Secrets Manager: `relay/<stage>/token-keys`, `relay/<stage>/alert-keys`, `relay/<stage>/device-credential-keys` (keyrings), `relay/<stage>/expo-access-token` (placeholder). SSM parameter `/relay/<stage>/delivery-kill-switch` (default `running`).                                                                                                                                                    |
 | `delivery` | SQS delivery queue (SSE, visibility timeout 30 s) with DLQ (100 receives), CloudWatch alarm when the DLQ has any visible message, DynamoDB idempotency table (`pk`, TTL `ttl`), and the push worker Lambda (20 s, reserved concurrency 10, batch size 10, reports batch item failures).                                                                                                                  |
 | `ingest`   | Raw S3 bucket, state table (`sourceId`, TTL `expiresAt`), the ingest Lambda (70 s, reserved concurrency 1) on a 1-minute EventBridge rule, errors alarm.                                                                                                                                                                                                                                                 |
 | `api`      | HTTP API with a Lambda integration for every route in `packages/shared/openapi/relay.yaml` except `/agency/*`, `$default` stage throttled at 50 rps / burst 100, Amazon Location place index `relay-<stage>-places` (Esri, SingleUse), and the check-in tables (`alertId`+`idempotencyKey` for check-ins, `alertId`+`h3Cell` for per-cell totals; on demand, PITR and RETAIN on prod). Outputs `ApiUrl`. |
@@ -71,3 +71,47 @@ Stop all push delivery immediately (workers pick it up within about 30 seconds):
 While paused the worker fails every record, so SQS keeps redelivering them (visibility timeout 30 s). The DLQ takes a job only after 100 receives, roughly 50 minutes of pausing. For a longer pause, or if the DLQ alarm fires afterwards, redrive the DLQ back to the delivery queue once you resume.
 
 Resume by writing `running` the same way. Any value other than `paused` means running.
+
+## Edge hardening, repair outbox and capacity
+
+**Origin verification.** The API's `execute-api` URL is public, so a caller could skip CloudFront and the WAF. CloudFront adds the header `x-relay-origin-verify` to every API request; the API Lambda returns 403 without the matching value when `REQUIRE_ORIGIN_HEADER=true` (prod). The value is a generated secret `relay/<stage>/origin-verify` in the config stack, replicated to us-east-1; the edge stack resolves it at deploy time with `{{resolve:secretsmanager:...}}`, so it never appears in a template. The Lambda reads it by `ORIGIN_VERIFY_SECRET_ARN` and caches it 5 minutes. To rotate, change the secret, redeploy `edge` (CloudFront picks up the new value), and expect up to 5 minutes of 403s until the Lambda cache refreshes.
+
+**Quota: API Gateway.** The account-level API Gateway quota is 10,000 requests per second per region (adjustable), but the prod `$default` stage throttle is 20,000 rps. The stage cannot exceed the account quota, so request an increase to at least 20,000 rps (and verify the burst limit) before a statewide check-in burst, or lower `apiThrottleRate`/`apiThrottleBurst`.
+
+**Cell-index repair.** When the API cannot write a place into the cell index it queues `{op, h3Cell, deviceId, placeId}` to `INDEX_REPAIR_QUEUE_URL`; a repair Lambda re-reads Aurora and redoes the write (idempotent, per-item failures). After 5 failed receives a message goes to the repair DLQ, which has an alarm (`IndexRepairDlqAlarm`). Fix the cause, then redrive the DLQ to the repair queue.
+
+**Capacity context.** `-c auroraMaxAcu=N` (default prod 16, dev 2), `-c checkinsWarmWritesPerSecond=N` (default prod 40,000, dev none; 0 disables), and `-c apiReservedConcurrency=N`, `-c aggregatorReservedConcurrency=N`, `-c repairReservedConcurrency=N` (unset by default so a fresh account deploys). The idempotency table's warm throughput (20,000 writes/s on prod) belongs to the delivery stack and is not set here.
+
+## Fan-out stack (statewide scale)
+
+`fanout` creates the plan queue, the planner and shard worker Lambdas, the urgent and standard send queues (30 s visibility, each with a DLQ), and the DynamoDB cell index (`h3Cell` + `sk` = `deviceId#placeId`, on demand, PITR on prod). Ingest publishes to the plan queue only when it runs with `FANOUT_MODE=queue` and `PLAN_QUEUE_URL`; otherwise the original in-line planning runs.
+
+The planner hands each shard job to the shard Lambda with an async invoke (50 at a time). An SQS event source would add only about 300 concurrent invocations a minute, too slow for a 60 s fan-out. The shard function retries twice, gives up after 1 hour, and sends the job to the shard DLQ.
+
+**Quota:** the shard function reserves 500 concurrent executions (`shardReservedConcurrency`). The account Lambda concurrency quota must be raised before deploying (see `docs/scale-quotas.md`); Lambda also needs at least 100 unreserved executions left in the account.
+
+**Runbook: shard DLQ not empty** (the alarm `ShardDlqAlarm` fires). Find the cause in the shard function logs first (kill switch still paused, cell index throttled, a bad deploy). Once fixed, replay:
+
+    aws lambda invoke --function-name <RedriveFunctionName output> --payload '{"max":1000}' --cli-binary-format raw-in-base64-out out.json
+
+Each DLQ message is re-invoked asynchronously on the shard function and deleted only after that succeeds. Replaying is safe: batch keys are deterministic and the sender claims them. Messages that are not shard jobs are left in the DLQ.
+
+**Shard size:** a shard job is at most 16 cells (one res-4 parent split into sorted parts of 16), and the shard function has 2048 MB. A shard that is running out of time (under 10 s left) sends the rest of its cells to a new invoke of itself and returns; nothing is skipped or repeated. Planner and shard retry an alert whose signature fails (a key rotation not yet loaded) instead of dropping it, and log `fanout.signature_failed`.
+
+**Runbook: urgent or standard send DLQ not empty** (`UrgentDlqAlarm` / `StandardDlqAlarm`). Send batches only reach the DLQ after 100 receives. Fix the cause (sender down, secrets, kill switch), then move them back with SQS's own redrive:
+
+    aws lambda invoke --function-name <SendRedriveFunctionName output> --payload '{"queue":"urgent"}' --cli-binary-format raw-in-base64-out out.json
+
+(`"standard"`, or leave `queue` out for both.) The sender claims each batch key, so replaying a batch that was in fact sent is harmless.
+
+## Sender stack (statewide scale)
+
+The sender fleet (Fargate, 1 vCPU / 2 GB tasks) is **off until you enable it**, because the APNs and FCM secrets are created with placeholder values and a sender that boots with them crash-loops. First deploy, in this order:
+
+1. `npx cdk deploy ... -c stage=<stage>`: everything is created; the sender service has desiredCount 0 and no auto scaling.
+2. Put the real values in `relay/<stage>/apns-key` and `relay/<stage>/fcm-service-account` (`aws secretsmanager put-secret-value`).
+3. `npx cdk deploy ... -c stage=<stage> -c senderEnabled=true`: the fleet starts. Prod keeps at least 10 tasks (override with `-c senderMinTasks=<n>`) and scales to 100 on queue depth (1-minute periods, aggressive steps) and urgent queue age; it scales in only after 15 idle minutes. Dev scales from 0 to 10.
+
+The planner pre-scales the fleet on an urgent alert (ECS `UpdateService`, scoped to the sender service, never lowering the count; failures are logged and never block fan-out), because queue-metric scaling alone takes 3-5 minutes. It derives the service from the stage (`relay-<stage>-sender`), and the planner reads the same `senderEnabled` flag, so a disabled fleet is never pre-scaled.
+
+**Quota:** the Fargate On-Demand vCPU quota defaults to 6 vCPUs per Region. It must be raised to at least 100 tasks x 1 vCPU = 100 vCPUs (more with headroom) before enabling prod, or the fleet cannot grow past 6 tasks. See `docs/scale-quotas.md` (ECS Fargate section).

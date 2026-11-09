@@ -66,11 +66,14 @@ export async function planDelivery(alert: Alert, deps: PlanDeps): Promise<PlanRe
   // Only ids come back, so a big match cannot exceed the Data API response limit.
   const placeIds = new Set<string>();
   const deviceIds = new Set<string>();
+  const cellByDevice = new Map<string, string>();
   const cells = alert.area.h3Cells;
   for (let i = 0; i < cells.length; i += CELL_CHUNK) {
     for (const m of await deps.places.listMatchesForCells(cells.slice(i, i + CELL_CHUNK))) {
       placeIds.add(m.placeId);
       deviceIds.add(m.deviceId);
+      // The matched place's cell, bound into the v2 check-in token.
+      if (!cellByDevice.has(m.deviceId)) cellByDevice.set(m.deviceId, m.h3Cell);
     }
   }
   result.matchedPlaces = placeIds.size;
@@ -94,7 +97,13 @@ export async function planDelivery(alert: Alert, deps: PlanDeps): Promise<PlanRe
         expoPushToken: device.expoPushToken,
         language: device.language,
         checkInToken: createCheckInToken(
-          { alertId: alert.id, deviceId: device.id, expiresAt: tokenExpiry },
+          {
+            alertId: alert.id,
+            deviceId: device.id,
+            expiresAt: tokenExpiry,
+            // Every device in deviceIds was matched through a place, so its cell is known.
+            h3Cell: cellByDevice.get(device.id) ?? '',
+          },
           deps.tokenKey,
         ),
         expiresAt: alert.expires,

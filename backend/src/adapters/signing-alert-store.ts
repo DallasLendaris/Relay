@@ -31,6 +31,9 @@ export class SigningAlertStore implements AlertStore {
       area: { ...alert.area, h3Cells: [...new Set(alert.area.h3Cells)].sort() },
       summaries: summariesFor(alert, { timeZone: 'America/Los_Angeles' }),
     };
-    await this.inner.save(signAlert(withSummaries, this.currentKey));
+    const signed = signAlert(withSummaries, this.currentKey);
+    // Public CDN publishing is NOT done here: it is slow (a Data API query and a cross-region PUT
+    // per shard), so the ingest pipeline runs it after AlertReady has been published.
+    await this.inner.save(signed);
   }
 }
