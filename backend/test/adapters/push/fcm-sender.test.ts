@@ -159,7 +159,7 @@ describe('FcmSender response mapping', () => {
     it(`${token} -> ${expected}`, async () => {
       const [r] = await make().send([android(token)]);
       if (expected === 'ok') expect(r).toEqual({ ok: true });
-      else expect(r).toEqual({ ok: false, kind: expected, error });
+      else expect(r).toMatchObject({ ok: false, kind: expected, error });
     });
   }
 

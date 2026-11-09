@@ -131,6 +131,8 @@ export interface SendBatch {
   }>;
   /** 0 for the first attempt; failed recipients are re-queued as a new batch with attempt + 1. */
   attempt: number;
+  /** ISO time the batch was first processed; retries carry it so the 30 minute retry budget is shared. */
+  firstAttemptAt?: string;
 }
 
 /** Send queues are split by severity so emergencies never wait behind advisories. */
@@ -144,7 +146,12 @@ export const QUEUE_FOR_SEVERITY: Record<Alert['relaySeverity'], SendQueueName | 
 };
 
 export interface SendQueue {
-  enqueue(queue: SendQueueName, batches: SendBatch[]): Promise<void>;
+  /** `delaySeconds` hides the messages from consumers for that long (SQS caps it at 900). */
+  enqueue(
+    queue: SendQueueName,
+    batches: SendBatch[],
+    opts?: { delaySeconds?: number },
+  ): Promise<void>;
 }
 
 // ---------- Native push ----------
@@ -174,6 +181,14 @@ export type NativePushResult =
       /** permanent: the token is dead (unregistered / invalid). retryable: anything else. */
       kind: 'permanent' | 'retryable';
       error: string;
+      /**
+       * Only with kind 'permanent': 'message' means this message can never be sent (for example the
+       * payload is too large) but the token is fine, so the target must NOT be cleared. Absent
+       * means the token itself is dead.
+       */
+      scope?: 'message';
+      /** Server-requested wait (Retry-After) in seconds, on retryable failures. */
+      retryAfterSeconds?: number;
     };
 
 export interface NativePushSender {

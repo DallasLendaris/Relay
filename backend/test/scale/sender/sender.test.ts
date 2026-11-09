@@ -2,14 +2,9 @@ import type { Alert } from '@relay/shared';
 import { describe, expect, it } from 'vitest';
 import { PUSH_POLICY } from '../../../src/delivery/policy.js';
 import { SENDER_CHUNK_SIZE, type NativePushMessage } from '../../../src/scale/contracts.js';
-import {
-  MAX_ATTEMPT,
-  SENDER_LEASE_MS,
-  baseBatchKey,
-  processBatch,
-} from '../../../src/scale/sender/sender.js';
+import { SENDER_LEASE_MS, baseBatchKey, processBatch } from '../../../src/scale/sender/sender.js';
 import { tampered } from '../../delivery/fakes.js';
-import { FakePush, makeBatch, makeDeps, recordingLogger, seedAlert } from './fakes.js';
+import { FakePush, makeBatch, makeDeps, recordingLogger, seedAlert, waitFor } from './fakes.js';
 
 describe('processBatch: claim states', () => {
   it('acks without sending when the batch is already sent', async () => {
@@ -201,11 +196,12 @@ describe('processBatch: failures', () => {
     await seedAlert(t.alerts);
     const batch = makeBatch();
     const out = await processBatch(batch, t.deps);
+    await waitFor(() => deadSeen.length === 1);
 
     expect(out).toMatchObject({ ack: true, sent: 1, permanentFailed: 1, retried: 1, gaveUp: 0 });
-    expect(order.at(-1)).toBe('markSent');
+    expect(order.at(-1)).toBe('dead'); // cleanup is asynchronous and comes after markSent
     expect(order.indexOf('enqueue')).toBeLessThan(order.indexOf('markSent'));
-    expect(order.indexOf('dead')).toBeLessThan(order.indexOf('markSent'));
+    expect(order.indexOf('markSent')).toBeLessThan(order.indexOf('dead'));
 
     expect(t.sendQueue.enqueued).toHaveLength(1);
     const q = t.sendQueue.enqueued[0];
@@ -238,7 +234,26 @@ describe('processBatch: failures', () => {
     expect(baseBatchKey(`${base.batchKey}:r4`)).toBe(base.batchKey);
   });
 
-  it('retries up to attempt 5, then gives up with counts only', async () => {
+  it('keeps retrying past attempt 5 while inside the time budget', async () => {
+    const t = makeDeps({
+      push: new FakePush(() => ({ ok: false, kind: 'retryable', error: 'x' })),
+    });
+    await seedAlert(t.alerts);
+    const base = makeBatch();
+    const out = await processBatch(
+      {
+        ...base,
+        batchKey: `${base.batchKey}:r9`,
+        attempt: 9,
+        firstAttemptAt: t.state.now.toISOString(),
+      },
+      t.deps,
+    );
+    expect(out).toMatchObject({ retried: 3, gaveUp: 0 });
+    expect(t.sendQueue.enqueued.at(-1)?.batches[0]?.batchKey).toBe(`${base.batchKey}:r10`);
+  });
+
+  it('gives up with counts only once the 30 minute budget is spent', async () => {
     const { lines, logger } = recordingLogger();
     const t = makeDeps({
       push: new FakePush(() => ({ ok: false, kind: 'retryable', error: 'x' })),
@@ -246,21 +261,13 @@ describe('processBatch: failures', () => {
     });
     await seedAlert(t.alerts);
     const base = makeBatch();
-    // attempt 4 still re-queues (as r5)
-    let out = await processBatch(
-      { ...base, batchKey: `${base.batchKey}:r4`, attempt: MAX_ATTEMPT - 1 },
-      t.deps,
-    );
-    expect(out.retried).toBe(3);
-    expect(t.sendQueue.enqueued.at(-1)?.batches[0]?.batchKey).toBe(`${base.batchKey}:r5`);
-    // attempt 5 gives up
-    const before = t.sendQueue.enqueued.length;
-    out = await processBatch(
-      { ...base, batchKey: `${base.batchKey}:r5`, attempt: MAX_ATTEMPT },
+    const first = new Date(t.state.now.getTime() - 31 * 60_000).toISOString();
+    const out = await processBatch(
+      { ...base, batchKey: `${base.batchKey}:r4`, attempt: 4, firstAttemptAt: first },
       t.deps,
     );
     expect(out).toMatchObject({ ack: true, retried: 0, gaveUp: 3 });
-    expect(t.sendQueue.enqueued).toHaveLength(before);
+    expect(t.sendQueue.enqueued).toHaveLength(0);
     const gaveUp = lines.find((l) => l.msg === 'delivery.gave_up');
     expect(gaveUp?.fields).toMatchObject({ count: 3 });
     const text = JSON.stringify(lines);

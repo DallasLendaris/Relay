@@ -5,6 +5,7 @@ import {
   type SendQueue,
   type SendQueueName,
 } from '../contracts.js';
+import { clampDelay } from '../fanout/queues.js';
 
 /**
  * SendQueue on SQS, used by the sender to re-queue failed recipients. Batches are packed as a
@@ -17,13 +18,22 @@ export class SqsSendQueue implements SendQueue {
     private readonly urls: Record<SendQueueName, string>,
   ) {}
 
-  async enqueue(queue: SendQueueName, batches: SendBatch[]): Promise<void> {
+  async enqueue(
+    queue: SendQueueName,
+    batches: SendBatch[],
+    opts?: { delaySeconds?: number },
+  ): Promise<void> {
+    const delay = clampDelay(opts?.delaySeconds);
     const bodies: string[] = [];
     for (let i = 0; i < batches.length; i += MAX_BATCHES_PER_MESSAGE) {
       bodies.push(JSON.stringify(batches.slice(i, i + MAX_BATCHES_PER_MESSAGE)));
     }
     for (let i = 0; i < bodies.length; i += 10) {
-      let entries = bodies.slice(i, i + 10).map((b, n) => ({ Id: String(n), MessageBody: b }));
+      let entries = bodies.slice(i, i + 10).map((b, n) => ({
+        Id: String(n),
+        MessageBody: b,
+        ...(delay ? { DelaySeconds: delay } : {}),
+      }));
       for (let attempt = 0; attempt < 2 && entries.length > 0; attempt++) {
         const res = await this.sqs.send(
           new SendMessageBatchCommand({ QueueUrl: this.urls[queue], Entries: entries }),

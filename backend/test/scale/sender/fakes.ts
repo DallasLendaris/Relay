@@ -72,13 +72,21 @@ export class FakePush implements NativePushSender {
 }
 
 export class FakeSendQueue implements SendQueue {
-  enqueued: Array<{ queue: SendQueueName; batches: SendBatch[] }> = [];
+  enqueued: Array<{ queue: SendQueueName; batches: SendBatch[]; delaySeconds?: number }> = [];
   fail = false;
   /** Optional hook so the throughput test can feed retries back into its fake SQS. */
   onEnqueue?: (queue: SendQueueName, batches: SendBatch[]) => void;
-  async enqueue(queue: SendQueueName, batches: SendBatch[]): Promise<void> {
+  async enqueue(
+    queue: SendQueueName,
+    batches: SendBatch[],
+    opts?: { delaySeconds?: number },
+  ): Promise<void> {
     if (this.fail) throw new Error('sqs down');
-    this.enqueued.push({ queue, batches });
+    this.enqueued.push({
+      queue,
+      batches,
+      ...(opts?.delaySeconds !== undefined ? { delaySeconds: opts.delaySeconds } : {}),
+    });
     this.onEnqueue?.(queue, batches);
   }
 }
@@ -103,6 +111,7 @@ export function makeDeps(over: Partial<SenderDeps> = {}) {
     clock,
     logger: silent,
     sleep: async () => {},
+    random: () => 0.5,
     ...over,
   };
   return { deps, state, alerts, idempotency, sendQueue, push, dead, events };
@@ -119,7 +128,7 @@ export async function seedAlert(
 
 // ---------- Fake SQS ----------
 
-interface Stored {
+export interface Stored {
   id: string;
   body: string;
   sentAt: number;
@@ -134,6 +143,10 @@ export class FakeSqs {
   receives: Array<{ queue: string; max: number; wait: number }> = [];
   extensions: Array<{ queue: string; seconds: number }> = [];
   deleteCalls: number[] = [];
+  /** Messages moved to the dead-letter queue (receive count would pass maxReceiveCount). */
+  readonly dead: Stored[] = [];
+  /** Like a redrive policy: a message already received this many times goes to `dead`. */
+  maxReceiveCount = Number.POSITIVE_INFINITY;
   /** Receipt handles whose deletes should be reported as failed. */
   failDeletes = new Set<string>();
   private seq = 0;
@@ -169,9 +182,15 @@ export class FakeSqs {
       this.receives.push({ queue: QueueUrl, max: MaxNumberOfMessages, wait: WaitTimeSeconds });
       const take = (): Message[] => {
         const out: Message[] = [];
-        for (const m of this.queues.get(QueueUrl) ?? []) {
+        const list = this.queues.get(QueueUrl) ?? [];
+        for (const m of [...list]) {
           if (out.length >= MaxNumberOfMessages) break;
           if (m.invisibleUntil > this.now()) continue;
+          if (m.receives >= this.maxReceiveCount) {
+            list.splice(list.indexOf(m), 1);
+            this.dead.push(m);
+            continue;
+          }
           m.invisibleUntil = this.now() + this.visibilityMs;
           m.receives++;
           m.receipt = `${m.id}#${m.receives}`;

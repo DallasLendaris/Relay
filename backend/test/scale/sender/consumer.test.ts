@@ -237,7 +237,7 @@ describe('SenderConsumer', () => {
         await new Promise(() => {}); // never finishes
         return ok();
       },
-      { drainTimeoutMs: 30 },
+      { drainTimeoutMs: 30, abortGraceMs: 30 },
     );
     const run = consumer.run();
     await waitFor(() => started);
