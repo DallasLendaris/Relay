@@ -9,6 +9,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@relay/shared": "^0.1.0",
     "h3-js": "^4.5.0"
   },
   "devDependencies": {

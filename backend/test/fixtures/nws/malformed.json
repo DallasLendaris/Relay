@@ -1,0 +1,210 @@
+{
+  "@context": [
+    "https://geojson.org/geojson-ld/geojson-context.jsonld",
+    {
+      "@version": "1.1",
+      "wx": "https://api.weather.gov/ontology#",
+      "s": "https://schema.org/",
+      "geo": "http://www.opengis.net/ont/geosparql#",
+      "unit": "http://www.opengis.net/def/uom/UCUM/",
+      "@vocab": "https://api.weather.gov/ontology#"
+    }
+  ],
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": null,
+      "properties": {
+        "@type": "wx:Alert",
+        "areaDesc": "Santa Clara County",
+        "geocode": {
+          "SAME": [
+            "006085"
+          ],
+          "UGC": [
+            "CAZ513"
+          ]
+        },
+        "affectedZones": [
+          "https://api.weather.gov/zones/forecast/CAZ513"
+        ],
+        "references": [],
+        "sent": "2026-11-09T06:10:00-08:00",
+        "effective": "2026-11-09T06:10:00-08:00",
+        "onset": "2026-11-09T06:10:00-08:00",
+        "expires": "2026-11-09T18:00:00-08:00",
+        "ends": "2026-11-09T18:00:00-08:00",
+        "status": "Actual",
+        "messageType": "Alert",
+        "category": "Met",
+        "severity": "Severe",
+        "certainty": "Likely",
+        "urgency": "Immediate",
+        "event": "Flood Warning",
+        "sender": "w-nws.webmaster@noaa.gov",
+        "senderName": "NWS Monterey CA",
+        "headline": "Feature with no id",
+        "description": "Flooding is occurring or imminent along small streams and low-lying areas.",
+        "instruction": "Turn around, don't drown when encountering flooded roads.",
+        "response": "Prepare",
+        "parameters": {
+          "AWIPSidentifier": [
+            "FLSMTR"
+          ],
+          "WMOidentifier": [
+            "WGUS66 KMTR 091410"
+          ]
+        }
+      }
+    },
+    {
+      "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.m2.001.1",
+      "type": "Feature",
+      "geometry": null,
+      "properties": {
+        "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.m2.001.1",
+        "@type": "wx:Alert",
+        "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.m2.001.1",
+        "areaDesc": "Santa Clara County",
+        "geocode": {
+          "SAME": [
+            "006085"
+          ],
+          "UGC": [
+            "CAZ513"
+          ]
+        },
+        "affectedZones": [
+          "https://api.weather.gov/zones/forecast/CAZ513"
+        ],
+        "references": [],
+        "sent": "2026-11-09T06:10:00-08:00",
+        "effective": "2026-11-09T06:10:00-08:00",
+        "onset": "2026-11-09T06:10:00-08:00",
+        "ends": "2026-11-09T18:00:00-08:00",
+        "status": "Actual",
+        "messageType": "Alert",
+        "category": "Met",
+        "severity": "Severe",
+        "certainty": "Likely",
+        "urgency": "Immediate",
+        "event": "Flood Warning",
+        "sender": "w-nws.webmaster@noaa.gov",
+        "senderName": "NWS Monterey CA",
+        "headline": "Feature with no expires",
+        "description": "Flooding is occurring or imminent along small streams and low-lying areas.",
+        "instruction": "Turn around, don't drown when encountering flooded roads.",
+        "response": "Prepare",
+        "parameters": {
+          "AWIPSidentifier": [
+            "FLSMTR"
+          ],
+          "WMOidentifier": [
+            "WGUS66 KMTR 091410"
+          ]
+        }
+      }
+    },
+    {
+      "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.m3.001.1",
+      "type": "Feature",
+      "geometry": null,
+      "properties": {
+        "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.m3.001.1",
+        "@type": "wx:Alert",
+        "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.m3.001.1",
+        "areaDesc": "Santa Clara County",
+        "geocode": {
+          "SAME": [
+            "006085"
+          ],
+          "UGC": [
+            "CAZ513"
+          ]
+        },
+        "affectedZones": [
+          "https://api.weather.gov/zones/forecast/CAZ513"
+        ],
+        "references": [],
+        "sent": "2026-13-45T99:99:00-08:00",
+        "effective": "2026-11-09T06:10:00-08:00",
+        "onset": "2026-11-09T06:10:00-08:00",
+        "expires": "2026-11-09T18:00:00-08:00",
+        "ends": "2026-11-09T18:00:00-08:00",
+        "status": "Actual",
+        "messageType": "Alert",
+        "category": "Met",
+        "severity": "Severe",
+        "certainty": "Likely",
+        "urgency": "Immediate",
+        "event": "Flood Warning",
+        "sender": "w-nws.webmaster@noaa.gov",
+        "senderName": "NWS Monterey CA",
+        "headline": "Feature with invalid sent date",
+        "description": "Flooding is occurring or imminent along small streams and low-lying areas.",
+        "instruction": "Turn around, don't drown when encountering flooded roads.",
+        "response": "Prepare",
+        "parameters": {
+          "AWIPSidentifier": [
+            "FLSMTR"
+          ],
+          "WMOidentifier": [
+            "WGUS66 KMTR 091410"
+          ]
+        }
+      }
+    },
+    {
+      "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.m4.001.1",
+      "type": "Feature",
+      "geometry": null,
+      "properties": {
+        "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.m4.001.1",
+        "@type": "wx:Alert",
+        "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.m4.001.1",
+        "areaDesc": "Santa Clara County",
+        "geocode": {
+          "SAME": [
+            "006085"
+          ],
+          "UGC": [
+            "CAZ513"
+          ]
+        },
+        "affectedZones": [
+          "https://api.weather.gov/zones/forecast/CAZ513"
+        ],
+        "references": [],
+        "sent": "2026-11-09T06:10:00-08:00",
+        "effective": "2026-11-09T06:10:00-08:00",
+        "onset": "2026-11-09T06:10:00-08:00",
+        "expires": "2026-11-09T18:00:00-08:00",
+        "ends": "2026-11-09T18:00:00-08:00",
+        "status": "Actual",
+        "messageType": "Alert",
+        "category": "Met",
+        "severity": "Catastrophic",
+        "certainty": "Likely",
+        "urgency": "Immediate",
+        "event": "Flood Warning",
+        "sender": "w-nws.webmaster@noaa.gov",
+        "senderName": "NWS Monterey CA",
+        "headline": "Feature with unknown severity",
+        "description": "Flooding is occurring or imminent along small streams and low-lying areas.",
+        "instruction": "Turn around, don't drown when encountering flooded roads.",
+        "response": "Prepare",
+        "parameters": {
+          "AWIPSidentifier": [
+            "FLSMTR"
+          ],
+          "WMOidentifier": [
+            "WGUS66 KMTR 091410"
+          ]
+        }
+      }
+    }
+  ],
+  "title": "current watches, warnings, and advisories for California",
+  "updated": "2026-11-09T17:00:00+00:00"
+}
