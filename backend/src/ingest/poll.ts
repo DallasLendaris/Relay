@@ -3,7 +3,7 @@
  * The normalizer, lifecycle (apply) and H3 matching are injected so this file stays small
  * and testable.
  */
-import type { Alert } from '@relay/shared';
+import { relaySeverityFor, type Alert } from '@relay/shared';
 import type { RawArchive, SeenStore } from '../ports.js';
 import { TooManyCellsError } from '../geo/index.js';
 import type { NwsClient } from './nws-client.js';
@@ -27,7 +27,50 @@ export interface PollDeps {
   /** Delivery plugs in here. Called for created, updated and cancelled alerts only. */
   onApplied?(result: ApplyResult): Promise<void> | void;
   log?(entry: Record<string, unknown>): void;
+  /**
+   * Milliseconds left in the Lambda invocation. When set, pollOnce stops before a feature if
+   * less than MIN_FEATURE_BUDGET_MS remain. pollLoop fills it in from its own options.
+   */
+  remainingMs?(): number;
 }
+
+/**
+ * Thrown by onApplied when delivery is paused (kill switch). The alert is already saved, but it
+ * must stay unseen so every poll plans it again until delivery is unpaused. Not an error.
+ */
+export class DeliveryPausedError extends Error {
+  constructor(alertId: string) {
+    super(`delivery paused; alert ${alertId} stays unseen until unpaused`);
+    this.name = 'DeliveryPausedError';
+  }
+}
+
+/** Do not start another feature with less Lambda time than this left (planning can be slow). */
+export const MIN_FEATURE_BUDGET_MS = 15_000;
+/** Consecutive polls with the same save failure for one sourceId before we give up on it. */
+export const QUARANTINE_AFTER = 5;
+
+/**
+ * Save-failure bookkeeping, kept in memory per warm Lambda container. A cold start resets
+ * it, which is acceptable: we just need 5 failures in a row, and an alert that keeps
+ * failing will fail again and be quarantined a few polls later.
+ */
+const saveFailures = new Map<string, { message: string; count: number }>();
+
+/** Clears the failure counts (tests). */
+export function clearSaveFailures(): void {
+  saveFailures.clear();
+}
+
+/** Network and throttling errors get better on their own, so they never count toward quarantine. */
+function isTransient(err: unknown): boolean {
+  const text = `${err instanceof Error ? err.name : ''} ${msg(err)}`;
+  return /time(d )?out|abort|throttl|unavailable|ECONN|ETIMEDOUT|EAI_AGAIN|network|rate exceeded/i.test(
+    text,
+  );
+}
+
+const SEVERITY_RANK = { emergency: 0, warning: 1, watch: 2, advisory: 3, statement: 4 } as const;
 
 export interface PollCounts {
   fetched: number;
@@ -36,6 +79,8 @@ export interface PollCounts {
   skippedSeen: number;
   applied: number;
   errors: number;
+  /** Alerts given up on after repeated identical save failures (marked seen). */
+  quarantined: number;
   /** 1 when the NWS fetch itself failed (HTTP error, timeout), else 0. */
   fetchFailed: number;
 }
@@ -47,6 +92,7 @@ const emptyCounts = (): PollCounts => ({
   skippedSeen: 0,
   applied: 0,
   errors: 0,
+  quarantined: 0,
   fetchFailed: 0,
 });
 
@@ -55,26 +101,28 @@ const msg = (err: unknown): string => (err instanceof Error ? err.message : Stri
 
 export async function pollOnce(deps: PollDeps): Promise<PollCounts> {
   const counts = emptyCounts();
-  await pollInto(deps, counts);
-  // Keep ETag / Last-Modified only if everything in this poll worked. Otherwise the next
-  // poll must get the full body again (not a 304) so the failed features are retried.
-  if (counts.errors === 0) deps.client.commit();
+  const complete = await pollInto(deps, counts);
+  // Keep ETag / Last-Modified only if everything in this poll worked and every feature was
+  // reached. Otherwise the next poll must get the full body again (not a 304) so the failed,
+  // paused or not-yet-processed features are retried.
+  if (counts.errors === 0 && complete) deps.client.commit();
   return counts;
 }
 
-async function pollInto(deps: PollDeps, counts: PollCounts): Promise<void> {
+/** Returns false when some feature was left unseen on purpose (deadline or delivery paused). */
+async function pollInto(deps: PollDeps, counts: PollCounts): Promise<boolean> {
   const log = deps.log ?? defaultLog;
 
   const res = await deps.client.fetchActiveCalifornia();
   if (res.status === 'not_modified') {
     log({ event: 'poll.not_modified' });
-    return;
+    return true;
   }
   if (res.status === 'error') {
     counts.errors += 1;
     counts.fetchFailed = 1;
     log({ event: 'poll.fetch_error', httpStatus: res.httpStatus, message: res.message });
-    return;
+    return true;
   }
 
   // Archive first, but never let an archive failure block alerts.
@@ -90,13 +138,14 @@ async function pollInto(deps: PollDeps, counts: PollCounts): Promise<void> {
   if ('error' in feed) {
     counts.errors += 1;
     log({ event: 'poll.parse_failed', message: feed.error });
-    return;
+    return true;
   }
   counts.fetched = feed.features.length;
 
+  // Normalize everything first so the most urgent alerts are handled first: a slow low-priority
+  // alert must not starve an emergency. Oldest first within a severity keeps updates in order.
+  const queue: Alert[] = [];
   for (const feature of feed.features) {
-    // One bad feature must not stop the rest.
-    let current: Alert | null = null;
     try {
       const norm = deps.normalize(feature);
       if (!norm.ok) {
@@ -105,14 +154,39 @@ async function pollInto(deps: PollDeps, counts: PollCounts): Promise<void> {
         continue;
       }
       counts.accepted += 1;
-      const alert = norm.alert;
-      current = alert;
+      queue.push(norm.alert);
+    } catch (err) {
+      counts.errors += 1;
+      log({ event: 'poll.feature_error', message: msg(err) });
+    }
+  }
+  const rank = (a: Alert): number => SEVERITY_RANK[relaySeverityFor(a.event)];
+  queue.sort((a, b) => rank(a) - rank(b) || Date.parse(a.sent) - Date.parse(b.sent));
+
+  let complete = true;
+  for (const [i, alert] of queue.entries()) {
+    if (deps.remainingMs && deps.remainingMs() < MIN_FEATURE_BUDGET_MS) {
+      // Leave the rest unseen; the next poll (no ETag commit) picks them up.
+      complete = false;
+      log({
+        event: 'poll.deadline_reached',
+        level: 'warn',
+        remainingMs: deps.remainingMs(),
+        deferred: queue.length - i,
+      });
+      break;
+    }
+    // One bad feature must not stop the rest.
+    let stage: 'prepare' | 'save' | 'deliver' = 'prepare';
+    try {
       if (await deps.seen.has(alert.sourceId)) {
         counts.skippedSeen += 1;
         continue;
       }
       alert.area.h3Cells = await deps.cellsFor(alert.area);
+      stage = 'save';
       const result = await deps.apply(alert);
+      stage = 'deliver';
 
       let toPlan: ApplyResult | null = null;
       if (result.action === 'ignored') {
@@ -140,22 +214,58 @@ async function pollInto(deps: PollDeps, counts: PollCounts): Promise<void> {
       // Mark seen LAST: only after apply and delivery planning both succeeded. If anything
       // above threw, the next poll retries this feature.
       await deps.seen.mark(alert.sourceId, alert.sent);
+      saveFailures.delete(alert.sourceId);
     } catch (err) {
+      if (err instanceof DeliveryPausedError) {
+        // Expected while the kill switch is on. Not an error: leave unseen, keep the ETag.
+        complete = false;
+        log({ event: 'poll.delivery_paused', level: 'warn', sourceId: alert.sourceId });
+        continue;
+      }
       if (err instanceof TooManyCellsError) {
         // Broken geometry never gets better: reject it for good instead of retrying forever.
         counts.rejected += 1;
         log({ event: 'poll.rejected_permanent', level: 'error', message: msg(err) });
-        try {
-          if (current) await deps.seen.mark(current.sourceId, current.sent);
-        } catch (markErr) {
-          counts.errors += 1;
-          log({ event: 'poll.mark_failed', message: msg(markErr) });
-        }
+        await markQuietly(deps, alert, counts, log);
         continue;
+      }
+      if (stage === 'save' && !isTransient(err)) {
+        // Same non-transient error for the same alert, poll after poll: it will never save.
+        const prev = saveFailures.get(alert.sourceId);
+        const count = prev && prev.message === msg(err) ? prev.count + 1 : 1;
+        saveFailures.set(alert.sourceId, { message: msg(err), count });
+        if (count >= QUARANTINE_AFTER) {
+          saveFailures.delete(alert.sourceId);
+          counts.quarantined += 1;
+          log({
+            event: 'ingest.quarantined',
+            level: 'error',
+            sourceId: alert.sourceId,
+            failures: count,
+            message: msg(err),
+          });
+          await markQuietly(deps, alert, counts, log);
+          continue;
+        }
       }
       counts.errors += 1;
       log({ event: 'poll.feature_error', message: msg(err) });
     }
+  }
+  return complete;
+}
+
+async function markQuietly(
+  deps: PollDeps,
+  alert: Alert,
+  counts: PollCounts,
+  log: (entry: Record<string, unknown>) => void,
+): Promise<void> {
+  try {
+    await deps.seen.mark(alert.sourceId, alert.sent);
+  } catch (markErr) {
+    counts.errors += 1;
+    log({ event: 'poll.mark_failed', message: msg(markErr) });
   }
 }
 
@@ -183,7 +293,7 @@ export async function pollLoop(deps: PollDeps, opts: LoopOptions): Promise<PollC
       }
       await sleep(opts.intervalMs);
     }
-    results.push(await pollOnce(deps));
+    results.push(await pollOnce({ ...deps, remainingMs: deps.remainingMs ?? opts.remainingMs }));
   }
   return results;
 }

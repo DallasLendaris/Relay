@@ -94,7 +94,7 @@ function setup(opts: { queue?: MemoryDeliveryQueue; feed?: string } = {}) {
   const seen = new InMemorySeenStore();
   const sender = new MemoryPushSender();
   const idempotency = new MemoryIdempotencyStore(clock);
-  const kill = { workerPaused: false };
+  const kill = { workerPaused: false, ingestPaused: false };
 
   const engine = createIngestPipeline({
     alertStore,
@@ -103,7 +103,7 @@ function setup(opts: { queue?: MemoryDeliveryQueue; feed?: string } = {}) {
     queue,
     alertKeys,
     tokenKeys,
-    isDeliveryPaused: async () => false, // pausing is tested at worker time
+    isDeliveryPaused: async () => kill.ingestPaused,
     fetch: fakeFetch,
     userAgent: 'relay-test',
     clock,
@@ -318,6 +318,24 @@ describe('demo path', () => {
     s.kill.workerPaused = false;
     expect(await s.drain()).toEqual([]);
     expect(s.sender.sent).toHaveLength(1);
+    expect(await s.drain()).toEqual([]);
+    expect(s.sender.sent).toHaveLength(1);
+  });
+
+  it('an alert that arrives while paused is planned after unpausing (not lost)', async () => {
+    const s = setup();
+    await s.addDevice('inside', INSIDE.lat, INSIDE.lng);
+
+    s.kill.ingestPaused = true;
+    const paused = await s.poll();
+    expect(s.queue.jobs).toHaveLength(0);
+    expect(paused.errors).toBe(0); // paused is expected, not an error
+    await s.poll(); // still paused: planned again, still nothing
+    expect(s.queue.jobs).toHaveLength(0);
+
+    s.kill.ingestPaused = false;
+    await s.poll();
+    expect(s.queue.jobs).toHaveLength(1);
     expect(await s.drain()).toEqual([]);
     expect(s.sender.sent).toHaveLength(1);
   });

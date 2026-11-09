@@ -63,7 +63,14 @@ export function positiveNumber(
   return fallback;
 }
 
-const METRICS = ['Accepted', 'Rejected', 'Applied', 'Errors', 'FetchFailed'] as const;
+const METRICS = [
+  'Accepted',
+  'Rejected',
+  'Applied',
+  'Errors',
+  'FetchFailed',
+  'Quarantined',
+] as const;
 
 /**
  * One CloudWatch Embedded Metric Format line for a whole invocation (all its polls summed).
@@ -89,6 +96,7 @@ export function buildEmf(polls: PollCounts[], now: Date = new Date()): Record<st
     Applied: sum((c) => c.applied),
     Errors: sum((c) => c.errors),
     FetchFailed: sum((c) => c.fetchFailed),
+    Quarantined: sum((c) => c.quarantined),
   };
 }
 

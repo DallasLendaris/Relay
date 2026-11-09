@@ -66,4 +66,33 @@ describe('NwsZoneProvider', () => {
     await expect(pDown.getZoneGeometry('CAC001')).rejects.toThrow('ECONNRESET');
     expect(down).toHaveBeenCalledTimes(2);
   });
+
+  it('gives every fetch a 5 s abort signal; a timeout is retryable and not cached', async () => {
+    // AbortSignal.timeout uses a real internal timer, so control it with our own controller.
+    const controller = new AbortController();
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(controller.signal);
+    try {
+      let hang = true;
+      const signals: Array<AbortSignal | undefined> = [];
+      const fetchFn = vi.fn(async (_url: string, init?: { signal?: AbortSignal }) => {
+        signals.push(init?.signal);
+        if (!hang) return ok(geom);
+        return new Promise<never>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new Error('timed out')));
+        });
+      });
+      const p = new NwsZoneProvider(fetchFn);
+      const first = p.getZoneGeometry('CAC085');
+      expect(timeoutSpy).toHaveBeenCalledWith(5000);
+      expect(signals[0]).toBe(controller.signal);
+      controller.abort();
+      await expect(first).rejects.toThrow('timed out');
+
+      hang = false;
+      expect(await p.getZoneGeometry('CAC085')).toEqual(geom); // retried, not cached
+      expect(fetchFn).toHaveBeenCalledTimes(2);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
 });

@@ -7,6 +7,8 @@ export interface Keyring {
   all: Map<string, string>;
 }
 
+/** A key must decode to at least this many bytes. */
+const MIN_KEY_BYTES = 32;
 const TTL_MS = 5 * 60 * 1000;
 const cache = new Map<string, { at: number; value: Keyring }>();
 
@@ -33,6 +35,13 @@ export function parseKeyring(secretString: string, secretArn: string): Keyring {
   for (const [kid, secret] of Object.entries(obj.keys as Record<string, unknown>)) {
     if (typeof secret !== 'string' || secret === '') {
       throw new Error(`Secret ${secretArn}: key "${kid}" must be a non-empty string`);
+    }
+    if (secret.startsWith('REPLACE_ME') || Buffer.from(secret, 'base64').length < MIN_KEY_BYTES) {
+      // The CDK seeds a placeholder; signing with it would mean signing with a public string.
+      throw new Error(
+        `Secret ${secretArn}: keys not seeded (key "${kid}" is a placeholder or shorter than ` +
+          `${MIN_KEY_BYTES} bytes). Put real base64 keys in the secret before deploying.`,
+      );
     }
     all.set(kid, secret);
   }

@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Alert } from '@relay/shared';
 import { MemoryRawArchive } from '../../src/adapters/memory/raw-archive.js';
 import {
@@ -8,6 +8,10 @@ import {
   type NwsFetchResult,
 } from '../../src/ingest/nws-client.js';
 import {
+  clearSaveFailures,
+  DeliveryPausedError,
+  MIN_FEATURE_BUDGET_MS,
+  QUARANTINE_AFTER,
   pollLoop,
   pollOnce,
   type ApplyResult,
@@ -21,7 +25,11 @@ const fixture = (name: string): string =>
   readFileSync(new URL(`../fixtures/nws/${name}.json`, import.meta.url), 'utf8');
 
 // ---- fakes ----
-type Feature = { properties?: { id?: string; status?: string; sent?: string } };
+type Feature = {
+  properties?: { id?: string; status?: string; sent?: string; event?: string };
+};
+
+beforeEach(() => clearSaveFailures());
 
 /** Fake normalizer: rejects non-Actual features, otherwise builds a minimal alert. */
 function fakeNormalize(feature: unknown): NormalizeResult {
@@ -33,6 +41,7 @@ function fakeNormalize(feature: unknown): NormalizeResult {
   const alert = {
     sourceId,
     sent: p.sent ?? '2026-11-09T00:00:00Z',
+    event: p.event ?? 'Flood Warning',
     area: { description: '', geometry: null, ugcCodes: [], sameCodes: [], h3Cells: [] },
   } as unknown as Alert;
   return { ok: true, alert };
@@ -104,6 +113,7 @@ describe('pollOnce', () => {
       skippedSeen: 0,
       applied: 4,
       errors: 0,
+      quarantined: 0,
       fetchFailed: 0,
     });
     expect(archive.items).toHaveLength(1);
@@ -130,6 +140,7 @@ describe('pollOnce', () => {
       skippedSeen: 0,
       applied: 0,
       errors: 0,
+      quarantined: 0,
       fetchFailed: 0,
     });
   });
@@ -361,6 +372,174 @@ describe('pollOnce reliability', () => {
     });
     const counts = await pollOnce(deps);
     expect(counts.errors).toBe(1);
+    expect(seen.ids.size).toBe(0);
+  });
+});
+
+/** A feed of features with explicit ids, events and sent times. */
+const feedOf = (...f: Array<{ id: string; event: string; sent?: string }>): NwsFetchResult => ({
+  status: 'ok',
+  body: JSON.stringify({
+    features: f.map((x) => ({
+      properties: {
+        id: x.id,
+        event: x.event,
+        status: 'Actual',
+        sent: x.sent ?? '2026-11-09T00:00:00Z',
+      },
+    })),
+  }),
+  fetchedAt: new Date('2026-11-09T10:00:00Z'),
+});
+
+describe('pollOnce delivery paused', () => {
+  it('leaves the alert unseen, logs a warning (not an error), and keeps the ETag uncommitted', async () => {
+    const entries: Record<string, unknown>[] = [];
+    let paused = true;
+    const client = clientReturning(feedOf({ id: 'urn:oid:p', event: 'Flood Warning' }));
+    const { deps, seen } = makeDeps(client, {
+      onApplied: (r) => {
+        if (paused) throw new DeliveryPausedError(r.alert.sourceId);
+      },
+      log: (e) => entries.push(e),
+    });
+    const first = await pollOnce(deps);
+    expect(first.errors).toBe(0);
+    expect(first.applied).toBe(0);
+    expect(seen.ids.size).toBe(0);
+    expect(client.commits).toBe(0);
+    expect(entries.find((e) => e.event === 'poll.delivery_paused')).toMatchObject({
+      level: 'warn',
+    });
+    expect(entries.some((e) => e.level === 'error')).toBe(false);
+
+    paused = false;
+    const second = await pollOnce(deps);
+    expect(second.applied).toBe(1);
+    expect(seen.ids.size).toBe(1);
+    expect(client.commits).toBe(1);
+  });
+});
+
+describe('pollOnce time budget and priority', () => {
+  const mixedFeed = feedOf(
+    { id: 'urn:oid:stmt', event: 'Special Weather Statement', sent: '2026-11-09T00:00:00Z' },
+    { id: 'urn:oid:adv', event: 'Wind Advisory', sent: '2026-11-09T00:00:00Z' },
+    { id: 'urn:oid:warn2', event: 'Flood Warning', sent: '2026-11-09T02:00:00Z' },
+    { id: 'urn:oid:watch', event: 'Fire Weather Watch', sent: '2026-11-09T00:00:00Z' },
+    { id: 'urn:oid:warn1', event: 'Red Flag Warning', sent: '2026-11-09T01:00:00Z' },
+    { id: 'urn:oid:emerg', event: 'Flash Flood Emergency', sent: '2026-11-09T03:00:00Z' },
+  );
+
+  it('processes emergency, warning, watch, advisory, statement, then oldest sent first', async () => {
+    const order: string[] = [];
+    const { deps } = makeDeps(clientReturning(mixedFeed), {
+      apply: async (alert) => {
+        order.push(alert.sourceId);
+        return { action: 'created', alert };
+      },
+    });
+    await pollOnce(deps);
+    expect(order).toEqual([
+      'urn:oid:emerg',
+      'urn:oid:warn1',
+      'urn:oid:warn2',
+      'urn:oid:watch',
+      'urn:oid:adv',
+      'urn:oid:stmt',
+    ]);
+  });
+
+  it('stops when under the budget, leaves the rest unseen, and finishes them next poll', async () => {
+    const entries: Record<string, unknown>[] = [];
+    const client = clientReturning(mixedFeed);
+    let remaining = 60_000;
+    const { deps, seen } = makeDeps(client, {
+      // Each applied alert "uses" 20 s of the Lambda's time.
+      onApplied: () => {
+        remaining -= 20_000;
+      },
+      remainingMs: () => remaining,
+      log: (e) => entries.push(e),
+    });
+    const first = await pollOnce(deps);
+    // 60 s, 40 s, 20 s are all >= 15 s; at 0 s the poll stops.
+    expect(first.applied).toBe(3);
+    expect([...seen.ids].sort()).toEqual(['urn:oid:emerg', 'urn:oid:warn1', 'urn:oid:warn2']);
+    expect(client.commits).toBe(0);
+    expect(entries.find((e) => e.event === 'poll.deadline_reached')).toMatchObject({ deferred: 3 });
+
+    remaining = MIN_FEATURE_BUDGET_MS + 60_000;
+    const second = await pollOnce(deps);
+    expect(second.applied).toBe(3);
+    expect(second.skippedSeen).toBe(3);
+    expect(seen.ids.size).toBe(6);
+    expect(client.commits).toBe(1);
+  });
+});
+
+describe('pollOnce quarantine', () => {
+  const one = feedOf({ id: 'urn:oid:bad', event: 'Flood Warning' });
+
+  it(`quarantines after ${QUARANTINE_AFTER} identical save failures: seen, error log, counted`, async () => {
+    const entries: Record<string, unknown>[] = [];
+    const client = clientReturning(one);
+    const { deps, seen } = makeDeps(client, {
+      apply: async () => {
+        throw new Error('column "foo" does not exist');
+      },
+      log: (e) => entries.push(e),
+    });
+    for (let i = 1; i < QUARANTINE_AFTER; i++) {
+      const c = await pollOnce(deps);
+      expect(c.errors).toBe(1);
+      expect(c.quarantined).toBe(0);
+      expect(seen.ids.size).toBe(0);
+    }
+    const last = await pollOnce(deps);
+    expect(last.quarantined).toBe(1);
+    expect(last.errors).toBe(0);
+    expect(seen.ids.has('urn:oid:bad')).toBe(true);
+    expect(entries.find((e) => e.event === 'ingest.quarantined')).toMatchObject({
+      level: 'error',
+      sourceId: 'urn:oid:bad',
+    });
+    expect(client.commits).toBe(1); // nothing left to retry, so the ETag may advance
+  });
+
+  it('a different error, a success, or a transient error resets or skips the count', async () => {
+    let mode: 'a' | 'b' | 'timeout' | 'ok' = 'a';
+    const { deps, seen } = makeDeps(clientReturning(one), {
+      apply: async (alert) => {
+        if (mode === 'a') throw new Error('error A');
+        if (mode === 'b') throw new Error('error B');
+        if (mode === 'timeout') throw new Error('Request timed out');
+        return { action: 'created', alert };
+      },
+    });
+    for (let i = 0; i < QUARANTINE_AFTER - 1; i++) await pollOnce(deps);
+    mode = 'b'; // different message: count restarts at 1
+    for (let i = 0; i < QUARANTINE_AFTER - 1; i++) {
+      expect((await pollOnce(deps)).quarantined).toBe(0);
+    }
+    mode = 'timeout'; // transient errors never count
+    for (let i = 0; i < QUARANTINE_AFTER + 2; i++) {
+      expect((await pollOnce(deps)).quarantined).toBe(0);
+    }
+    expect(seen.ids.size).toBe(0);
+    mode = 'ok';
+    expect((await pollOnce(deps)).applied).toBe(1);
+  });
+
+  it('failures in delivery planning (onApplied) never quarantine', async () => {
+    const { deps, seen } = makeDeps(clientReturning(one), {
+      onApplied: () => {
+        throw new Error('sqs down');
+      },
+    });
+    for (let i = 0; i < QUARANTINE_AFTER + 2; i++) {
+      expect((await pollOnce(deps)).quarantined).toBe(0);
+    }
     expect(seen.ids.size).toBe(0);
   });
 });

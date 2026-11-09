@@ -8,6 +8,7 @@ import { MemoryPlaceStore } from '../../src/adapters/memory/place-store.js';
 import { SigningAlertStore } from '../../src/adapters/signing-alert-store.js';
 import { noopLogger } from '../../src/delivery/index.js';
 import { createIngestPipeline } from '../../src/ingest/pipeline.js';
+import { DeliveryPausedError } from '../../src/ingest/poll.js';
 import { verifyAlertSignature } from '../../src/signing/index.js';
 import type { PlaceStore } from '../../src/ports.js';
 
@@ -22,7 +23,11 @@ const ring = (id: string, secret: string) => ({
 });
 
 /** Run the first fixture feature through the engine's normalize + cellsFor + apply. */
-async function applyFirst(places: PlaceStore, log = vi.fn()) {
+async function applyFirst(
+  places: PlaceStore,
+  log = vi.fn(),
+  extra: { fetch?: typeof fetch; isDeliveryPaused?: () => Promise<boolean> } = {},
+) {
   const store = new InMemoryAlertStore();
   const engine = createIngestPipeline({
     alertStore: store,
@@ -31,8 +36,8 @@ async function applyFirst(places: PlaceStore, log = vi.fn()) {
     queue: new MemoryDeliveryQueue(),
     alertKeys: ring('a1', 'alert-secret'),
     tokenKeys: ring('t1', 'token-secret'),
-    isDeliveryPaused: async () => false,
-    fetch: (async () => new Response('{}', { status: 404 })) as typeof fetch,
+    isDeliveryPaused: extra.isDeliveryPaused ?? (async () => false),
+    fetch: extra.fetch ?? ((async () => new Response('{}', { status: 404 })) as typeof fetch),
     userAgent: 'relay-test',
     clock: { now: () => new Date('2026-11-09T15:00:00Z') },
     logger: { ...noopLogger, error: log },
@@ -92,6 +97,35 @@ describe('createIngestPipeline', () => {
       'delivery planning failed',
       expect.objectContaining({ error: expect.stringContaining('db down') as string }),
     );
+  });
+
+  it('throws DeliveryPausedError (and logs no error) when delivery is paused', async () => {
+    const log = vi.fn();
+    const { engine, result } = await applyFirst(new MemoryPlaceStore(), log, {
+      isDeliveryPaused: async () => true,
+    });
+    await expect(engine.onApplied?.(result)).rejects.toBeInstanceOf(DeliveryPausedError);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('passes the zone timeout signal through to fetch', async () => {
+    const signals: Array<AbortSignal | null | undefined> = [];
+    const fetchSpy = (async (_url: string, init?: RequestInit) => {
+      signals.push(init?.signal);
+      return new Response('{}', { status: 404 });
+    }) as unknown as typeof fetch;
+    const { engine } = await applyFirst(new MemoryPlaceStore(), vi.fn(), { fetch: fetchSpy });
+    // No geometry, so cellsFor must look the zone up over the (fake) network.
+    const area = {
+      description: '',
+      geometry: null,
+      ugcCodes: ['CAC085'],
+      sameCodes: [],
+      h3Cells: [],
+    };
+    await engine.cellsFor(area).catch(() => undefined); // a 404 zone means no cells; ignore
+    expect(signals.length).toBeGreaterThan(0);
+    expect(signals.every((s) => s instanceof AbortSignal)).toBe(true);
   });
 
   it('does not plan delivery for ignored results', async () => {

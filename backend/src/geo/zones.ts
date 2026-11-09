@@ -7,12 +7,14 @@ export interface ZoneGeometryProvider {
 
 type FetchFn = (
   url: string,
-  init?: { headers?: Record<string, string> },
+  init?: { headers?: Record<string, string>; signal?: AbortSignal },
 ) => Promise<{
   ok: boolean;
   status: number;
   json(): Promise<unknown>;
 }>;
+
+const ZONE_TIMEOUT_MS = 5000;
 
 /**
  * Fetches zone geometry from api.weather.gov, caching results (including "not found")
@@ -54,6 +56,8 @@ export class NwsZoneProvider implements ZoneGeometryProvider {
   private async fetchZone(type: string, ugc: string) {
     const res = await this.fetchFn(`${this.baseUrl}/zones/${type}/${ugc}`, {
       headers: { Accept: 'application/geo+json', 'User-Agent': 'relay-capstone (SJSU)' },
+      // A timeout rejects like any network error, so it is retryable and never cached.
+      signal: AbortSignal.timeout(ZONE_TIMEOUT_MS),
     });
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(`NWS zone lookup failed for ${ugc}: HTTP ${res.status}`);

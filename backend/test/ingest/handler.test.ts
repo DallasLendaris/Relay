@@ -13,6 +13,7 @@ const counts = (over: Partial<PollCounts>): PollCounts => ({
   skippedSeen: 0,
   applied: 0,
   errors: 0,
+  quarantined: 0,
   fetchFailed: 0,
   ...over,
 });
@@ -24,7 +25,7 @@ describe('buildEmf', () => {
     const emf = buildEmf(
       [
         counts({ accepted: 2, applied: 1, errors: 1 }),
-        counts({ accepted: 1, rejected: 3, errors: 2, fetchFailed: 1 }),
+        counts({ accepted: 1, rejected: 3, errors: 2, fetchFailed: 1, quarantined: 2 }),
       ],
       new Date('2026-11-09T10:00:00Z'),
     );
@@ -41,6 +42,7 @@ describe('buildEmf', () => {
               { Name: 'Applied', Unit: 'Count' },
               { Name: 'Errors', Unit: 'Count' },
               { Name: 'FetchFailed', Unit: 'Count' },
+              { Name: 'Quarantined', Unit: 'Count' },
             ],
           },
         ],
@@ -50,6 +52,7 @@ describe('buildEmf', () => {
       Applied: 1,
       Errors: 3,
       FetchFailed: 1,
+      Quarantined: 2,
     });
   });
 
