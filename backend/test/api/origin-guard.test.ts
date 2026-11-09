@@ -43,13 +43,14 @@ function handlerWith(loadSecret: () => Promise<string>, now?: () => number) {
 describe('origin verification (REQUIRE_ORIGIN_HEADER)', () => {
   it('refuses a request without the header, with a wrong value, or with an empty one (403)', async () => {
     const h = handlerWith(async () => SECRET);
-    for (const headers of [
+    const cases: Array<Record<string, string>> = [
       {},
       { [ORIGIN_VERIFY_HEADER]: 'wrong' },
       { [ORIGIN_VERIFY_HEADER]: '' },
       { [ORIGIN_VERIFY_HEADER]: SECRET + 'x' },
       { [ORIGIN_VERIFY_HEADER]: SECRET.slice(0, -1) },
-    ]) {
+    ];
+    for (const headers of cases) {
       const res = await h(event(headers));
       expect(res.statusCode).toBe(403);
       expect(JSON.parse(res.body)).toEqual({ code: 'forbidden', message: 'Forbidden' });

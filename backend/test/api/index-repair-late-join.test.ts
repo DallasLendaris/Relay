@@ -1,3 +1,4 @@
+import type { SQSEvent } from 'aws-lambda';
 import { randomUUID } from 'node:crypto';
 import type { Alert } from '@relay/shared';
 import { cellToChildren, cellToParent } from 'h3-js';
@@ -214,12 +215,14 @@ describe('index repair outbox', () => {
 });
 
 describe('repair Lambda', () => {
-  const event = (...msgs: unknown[]) => ({
-    Records: msgs.map((m, i) => ({
-      messageId: `m${i}`,
-      body: typeof m === 'string' ? m : JSON.stringify(m),
-    })),
-  });
+  // Only the fields the repair Lambda reads; cast to the full SQS event type.
+  const event = (...msgs: unknown[]) =>
+    ({
+      Records: msgs.map((m, i) => ({
+        messageId: `m${i}`,
+        body: typeof m === 'string' ? m : JSON.stringify(m),
+      })),
+    }) as unknown as SQSEvent;
   let deviceId: string;
   let placeId: string;
   beforeEach(async () => {
