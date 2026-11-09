@@ -8,72 +8,71 @@ import type {
   PlaceStore,
 } from '../ports.js';
 import { createCheckInToken, type TokenKey } from '../tokens/index.js';
+import { refusalFor, type Refusal } from './eligibility.js';
 import type { Logger } from './types.js';
 
 export interface PlanDeps {
   places: PlaceStore;
   devices: DeviceStore;
-  idempotency: IdempotencyStore;
+  /** Ignored. Dedupe now happens in the worker at send time. Remove from callers. */
+  idempotency?: IdempotencyStore;
   queue: DeliveryQueue;
   tokenKey: TokenKey;
-  /** AE-09 hook: true only if the alert's signature is valid. */
+  /** True only if the alert's signature is valid. */
   verifyAlert(alert: Alert): boolean;
-  /** Kill switch. When true, nothing is sent. */
+  /** Kill switch. When true, nothing is planned. */
   isDeliveryPaused(): Promise<boolean>;
   clock: Clock;
   logger: Logger;
 }
 
 export interface PlanResult {
-  refused?: 'unsigned' | 'paused';
-  /** Alert was cancelled/expired, so nothing was planned. */
-  skipped?: 'inactive';
+  refused?: Refusal | 'paused';
+  /** Jobs put on the queue. */
   sent: number;
   matchedPlaces: number;
   devices: number;
   enqueued: number;
   skippedNoToken: number;
-  skippedDuplicate: number;
 }
 
 const CELL_CHUNK = 1000;
 const QUEUE_BATCH = 10;
 const DEVICE_CONCURRENCY = 50;
 
-const empty = (): PlanResult => ({
-  sent: 0,
-  matchedPlaces: 0,
-  devices: 0,
-  enqueued: 0,
-  skippedNoToken: 0,
-  skippedDuplicate: 0,
-});
-
-/** Decide who to notify for an alert and put one DeliveryJob per device on the queue. */
+/**
+ * Decide who to notify for an alert and put one DeliveryJob per device on the queue.
+ * Planning claims nothing, so it is safe to run again for the same alert (after a failed
+ * enqueue or a timeout). The worker dedupes at send time.
+ */
 export async function planDelivery(alert: Alert, deps: PlanDeps): Promise<PlanResult> {
-  const result = empty();
+  const result: PlanResult = {
+    sent: 0,
+    matchedPlaces: 0,
+    devices: 0,
+    enqueued: 0,
+    skippedNoToken: 0,
+  };
 
-  if (!deps.verifyAlert(alert)) {
-    deps.logger.error('refusing unsigned alert', { alertId: alert.id });
-    return { ...result, refused: 'unsigned' };
+  const refusal = refusalFor(alert, deps.clock.now(), deps.verifyAlert);
+  if (refusal) {
+    deps.logger.error('refusing to plan alert', { alertId: alert.id, reason: refusal });
+    return { ...result, refused: refusal };
   }
   if (await deps.isDeliveryPaused()) {
     deps.logger.warn('delivery paused', { alertId: alert.id });
     return { ...result, refused: 'paused' };
   }
-  // TODO: cancelled alerts should send a "cancelled" notification to people who were notified.
-  if (alert.state === 'cancelled' || alert.state === 'expired') {
-    return { ...result, skipped: 'inactive' };
-  }
 
   // Match places to the alert's cells, in chunks so queries stay a sane size.
+  // Only ids come back, so a big match cannot exceed the Data API response limit.
   const placeIds = new Set<string>();
   const deviceIds = new Set<string>();
   const cells = alert.area.h3Cells;
   for (let i = 0; i < cells.length; i += CELL_CHUNK) {
-    for (const place of await deps.places.listForCells(cells.slice(i, i + CELL_CHUNK))) {
-      placeIds.add(place.id);
-      deviceIds.add(place.deviceId);
+    for (const m of await deps.places.listMatchesForCells(cells.slice(i, i + CELL_CHUNK))) {
+      placeIds.add(m.placeId);
+      deviceIds.add(m.deviceId);
     }
   }
   result.matchedPlaces = placeIds.size;
@@ -88,12 +87,6 @@ export async function planDelivery(alert: Alert, deps: PlanDeps): Promise<PlanRe
     for (const device of found) {
       if (!device?.expoPushToken) {
         result.skippedNoToken++;
-        continue;
-      }
-      // Same message replayed -> same key -> no second push. An update has a new sourceId.
-      const claimed = await deps.idempotency.claim(`${alert.sourceId}:${device.id}`, expires);
-      if (!claimed) {
-        result.skippedDuplicate++;
         continue;
       }
       jobs.push({
@@ -111,11 +104,13 @@ export async function planDelivery(alert: Alert, deps: PlanDeps): Promise<PlanRe
     }
   }
 
+  // If this throws partway, the caller may simply plan again: the worker drops duplicates.
   for (let i = 0; i < jobs.length; i += QUEUE_BATCH) {
-    await deps.queue.enqueue(jobs.slice(i, i + QUEUE_BATCH));
+    const batch = jobs.slice(i, i + QUEUE_BATCH);
+    await deps.queue.enqueue(batch);
+    result.enqueued += batch.length;
   }
-  result.enqueued = jobs.length;
-  result.sent = jobs.length;
+  result.sent = result.enqueued;
   deps.logger.info('delivery planned', { alertId: alert.id, ...result });
   return result;
 }

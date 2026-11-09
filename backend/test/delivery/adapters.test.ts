@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { SQSClient, SendMessageBatchCommand } from '@aws-sdk/client-sqs';
 import { ConditionalCheckFailedException, DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DeleteCommand, DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { SqsDeliveryQueue } from '../../src/adapters/aws/sqs-delivery-queue.js';
 import { DynamoIdempotencyStore } from '../../src/adapters/aws/dynamo-idempotency-store.js';
 import { ExpoPushSender } from '../../src/adapters/expo/expo-push-sender.js';
@@ -85,6 +85,19 @@ describe('DynamoIdempotencyStore', () => {
     expect(await store.claim('k', new Date())).toBe(false);
     mock.on(PutCommand).rejects(new Error('boom'));
     await expect(store.claim('k', new Date())).rejects.toThrow('boom');
+  });
+});
+
+describe('DynamoIdempotencyStore.release', () => {
+  it('deletes the key', async () => {
+    const d = DynamoDBDocumentClient.from(new DynamoDBClient({ region: 'us-west-2' }));
+    const mock = mockClient(d);
+    mock.on(DeleteCommand).resolves({});
+    await new DynamoIdempotencyStore(d, 'tbl').release('k');
+    expect(mock.commandCalls(DeleteCommand)[0]?.args[0].input).toEqual({
+      TableName: 'tbl',
+      Key: { pk: 'k' },
+    });
   });
 });
 
@@ -185,6 +198,42 @@ describe('ExpoPushSender', () => {
       { ok: false, error: 'HttpError500' },
       { ok: false, error: 'HttpError500' },
     ]);
+  });
+
+  it('treats bad JSON or a wrong shape as a retryable failure, not a throw', async () => {
+    for (const body of ['<html>oops</html>', '{"data":"nope"}', 'null']) {
+      const fetchFn = (async () => new Response(body)) as unknown as typeof fetch;
+      const res = await new ExpoPushSender({ fetch: fetchFn }).send([msg(0), msg(1)]);
+      expect(res).toEqual([
+        { ok: false, error: 'BadResponse' },
+        { ok: false, error: 'BadResponse' },
+      ]);
+    }
+  });
+
+  it('sends a bearer token only when an access token is given', async () => {
+    const seen: Array<string | undefined> = [];
+    const fetchFn = (async (_u: string, init: RequestInit) => {
+      seen.push((init.headers as Record<string, string>)['authorization']);
+      return ok(1);
+    }) as unknown as typeof fetch;
+    await new ExpoPushSender({ fetch: fetchFn, accessToken: 'tok' }).send([msg(0)]);
+    await new ExpoPushSender({ fetch: fetchFn }).send([msg(0)]);
+    expect(seen).toEqual(['Bearer tok', undefined]);
+  });
+
+  it('returns per-message results when a later chunk fails, keeping earlier ones', async () => {
+    let calls = 0;
+    const fetchFn = (async () => {
+      calls++;
+      return calls === 1 ? ok(100) : new Response('', { status: 400 });
+    }) as unknown as typeof fetch;
+    const res = await new ExpoPushSender({ fetch: fetchFn }).send(
+      Array.from({ length: 150 }, (_, i) => msg(i)),
+    );
+    expect(res).toHaveLength(150);
+    expect(res.slice(0, 100).every((r) => r.ok)).toBe(true);
+    expect(res.slice(100).every((r) => !r.ok)).toBe(true);
   });
 
   it('does not retry a 400', async () => {

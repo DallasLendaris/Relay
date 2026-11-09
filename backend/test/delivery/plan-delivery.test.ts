@@ -1,10 +1,20 @@
 import { describe, expect, it } from 'vitest';
+import type { Alert } from '@relay/shared';
 import { gridDisk, latLngToCell } from 'h3-js';
 import { planDelivery, type PlanDeps } from '../../src/delivery/index.js';
 import { MemoryDeliveryQueue } from '../../src/adapters/memory/delivery-queue.js';
 import { MemoryIdempotencyStore } from '../../src/adapters/memory/idempotency-store.js';
 import { verifyCheckInToken } from '../../src/tokens/index.js';
-import { FakeDevices, FakePlaces, SJ, device, makeAlert, place } from './fakes.js';
+import {
+  FakeDevices,
+  FakePlaces,
+  SJ,
+  device,
+  place,
+  signed,
+  tampered,
+  verifyAlert,
+} from './fakes.js';
 
 const tokenKey = { id: 'k1', secret: 'secret' };
 const clock = { now: () => new Date('2026-11-10T10:05:00Z') };
@@ -20,7 +30,7 @@ function setup(over: Partial<PlanDeps> = {}) {
     queue,
     idempotency: new MemoryIdempotencyStore(clock),
     tokenKey,
-    verifyAlert: () => true,
+    verifyAlert,
     isDeliveryPaused: async () => false,
     clock,
     logger,
@@ -39,7 +49,7 @@ describe('planDelivery', () => {
     await devices.create(device('out'));
     await places.add(place('p1', 'in', SJ.lat, SJ.lng));
     await places.add(place('p2', 'out', FAR.lat, FAR.lng));
-    const r = await planDelivery(makeAlert(), deps);
+    const r = await planDelivery(signed(), deps);
     expect(r).toMatchObject({ matchedPlaces: 1, devices: 1, enqueued: 1 });
     expect(queue.jobs.map((j) => j.deviceId)).toEqual(['in']);
   });
@@ -49,7 +59,7 @@ describe('planDelivery', () => {
     await devices.create(device('d1'));
     await places.add(place('home', 'd1', SJ.lat, SJ.lng));
     await places.add(place('work', 'd1', SJ.lat + 0.01, SJ.lng + 0.01));
-    const r = await planDelivery(makeAlert(), deps);
+    const r = await planDelivery(signed(), deps);
     expect(r.matchedPlaces).toBe(2);
     expect(r.devices).toBe(1);
     expect(queue.jobs).toHaveLength(1);
@@ -59,41 +69,51 @@ describe('planDelivery', () => {
     const { places, devices, queue, deps } = setup();
     await devices.create(device('d1', null));
     await places.add(place('p', 'd1', SJ.lat, SJ.lng));
-    const r = await planDelivery(makeAlert(), deps);
+    const r = await planDelivery(signed(), deps);
     expect(r).toMatchObject({ skippedNoToken: 1, enqueued: 0 });
     expect(queue.jobs).toHaveLength(0);
   });
 
-  it('does not notify twice for a replay, but does for an update', async () => {
+  it('claims nothing, so planning the same alert twice is harmless', async () => {
     const { places, devices, queue, deps } = setup();
     await devices.create(device('d1'));
     await places.add(place('p', 'd1', SJ.lat, SJ.lng));
-    await planDelivery(makeAlert(), deps);
-    const replay = await planDelivery(makeAlert(), deps);
-    expect(replay).toMatchObject({ enqueued: 0, skippedDuplicate: 1 });
-    expect(queue.jobs).toHaveLength(1);
-    const update = await planDelivery(
-      makeAlert({ sourceId: 'urn:oid:2', messageType: 'Update' }),
+    const alert = signed();
+    expect((await planDelivery(alert, deps)).enqueued).toBe(1);
+    expect((await planDelivery(alert, deps)).enqueued).toBe(1);
+    expect(queue.jobs).toHaveLength(2); // the worker drops the duplicate at send time
+  });
+
+  it('refuses a bad signature, a wrong status, inactive states and expiry', async () => {
+    const { places, devices, queue, deps } = setup();
+    await devices.create(device('d1'));
+    await places.add(place('p', 'd1', SJ.lat, SJ.lng));
+    const good = signed();
+    const cases: Array<[string, Alert, string]> = [
+      ['tampered row', tampered(good, { event: 'Evil' }), 'unsigned'],
+      ['unsigned', { ...good, signature: null }, 'unsigned'],
+      ['test status', signed({ status: 'Test' }), 'not_actual'],
+      ['cancelled', signed({ state: 'cancelled' }), 'inactive'],
+      ['expired state', signed({ state: 'expired' }), 'inactive'],
+      ['past expiry', signed({ expires: '2026-11-10T10:00:00Z' }), 'expired'],
+    ];
+    for (const [name, alert, reason] of cases) {
+      const r = await planDelivery(alert, deps);
+      expect(r.refused, name).toBe(reason);
+      expect(r.enqueued, name).toBe(0);
+    }
+    // `ends` later than `expires` keeps the alert alive.
+    const r = await planDelivery(
+      signed({ expires: '2026-11-10T10:00:00Z', ends: '2026-11-10T12:00:00Z' }),
       deps,
     );
-    expect(update.enqueued).toBe(1);
-    expect(queue.jobs).toHaveLength(2);
+    expect(r.enqueued).toBe(1);
+    expect(queue.jobs).toHaveLength(1);
   });
 
-  it('refuses unsigned alerts and paused delivery', async () => {
-    const a = setup({ verifyAlert: () => false });
-    expect(await planDelivery(makeAlert(), a.deps)).toMatchObject({ sent: 0, refused: 'unsigned' });
-    const b = setup({ isDeliveryPaused: async () => true });
-    expect(await planDelivery(makeAlert(), b.deps)).toMatchObject({ sent: 0, refused: 'paused' });
-    expect(a.queue.jobs.length + b.queue.jobs.length).toBe(0);
-  });
-
-  it('skips cancelled and expired alerts', async () => {
-    const { places, devices, queue, deps } = setup();
-    await devices.create(device('d1'));
-    await places.add(place('p', 'd1', SJ.lat, SJ.lng));
-    expect((await planDelivery(makeAlert({ state: 'cancelled' }), deps)).skipped).toBe('inactive');
-    expect((await planDelivery(makeAlert({ state: 'expired' }), deps)).skipped).toBe('inactive');
+  it('refuses while the kill switch is paused', async () => {
+    const { queue, deps } = setup({ isDeliveryPaused: async () => true });
+    expect(await planDelivery(signed(), deps)).toMatchObject({ sent: 0, refused: 'paused' });
     expect(queue.jobs).toHaveLength(0);
   });
 
@@ -101,7 +121,7 @@ describe('planDelivery', () => {
     const { places, devices, queue, deps } = setup();
     await devices.create(device('d1'));
     await places.add(place('p', 'd1', SJ.lat, SJ.lng));
-    const alert = makeAlert();
+    const alert = signed();
     await planDelivery(alert, deps);
     const job = queue.jobs[0];
     if (!job) throw new Error('no job');
@@ -124,7 +144,7 @@ describe('planDelivery', () => {
       await devices.create(device(`d${i}`));
       await places.add(place(`p${i}`, `d${i}`, SJ.lat, SJ.lng));
     }
-    await planDelivery(makeAlert({}, cells), deps);
+    await planDelivery(signed({}, cells), deps);
     expect(places.queries).toEqual([1000, 1000, cells.length - 2000]);
     expect(queue.batchSizes).toEqual([10, 10, 5]);
   });
@@ -142,7 +162,7 @@ describe('planDelivery', () => {
     // ~4,900 cells, covers the whole county.
     const cells = gridDisk(latLngToCell(37.25, -121.7, 7), 40);
     const t0 = performance.now();
-    const r = await planDelivery(makeAlert({}, cells), deps);
+    const r = await planDelivery(signed({}, cells), deps);
     const ms = performance.now() - t0;
     expect(ms).toBeLessThan(5000);
     expect(r.matchedPlaces).toBeGreaterThan(90_000);

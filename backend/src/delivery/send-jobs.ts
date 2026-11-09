@@ -10,11 +10,27 @@ const SEVERITY_WORD: Record<Alert['relaySeverity'], string> = {
   statement: 'Statement',
 };
 
+const SEVERITY_WORD_ES: Record<Alert['relaySeverity'], string> = {
+  emergency: 'Emergencia',
+  warning: 'Aviso',
+  watch: 'Vigilancia',
+  advisory: 'Advertencia',
+  statement: 'Declaración',
+};
+
 export function buildMessage(job: DeliveryJob, alert: Alert): PushMessage {
-  const body = alert.official.headline?.trim() || alert.official.description.trim().slice(0, 140);
+  // Spanish uses the Relay summary. Without one we fall back to the official English text.
+  const spanish =
+    job.language === 'es'
+      ? alert.summaries.find((s) => s.language === 'es' && s.text.trim())
+      : undefined;
+  const body = spanish
+    ? spanish.text.trim()
+    : alert.official.headline?.trim() || alert.official.description.trim().slice(0, 140);
+  const word = spanish ? SEVERITY_WORD_ES : SEVERITY_WORD;
   return {
     to: job.expoPushToken,
-    title: `${SEVERITY_WORD[alert.relaySeverity]}: ${alert.event}`,
+    title: `${word[alert.relaySeverity]}: ${alert.event}`,
     body,
     data: {
       alertId: job.alertId,

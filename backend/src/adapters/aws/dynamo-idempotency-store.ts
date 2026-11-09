@@ -1,5 +1,5 @@
 import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb';
-import { PutCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { DeleteCommand, PutCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import type { IdempotencyStore } from '../../ports.js';
 
 /**
@@ -29,8 +29,7 @@ export class DynamoIdempotencyStore implements IdempotencyStore {
     }
   }
 
-  async release(_key: string): Promise<void> {
-    // TODO(wave 4): implemented by the Postgres follow-up; the stub keeps the port contract compiling.
-    throw new Error('not implemented yet');
+  async release(key: string): Promise<void> {
+    await this.doc.send(new DeleteCommand({ TableName: this.tableName, Key: { pk: key } }));
   }
 }

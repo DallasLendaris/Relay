@@ -18,23 +18,38 @@ export interface ExpoPushSenderOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Base for exponential backoff. */
   backoffMs?: number;
+  /** Optional Expo access token, sent as `Authorization: Bearer`. */
+  accessToken?: string;
 }
 
 export class ExpoPushSender implements PushSender {
   private readonly fetchFn: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly backoffMs: number;
+  private readonly accessToken: string | undefined;
 
   constructor(opts: ExpoPushSenderOptions = {}) {
     this.fetchFn = opts.fetch ?? fetch;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.backoffMs = opts.backoffMs ?? 500;
+    this.accessToken = opts.accessToken;
   }
 
+  /**
+   * Always returns one result per message. A chunk that fails marks only its own messages
+   * as failed, so earlier chunks are not re-sent and the caller retries just the failures.
+   */
   async send(messages: PushMessage[]): Promise<Result[]> {
     const results: Result[] = [];
     for (let i = 0; i < messages.length; i += CHUNK) {
-      results.push(...(await this.sendChunk(messages.slice(i, i + CHUNK))));
+      const chunk = messages.slice(i, i + CHUNK);
+      try {
+        results.push(...(await this.sendChunk(chunk)));
+      } catch (err) {
+        results.push(
+          ...chunk.map((): Result => ({ ok: false, error: `SendError: ${String(err)}` })),
+        );
+      }
     }
     return results;
   }
@@ -52,6 +67,11 @@ export class ExpoPushSender implements PushSender {
         channelId: 'alerts',
       })),
     );
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      accept: 'application/json',
+    };
+    if (this.accessToken) headers['authorization'] = `Bearer ${this.accessToken}`;
     const failAll = (error: string): Result[] => chunk.map(() => ({ ok: false, error }));
 
     for (let attempt = 0; ; attempt++) {
@@ -59,7 +79,7 @@ export class ExpoPushSender implements PushSender {
       try {
         res = await this.fetchFn(EXPO_URL, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', accept: 'application/json' },
+          headers,
           body,
         });
       } catch (err) {
@@ -79,11 +99,18 @@ export class ExpoPushSender implements PushSender {
       }
       if (!res.ok) return failAll(`HttpError${res.status}`); // 4xx: retrying won't help
 
-      const json = (await res.json()) as { data?: Ticket[] };
-      const tickets = json.data ?? [];
+      // Bad JSON or the wrong shape is a retryable failure, never a throw.
+      let tickets: Ticket[];
+      try {
+        const json = (await res.json()) as { data?: unknown } | null;
+        if (!json || !Array.isArray(json.data)) return failAll('BadResponse');
+        tickets = json.data as Ticket[];
+      } catch {
+        return failAll('BadResponse');
+      }
       return chunk.map((_, i): Result => {
         const t = tickets[i];
-        if (!t) return { ok: false, error: 'MissingTicket' };
+        if (!t || typeof t !== 'object') return { ok: false, error: 'MissingTicket' };
         if (t.status === 'ok') return { ok: true };
         return { ok: false, error: t.details?.error ?? t.message ?? 'UnknownError' };
       });

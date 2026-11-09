@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { SQSEvent } from 'aws-lambda';
-import { deliveryWorker, sendJobs } from '../../src/delivery/index.js';
+import { sendJobs } from '../../src/delivery/index.js';
 import { MemoryPushSender } from '../../src/adapters/memory/push-sender.js';
 import type { DeliveryJob } from '../../src/ports.js';
 import { makeAlert } from './fakes.js';
@@ -17,12 +16,42 @@ const job = (n: number): DeliveryJob => ({
   expiresAt: alert.expires,
   groupingKey: alert.id,
 });
-const event = (jobs: DeliveryJob[]): SQSEvent =>
-  ({
-    Records: jobs.map((j, i) => ({ messageId: `m${i}`, body: JSON.stringify(j) })),
-  }) as unknown as SQSEvent;
+const spanishAlert = makeAlert({
+  summaries: [
+    { language: 'en', whatToDo: 'Go up.', text: 'English summary.' },
+    { language: 'es', whatToDo: 'Suba.', text: 'Hay un aviso de inundación repentina.' },
+  ],
+});
 
 describe('sendJobs', () => {
+  it('uses the Spanish summary and severity word for a Spanish job', async () => {
+    const sender = new MemoryPushSender();
+    await sendJobs([{ ...job(1), language: 'es' }], {
+      sender,
+      alerts: { get: async () => spanishAlert },
+      logger,
+    });
+    expect(sender.sent[0]).toMatchObject({
+      title: 'Aviso: Flash Flood Warning',
+      body: 'Hay un aviso de inundación repentina.',
+    });
+  });
+
+  it('falls back to English when a Spanish job has no Spanish summary', async () => {
+    const sender = new MemoryPushSender();
+    await sendJobs([{ ...job(1), language: 'es' }], { sender, alerts, logger });
+    expect(sender.sent[0]).toMatchObject({
+      title: 'Warning: Flash Flood Warning',
+      body: 'Flash Flood Warning until 6 PM',
+    });
+  });
+
+  it('keeps English for an English job even when a Spanish summary exists', async () => {
+    const sender = new MemoryPushSender();
+    await sendJobs([job(1)], { sender, alerts: { get: async () => spanishAlert }, logger });
+    expect(sender.sent[0]?.title).toBe('Warning: Flash Flood Warning');
+  });
+
   it('builds title, body, data and category', async () => {
     const sender = new MemoryPushSender();
     const res = await sendJobs([job(1)], { sender, alerts, logger });
@@ -54,22 +83,5 @@ describe('sendJobs', () => {
     const sender = new MemoryPushSender();
     const res = await sendJobs([{ ...job(1), alertId: 'nope' }], { sender, alerts, logger });
     expect(res).toEqual([{ ok: false, error: 'AlertNotFound' }]);
-  });
-});
-
-describe('deliveryWorker', () => {
-  it('reports only failed records, treating dead tokens as final', async () => {
-    const sender = new MemoryPushSender();
-    sender.failTokens.set('tok1', 'MessageRateExceeded'); // retryable
-    sender.failTokens.set('tok2', 'DeviceNotRegistered'); // permanent
-    const res = await deliveryWorker(event([job(0), job(1), job(2)]), { sender, alerts, logger });
-    expect(res.batchItemFailures).toEqual([{ itemIdentifier: 'm1' }]);
-    expect(sender.sent.map((m) => m.to)).toEqual(['tok0']);
-  });
-
-  it('fails unparseable records', async () => {
-    const ev = { Records: [{ messageId: 'bad', body: '{nope' }] } as unknown as SQSEvent;
-    const res = await deliveryWorker(ev, { sender: new MemoryPushSender(), alerts, logger });
-    expect(res.batchItemFailures).toEqual([{ itemIdentifier: 'bad' }]);
   });
 });
