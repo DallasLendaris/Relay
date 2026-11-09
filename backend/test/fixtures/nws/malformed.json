@@ -19,16 +19,10 @@
         "@type": "wx:Alert",
         "areaDesc": "Santa Clara County",
         "geocode": {
-          "SAME": [
-            "006085"
-          ],
-          "UGC": [
-            "CAZ513"
-          ]
+          "SAME": ["006085"],
+          "UGC": ["CAZ513"]
         },
-        "affectedZones": [
-          "https://api.weather.gov/zones/forecast/CAZ513"
-        ],
+        "affectedZones": ["https://api.weather.gov/zones/forecast/CAZ513"],
         "references": [],
         "sent": "2026-11-09T06:10:00-08:00",
         "effective": "2026-11-09T06:10:00-08:00",
@@ -49,12 +43,8 @@
         "instruction": "Turn around, don't drown when encountering flooded roads.",
         "response": "Prepare",
         "parameters": {
-          "AWIPSidentifier": [
-            "FLSMTR"
-          ],
-          "WMOidentifier": [
-            "WGUS66 KMTR 091410"
-          ]
+          "AWIPSidentifier": ["FLSMTR"],
+          "WMOidentifier": ["WGUS66 KMTR 091410"]
         }
       }
     },
@@ -68,16 +58,10 @@
         "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.m2.001.1",
         "areaDesc": "Santa Clara County",
         "geocode": {
-          "SAME": [
-            "006085"
-          ],
-          "UGC": [
-            "CAZ513"
-          ]
+          "SAME": ["006085"],
+          "UGC": ["CAZ513"]
         },
-        "affectedZones": [
-          "https://api.weather.gov/zones/forecast/CAZ513"
-        ],
+        "affectedZones": ["https://api.weather.gov/zones/forecast/CAZ513"],
         "references": [],
         "sent": "2026-11-09T06:10:00-08:00",
         "effective": "2026-11-09T06:10:00-08:00",
@@ -97,12 +81,8 @@
         "instruction": "Turn around, don't drown when encountering flooded roads.",
         "response": "Prepare",
         "parameters": {
-          "AWIPSidentifier": [
-            "FLSMTR"
-          ],
-          "WMOidentifier": [
-            "WGUS66 KMTR 091410"
-          ]
+          "AWIPSidentifier": ["FLSMTR"],
+          "WMOidentifier": ["WGUS66 KMTR 091410"]
         }
       }
     },
@@ -116,16 +96,10 @@
         "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.m3.001.1",
         "areaDesc": "Santa Clara County",
         "geocode": {
-          "SAME": [
-            "006085"
-          ],
-          "UGC": [
-            "CAZ513"
-          ]
+          "SAME": ["006085"],
+          "UGC": ["CAZ513"]
         },
-        "affectedZones": [
-          "https://api.weather.gov/zones/forecast/CAZ513"
-        ],
+        "affectedZones": ["https://api.weather.gov/zones/forecast/CAZ513"],
         "references": [],
         "sent": "2026-13-45T99:99:00-08:00",
         "effective": "2026-11-09T06:10:00-08:00",
@@ -146,12 +120,8 @@
         "instruction": "Turn around, don't drown when encountering flooded roads.",
         "response": "Prepare",
         "parameters": {
-          "AWIPSidentifier": [
-            "FLSMTR"
-          ],
-          "WMOidentifier": [
-            "WGUS66 KMTR 091410"
-          ]
+          "AWIPSidentifier": ["FLSMTR"],
+          "WMOidentifier": ["WGUS66 KMTR 091410"]
         }
       }
     },
@@ -165,16 +135,10 @@
         "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.m4.001.1",
         "areaDesc": "Santa Clara County",
         "geocode": {
-          "SAME": [
-            "006085"
-          ],
-          "UGC": [
-            "CAZ513"
-          ]
+          "SAME": ["006085"],
+          "UGC": ["CAZ513"]
         },
-        "affectedZones": [
-          "https://api.weather.gov/zones/forecast/CAZ513"
-        ],
+        "affectedZones": ["https://api.weather.gov/zones/forecast/CAZ513"],
         "references": [],
         "sent": "2026-11-09T06:10:00-08:00",
         "effective": "2026-11-09T06:10:00-08:00",
@@ -195,12 +159,8 @@
         "instruction": "Turn around, don't drown when encountering flooded roads.",
         "response": "Prepare",
         "parameters": {
-          "AWIPSidentifier": [
-            "FLSMTR"
-          ],
-          "WMOidentifier": [
-            "WGUS66 KMTR 091410"
-          ]
+          "AWIPSidentifier": ["FLSMTR"],
+          "WMOidentifier": ["WGUS66 KMTR 091410"]
         }
       }
     }

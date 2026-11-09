@@ -9,12 +9,20 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1164.0",
+    "@aws-sdk/client-s3": "^3.1164.0",
+    "@aws-sdk/lib-dynamodb": "^3.1164.0",
     "@relay/shared": "^0.1.0",
+    "@turf/boolean-point-in-polygon": "^7.4.0",
     "h3-js": "^4.5.0"
   },
   "devDependencies": {
+    "@apidevtools/swagger-parser": "^13.1.0",
     "@turf/turf": "^7.4.0",
     "@types/geojson": "^7946.0.16",
-    "@types/node": "^26.6.6"
+    "@types/node": "^26.6.6",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "aws-sdk-client-mock": "^4.1.0"
   }
 }

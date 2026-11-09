@@ -19,42 +19,15 @@
         "type": "Polygon",
         "coordinates": [
           [
-            [
-              -122.2,
-              37.15
-            ],
-            [
-              -121.55,
-              37.15
-            ],
-            [
-              -121.25,
-              37.25
-            ],
-            [
-              -121.2,
-              37.45
-            ],
-            [
-              -121.55,
-              37.5
-            ],
-            [
-              -121.9,
-              37.55
-            ],
-            [
-              -122.2,
-              37.5
-            ],
-            [
-              -122.25,
-              37.3
-            ],
-            [
-              -122.2,
-              37.15
-            ]
+            [-122.2, 37.15],
+            [-121.55, 37.15],
+            [-121.25, 37.25],
+            [-121.2, 37.45],
+            [-121.55, 37.5],
+            [-121.9, 37.55],
+            [-122.2, 37.5],
+            [-122.25, 37.3],
+            [-122.2, 37.15]
           ]
         ]
       },
@@ -64,16 +37,10 @@
         "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.f01a3.001.1",
         "areaDesc": "Santa Clara County",
         "geocode": {
-          "SAME": [
-            "006085"
-          ],
-          "UGC": [
-            "CAZ513"
-          ]
+          "SAME": ["006085"],
+          "UGC": ["CAZ513"]
         },
-        "affectedZones": [
-          "https://api.weather.gov/zones/forecast/CAZ513"
-        ],
+        "affectedZones": ["https://api.weather.gov/zones/forecast/CAZ513"],
         "references": [],
         "sent": "2026-11-09T06:10:00-08:00",
         "effective": "2026-11-09T06:10:00-08:00",
@@ -94,12 +61,8 @@
         "instruction": "Turn around, don't drown when encountering flooded roads.",
         "response": "Prepare",
         "parameters": {
-          "AWIPSidentifier": [
-            "FLSMTR"
-          ],
-          "WMOidentifier": [
-            "WGUS66 KMTR 091410"
-          ]
+          "AWIPSidentifier": ["FLSMTR"],
+          "WMOidentifier": ["WGUS66 KMTR 091410"]
         }
       }
     },
@@ -110,42 +73,15 @@
         "type": "Polygon",
         "coordinates": [
           [
-            [
-              -122.2,
-              37.15
-            ],
-            [
-              -121.55,
-              37.15
-            ],
-            [
-              -121.25,
-              37.25
-            ],
-            [
-              -121.2,
-              37.45
-            ],
-            [
-              -121.55,
-              37.5
-            ],
-            [
-              -121.9,
-              37.55
-            ],
-            [
-              -122.2,
-              37.5
-            ],
-            [
-              -122.25,
-              37.3
-            ],
-            [
-              -122.2,
-              37.15
-            ]
+            [-122.2, 37.15],
+            [-121.55, 37.15],
+            [-121.25, 37.25],
+            [-121.2, 37.45],
+            [-121.55, 37.5],
+            [-121.9, 37.55],
+            [-122.2, 37.5],
+            [-122.25, 37.3],
+            [-122.2, 37.15]
           ]
         ]
       },
@@ -155,16 +91,10 @@
         "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.f02a3.001.1",
         "areaDesc": "Santa Clara County",
         "geocode": {
-          "SAME": [
-            "006085"
-          ],
-          "UGC": [
-            "CAZ513"
-          ]
+          "SAME": ["006085"],
+          "UGC": ["CAZ513"]
         },
-        "affectedZones": [
-          "https://api.weather.gov/zones/forecast/CAZ513"
-        ],
+        "affectedZones": ["https://api.weather.gov/zones/forecast/CAZ513"],
         "references": [],
         "sent": "2026-11-09T06:10:00-08:00",
         "effective": "2026-11-09T06:10:00-08:00",
@@ -185,12 +115,8 @@
         "instruction": "Turn around, don't drown when encountering flooded roads.",
         "response": "Prepare",
         "parameters": {
-          "AWIPSidentifier": [
-            "FLSMTR"
-          ],
-          "WMOidentifier": [
-            "WGUS66 KMTR 091410"
-          ]
+          "AWIPSidentifier": ["FLSMTR"],
+          "WMOidentifier": ["WGUS66 KMTR 091410"]
         }
       }
     },
@@ -201,42 +127,15 @@
         "type": "Polygon",
         "coordinates": [
           [
-            [
-              -122.2,
-              37.15
-            ],
-            [
-              -121.55,
-              37.15
-            ],
-            [
-              -121.25,
-              37.25
-            ],
-            [
-              -121.2,
-              37.45
-            ],
-            [
-              -121.55,
-              37.5
-            ],
-            [
-              -121.9,
-              37.55
-            ],
-            [
-              -122.2,
-              37.5
-            ],
-            [
-              -122.25,
-              37.3
-            ],
-            [
-              -122.2,
-              37.15
-            ]
+            [-122.2, 37.15],
+            [-121.55, 37.15],
+            [-121.25, 37.25],
+            [-121.2, 37.45],
+            [-121.55, 37.5],
+            [-121.9, 37.55],
+            [-122.2, 37.5],
+            [-122.25, 37.3],
+            [-122.2, 37.15]
           ]
         ]
       },
@@ -246,16 +145,10 @@
         "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.f03a3.001.1",
         "areaDesc": "Santa Clara County",
         "geocode": {
-          "SAME": [
-            "006085"
-          ],
-          "UGC": [
-            "CAZ513"
-          ]
+          "SAME": ["006085"],
+          "UGC": ["CAZ513"]
         },
-        "affectedZones": [
-          "https://api.weather.gov/zones/forecast/CAZ513"
-        ],
+        "affectedZones": ["https://api.weather.gov/zones/forecast/CAZ513"],
         "references": [],
         "sent": "2026-11-09T06:10:00-08:00",
         "effective": "2026-11-09T06:10:00-08:00",
@@ -276,12 +169,8 @@
         "instruction": "Turn around, don't drown when encountering flooded roads.",
         "response": "Prepare",
         "parameters": {
-          "AWIPSidentifier": [
-            "FLSMTR"
-          ],
-          "WMOidentifier": [
-            "WGUS66 KMTR 091410"
-          ]
+          "AWIPSidentifier": ["FLSMTR"],
+          "WMOidentifier": ["WGUS66 KMTR 091410"]
         }
       }
     }
