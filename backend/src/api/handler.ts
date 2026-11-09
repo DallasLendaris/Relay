@@ -21,6 +21,11 @@ export type StoreDeps = Pick<
 > & {
   /** Called per request; the keyring loader caches, so key rotation is picked up within minutes. */
   loadTokenKeys: () => Promise<Map<string, string>>;
+  /** Device credential keyring (verify keys plus the current key used to issue credentials). */
+  loadDeviceCredentialKeys?: () => Promise<{
+    current: { id: string; secret: string };
+    all: Map<string, string>;
+  }>;
 };
 export type StoreFactory = () => StoreDeps | Promise<StoreDeps>;
 
@@ -45,10 +50,21 @@ export function createHandler(buildStores: StoreFactory): (event: ApiEvent) => P
     let result: ApiResult;
     try {
       stores ??= await buildStores();
-      const { loadTokenKeys, ...rest } = stores;
+      const { loadTokenKeys, loadDeviceCredentialKeys, ...rest } = stores;
+      // Both keyring loaders cache, so this is no Secrets Manager call per request.
+      const [tokenKeys, credentialKeys] = await Promise.all([
+        loadTokenKeys(),
+        loadDeviceCredentialKeys?.(),
+      ]);
       const route = createApi({
         ...rest,
-        tokenKeys: await loadTokenKeys(),
+        tokenKeys,
+        ...(credentialKeys
+          ? {
+              deviceCredentialKeys: credentialKeys.all,
+              deviceCredentialKey: credentialKeys.current,
+            }
+          : {}),
         clock: { now: () => new Date() },
         newId: randomUUID,
       });
@@ -93,13 +109,21 @@ export const awsStores: StoreFactory = () => {
     'DB_NAME',
     'PLACE_INDEX_NAME',
     'CHECKINS_TABLE',
-    'CHECKIN_TOTALS_TABLE',
     'TOKEN_KEYS_SECRET_ARN',
+    'DEVICE_CREDENTIAL_KEYS_SECRET_ARN',
     'CELL_INDEX_TABLE',
   ] as const;
   const missing = names.filter((n) => !env[n]);
-  const [cluster, secret, dbName, index, checkinsTable, totalsTable, keysArn, cellIndexTable] =
-    names.map((n) => env[n]);
+  const [
+    cluster,
+    secret,
+    dbName,
+    index,
+    checkinsTable,
+    keysArn,
+    credentialKeysArn,
+    cellIndexTable,
+  ] = names.map((n) => env[n]);
   if (
     missing.length > 0 ||
     !cluster ||
@@ -107,8 +131,8 @@ export const awsStores: StoreFactory = () => {
     !dbName ||
     !index ||
     !checkinsTable ||
-    !totalsTable ||
     !keysArn ||
+    !credentialKeysArn ||
     !cellIndexTable
   ) {
     throw new MisconfiguredError(`Missing environment variables: ${missing.join(', ')}`);
@@ -122,13 +146,13 @@ export const awsStores: StoreFactory = () => {
     checkins: new DynamoCheckInStore(
       DynamoDBDocumentClient.from(new DynamoDBClient({})),
       checkinsTable,
-      totalsTable,
     ),
     cellIndex: new DynamoCellIndex(
       DynamoDBDocumentClient.from(new DynamoDBClient({})),
       cellIndexTable,
     ),
     loadTokenKeys: async () => (await loadKeyring(keysArn)).all,
+    loadDeviceCredentialKeys: () => loadKeyring(credentialKeysArn),
   };
 };
 

@@ -431,7 +431,7 @@ describe('check-in token expiry', () => {
     const keys = new Map([[key.id, key.secret]]);
     const check = (iso: string) =>
       verifyCheckInToken(token, { alertId: alert.id, deviceId: 'd0', now: new Date(iso) }, keys);
-    expect(check('2026-11-10T15:00:00Z')).toEqual({ ok: true }); // past expires, before ends
+    expect(check('2026-11-10T15:00:00Z')).toEqual({ ok: true, h3Cell: null }); // past expires, before ends
     expect(check('2026-11-10T16:05:00Z')).toEqual({ ok: false, reason: 'expired' });
   });
 });
