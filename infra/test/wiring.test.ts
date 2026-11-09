@@ -736,6 +736,7 @@ describe('fan-out and sender env contracts', () => {
 
   checkEnvContract('planner', envOfHandler(fanout, 'plannerHandler'), [
     ...envNamesRead('scale/fanout/handlers.ts', { lists: ['PLANNER_ENV'] }),
+    ...envNamesRead('scale/fanout/fleet-scaler.ts', { lists: ['SCALER_ENV'] }),
     'SHARD_FUNCTION_NAME',
   ]);
   checkEnvContract(
@@ -747,6 +748,11 @@ describe('fan-out and sender env contracts', () => {
     'redrive',
     envOfHandler(fanout, 'redriveHandler'),
     envNamesRead('scale/fanout/redrive.ts'),
+  );
+  checkEnvContract(
+    'send redrive',
+    envOfHandler(fanout, 'sendRedriveHandler'),
+    envNamesRead('scale/fanout/send-redrive.ts'),
   );
   checkEnvContract(
     'sender container',

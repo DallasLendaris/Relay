@@ -85,3 +85,23 @@ The planner hands each shard job to the shard Lambda with an async invoke (50 at
     aws lambda invoke --function-name <RedriveFunctionName output> --payload '{"max":1000}' --cli-binary-format raw-in-base64-out out.json
 
 Each DLQ message is re-invoked asynchronously on the shard function and deleted only after that succeeds. Replaying is safe: batch keys are deterministic and the sender claims them. Messages that are not shard jobs are left in the DLQ.
+
+**Shard size:** a shard job is at most 16 cells (one res-4 parent split into sorted parts of 16), and the shard function has 2048 MB. A shard that is running out of time (under 10 s left) sends the rest of its cells to a new invoke of itself and returns; nothing is skipped or repeated. Planner and shard retry an alert whose signature fails (a key rotation not yet loaded) instead of dropping it, and log `fanout.signature_failed`.
+
+**Runbook: urgent or standard send DLQ not empty** (`UrgentDlqAlarm` / `StandardDlqAlarm`). Send batches only reach the DLQ after 100 receives. Fix the cause (sender down, secrets, kill switch), then move them back with SQS's own redrive:
+
+    aws lambda invoke --function-name <SendRedriveFunctionName output> --payload '{"queue":"urgent"}' --cli-binary-format raw-in-base64-out out.json
+
+(`"standard"`, or leave `queue` out for both.) The sender claims each batch key, so replaying a batch that was in fact sent is harmless.
+
+## Sender stack (statewide scale)
+
+The sender fleet (Fargate, 1 vCPU / 2 GB tasks) is **off until you enable it**, because the APNs and FCM secrets are created with placeholder values and a sender that boots with them crash-loops. First deploy, in this order:
+
+1. `npx cdk deploy ... -c stage=<stage>`: everything is created; the sender service has desiredCount 0 and no auto scaling.
+2. Put the real values in `relay/<stage>/apns-key` and `relay/<stage>/fcm-service-account` (`aws secretsmanager put-secret-value`).
+3. `npx cdk deploy ... -c stage=<stage> -c senderEnabled=true`: the fleet starts. Prod keeps at least 10 tasks (override with `-c senderMinTasks=<n>`) and scales to 100 on queue depth (1-minute periods, aggressive steps) and urgent queue age; it scales in only after 15 idle minutes. Dev scales from 0 to 10.
+
+The planner pre-scales the fleet on an urgent alert (ECS `UpdateService`, scoped to the sender service, never lowering the count; failures are logged and never block fan-out), because queue-metric scaling alone takes 3-5 minutes. It derives the service from the stage (`relay-<stage>-sender`), and the planner reads the same `senderEnabled` flag, so a disabled fleet is never pre-scaled.
+
+**Quota:** the Fargate On-Demand vCPU quota defaults to 6 vCPUs per Region. It must be raised to at least 100 tasks x 1 vCPU = 100 vCPUs (more with headroom) before enabling prod, or the fleet cannot grow past 6 tasks. See `docs/scale-quotas.md` (ECS Fargate section).

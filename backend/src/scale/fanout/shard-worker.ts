@@ -1,14 +1,10 @@
 import { alertEndTime } from '../../delivery/eligibility.js';
-import {
-  CELL_BUCKETS,
-  type CellIndex,
-  type SendBatch,
-  type SendQueue,
-  type ShardJob,
-} from '../contracts.js';
+import { CELL_BUCKETS, type CellIndex, type SendBatch, type SendQueue } from '../contracts.js';
 import { checkEligibility, type EligibilityDeps, type FanoutRefusal } from './common.js';
 import { bucketFor } from './hash.js';
+import type { ResumableShardJob } from './messages.js';
 import { MAX_MESSAGE_BYTES } from './pack.js';
+import type { ShardDispatcher } from './queues.js';
 
 export interface ShardWorkerDeps extends EligibilityDeps {
   cellIndex: Pick<CellIndex, 'listForCell'>;
@@ -21,6 +17,15 @@ export interface ShardWorkerDeps extends EligibilityDeps {
   pageSize?: number;
   /** Batches held before they are handed to the send queue. Default 200. */
   flushBatches?: number;
+  /**
+   * Milliseconds left before the Lambda is killed. With `continuation` set, the worker stops
+   * taking new cells when this drops under `continueUnderMs` and hands the rest to a new job.
+   */
+  remainingMs?: () => number;
+  /** Where the continuation ShardJob goes (the shard Lambda itself). */
+  continuation?: ShardDispatcher;
+  /** Default 10,000. */
+  continueUnderMs?: number;
 }
 
 export interface ShardResult {
@@ -35,7 +40,11 @@ export interface ShardResult {
   /** Recipients across all batches. */
   recipients: number;
   batches: number;
+  /** Set when time ran short: the `startAt` of the continuation job that was dispatched. */
+  continuedAt?: number;
 }
+
+const CONTINUE_UNDER_MS = 10_000;
 
 const CELL_CONCURRENCY = 16;
 const PAGE_SIZE = 1_000;
@@ -66,7 +75,10 @@ const emptyResult = (cells: number): ShardResult => ({
  * pushes carry the same collapseKey (the alert id), so the phone app must collapse
  * notifications by collapseKey and treat a second check-in token for the same alert as a duplicate.
  */
-export async function processShard(job: ShardJob, deps: ShardWorkerDeps): Promise<ShardResult> {
+export async function processShard(
+  job: ResumableShardJob,
+  deps: ShardWorkerDeps,
+): Promise<ShardResult> {
   const outcome = await checkEligibility(job, deps, 'shard');
   if (!outcome.ok) return { ...emptyResult(job.cells.length), refused: outcome.refused };
   const { alert, queue } = outcome;
@@ -143,10 +155,19 @@ export async function processShard(job: ShardJob, deps: ShardWorkerDeps): Promis
     await flush(false);
   };
 
-  // A small pool: `concurrency` workers pull the next cell until none are left.
-  let next = 0;
+  // A small pool: `concurrency` workers pull the next cell, in order, until none are left or
+  // time runs short. Cells before `startAt` were done by an earlier run of this job.
+  const startAt = Math.min(Math.max(job.startAt ?? 0, 0), job.cells.length);
+  const continueUnder = deps.continueUnderMs ?? CONTINUE_UNDER_MS;
+  const canContinue = deps.remainingMs !== undefined && deps.continuation !== undefined;
+  let next = startAt;
+  let outOfTime = false;
   const worker = async (): Promise<void> => {
     while (next < job.cells.length && !failed) {
+      if (canContinue && (deps.remainingMs?.() ?? Infinity) < continueUnder) {
+        outOfTime = true;
+        return;
+      }
       const cell = job.cells[next++];
       if (cell === undefined) continue;
       try {
@@ -159,6 +180,21 @@ export async function processShard(job: ShardJob, deps: ShardWorkerDeps): Promis
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, job.cells.length) }, worker));
   await flush(true);
+
+  // Every cell pulled so far has finished (the pool is joined above), so `next` is exactly the
+  // first cell not yet done: the continuation neither skips nor repeats a cell.
+  if (outOfTime && next < job.cells.length && deps.continuation) {
+    const continuation: ResumableShardJob = { ...job, startAt: next };
+    await deps.continuation.dispatch([continuation]);
+    result.continuedAt = next;
+    deps.logger.warn('fanout.shard_continued', {
+      alertId: alert.id,
+      shardId: job.shardId,
+      startAt,
+      continuedAt: next,
+      cells: job.cells.length,
+    });
+  }
 
   deps.logger.info('shard processed', {
     alertId: alert.id,

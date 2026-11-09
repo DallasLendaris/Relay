@@ -35,24 +35,37 @@ describe('planShards sharding', () => {
     for (const job of a) {
       const parents = new Set(job.cells.map((c) => cellToParent(c, SHARD_RESOLUTION)));
       expect(parents.size).toBe(1);
-      expect(job.shardId).toBe(`${[...parents][0]}:0`);
+      expect(job.shardId).toMatch(new RegExp(`^${[...parents][0]}:\\d+$`));
+      expect(job.cells.length).toBeLessThanOrEqual(MAX_CELLS_PER_SHARD);
       expect([...job.cells]).toEqual([...job.cells].sort());
     }
   });
 
-  it('caps a shard at 2,000 cells and splits by the sorted cell list, with the part in the shardId', () => {
-    // A res-4 cell has only 343 res-7 children, so the cap can only bite on finer cells.
+  it('caps a shard at 16 cells and splits by the sorted cell list, with the part in the shardId', () => {
+    expect(MAX_CELLS_PER_SHARD).toBe(16);
+    // A res-4 cell has 343 res-7 children (22 shards of 16); use finer cells for an odd remainder.
     const parent = cellToParent(COUNTY_CENTER, SHARD_RESOLUTION);
     const cells = cellToChildren(parent, 8); // 2,401 cells
     const jobs = buildShardJobs(makeAlert({}, cells));
-    expect(jobs).toHaveLength(2);
-    expect(jobs.map((j) => j.cells.length)).toEqual([MAX_CELLS_PER_SHARD, 401]);
-    expect(jobs.map((j) => j.shardId)).toEqual([`${parent}:0`, `${parent}:1`]);
+    expect(jobs).toHaveLength(Math.ceil(2401 / MAX_CELLS_PER_SHARD));
+    expect(jobs.every((j) => j.cells.length <= MAX_CELLS_PER_SHARD)).toBe(true);
+    expect(jobs.at(-1)?.cells).toHaveLength(2401 % MAX_CELLS_PER_SHARD);
+    expect(jobs.map((j) => j.shardId.split(':')[1])).toEqual(jobs.map((_, i) => String(i)));
+    // Contiguous chunks of the sorted list: every cell exactly once, none lost.
     const sorted = [...cells].sort();
-    expect(jobs[0]?.cells).toEqual(sorted.slice(0, 2000));
-    expect(jobs[1]?.cells).toEqual(sorted.slice(2000));
+    expect(jobs.flatMap((j) => j.cells)).toEqual(sorted);
+    expect(jobs[1]?.cells).toEqual(sorted.slice(16, 32));
     // Same split a second time, from shuffled input.
     expect(buildShardJobs(makeAlert({}, [...cells].reverse()))).toEqual(jobs);
+  });
+
+  it('splits a full res-7 res-4 parent (343 cells) into 22 shards covering every cell', () => {
+    const parent = cellToParent(COUNTY_CENTER, SHARD_RESOLUTION);
+    const cells = cellToChildren(parent, 7);
+    expect(cells).toHaveLength(343);
+    const jobs = buildShardJobs(makeAlert({}, cells));
+    expect(jobs).toHaveLength(22);
+    expect(jobs.flatMap((j) => j.cells).sort()).toEqual([...cells].sort());
   });
 
   it('enqueues the jobs with the alert identity and stored severity', async () => {
