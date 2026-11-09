@@ -1,15 +1,20 @@
 # @relay/infra
 
-AWS CDK app (TypeScript) for Relay, deployed to us-west-2. The account comes from `CDK_DEFAULT_ACCOUNT`; nothing is hard-coded.
+AWS CDK app (TypeScript) for Relay, deployed to us-west-2. The account comes from `CDK_DEFAULT_ACCOUNT`; nothing is hard-coded. `stage` is `dev` (default) or `prod`; stack names are `relay-<stage>-<name>`.
 
-## What `IngestStack` creates
+## Stacks (one per concern)
 
-- S3 bucket for raw NWS responses: private, SSL-only, S3-managed encryption, moves to Infrequent Access after 30 days. Retained on prod, auto-deleted on dev.
-- DynamoDB table `alerts-state` (pk `sourceId`), on-demand, point-in-time recovery on prod. Dedupe state only; the full alert record goes to Aurora later (ticket S-07).
-- Ingest Lambda (`backend/src/ingest/handler.ts`, Node 22, ARM64, 70 s, 256 MB, reserved concurrency 1) with write access to the bucket and read/write on the table only.
-- EventBridge rule `rate(1 minute)` with no retries (the next run catches up).
-- CloudWatch alarm: Lambda Errors >= 3 in 5 minutes.
-- Everything tagged `project=relay`, `stage=<stage>`.
+Values move between stacks as plain props (ARNs and names) wired in `bin/relay.ts`. IAM grants use explicit ARNs and explicit action lists; no wildcard actions anywhere (a test enforces this).
+
+| Stack      | Creates                                                                                                                                                                                                                                                                                |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `data`     | Aurora Serverless v2 PostgreSQL (Data API, isolated VPC, no NAT) and its generated credentials secret.                                                                                                                                                                                 |
+| `config`   | Secrets Manager: `relay/<stage>/token-keys`, `relay/<stage>/alert-keys` (keyrings), `relay/<stage>/expo-access-token` (placeholder). SSM parameter `/relay/<stage>/delivery-kill-switch` (default `running`).                                                                          |
+| `delivery` | SQS delivery queue (SSE, visibility timeout 180 s) with DLQ (5 receives), CloudWatch alarm when the DLQ has any visible message, DynamoDB idempotency table (`pk`, TTL `ttl`), and the push worker Lambda (30 s, reserved concurrency 10, batch size 10, reports batch item failures). |
+| `ingest`   | Raw S3 bucket, `alerts-state` table (`sourceId`, TTL `expiresAt`), the ingest Lambda (70 s, reserved concurrency 1) on a 1-minute EventBridge rule, errors alarm.                                                                                                                      |
+| `api`      | HTTP API with a Lambda integration for every route in `packages/shared/openapi/relay.yaml` except `/agency/*`, `$default` stage throttled at 50 rps / burst 100, Amazon Location place index `relay-<stage>-places` (Esri, SingleUse). Outputs `ApiUrl`.                               |
+
+Everything is tagged `project=relay`, `stage=<stage>`.
 
 ## Commands
 
@@ -18,8 +23,45 @@ AWS CDK app (TypeScript) for Relay, deployed to us-west-2. The account comes fro
     npm test                       # assertion tests
     npm run typecheck
 
-`stage` is `dev` (default) or `prod`.
+## Deploy dev
 
-## Deploys
+Deploys will run from GitHub Actions using OIDC (ticket S-06). Once the AWS accounts exist and your shell has credentials for the dev account:
 
-Deploys will run from GitHub Actions using OIDC (ticket S-06, not done yet). Never deploy from a laptop with stored access keys.
+    npx cdk bootstrap              # first time only
+    npx cdk deploy --all -c stage=dev
+    npm run seed-keys -- dev       # first deploy only, see "Keys" below
+
+Never deploy from a laptop with stored access keys.
+
+## Run the migrations against Aurora
+
+Migrations are the SQL files in `backend/migrations`, applied in name order by `runMigrations(exec, dir)` in `backend/src/db/sql.ts`. It talks to Aurora through the Data API (`DataApiExecutor`), so no VPC access is needed, and it records applied files in `schema_migrations`, so re-running is safe. Take `ClusterArn`, `SecretArn` and `DatabaseName` from the `data` stack outputs, then call `runMigrations` with a `DataApiExecutor` built from them, from CI or a shell with dev credentials. There is no CLI wrapper for this yet; a ten-line script in `backend/scripts/` would do it. To check what has been applied:
+
+    aws rds-data execute-statement --region us-west-2 \
+      --resource-arn <ClusterArn> --secret-arn <SecretArn> --database relay \
+      --sql "select name from schema_migrations order by name"
+
+Aurora pauses at 0 ACU, so the first call after idle can take about 15 seconds.
+
+## Keys
+
+Check-in token keys and alert signing keys share the keyring shape `{"current":"k1","keys":{"k1":"<base64>"}}`.
+
+CDK's `generateSecretString` can only generate a top-level string, not one nested inside `keys`. So the `config` stack creates each secret with a clearly fake placeholder key, and a small script replaces it. No custom resource is involved.
+
+- First deploy: `npm run seed-keys -- <stage>` replaces the placeholder with 32 random bytes (base64) for `k1`. It skips secrets that are already seeded, so it is safe to re-run. Redeploying the stack does not overwrite seeded values.
+- Rotate: `npm run seed-keys -- <stage> --rotate` adds `k2` (then `k3`, ...) and makes it `current`. New tokens use the new key; old keys remain in `keys`, so tokens already in people's hands still verify. Loaders cache for 5 minutes, so allow about 5 minutes before the new key is used everywhere. When old tokens or alerts have expired (check-in links live for the alert's lifetime), remove the old kid from `keys` with `aws secretsmanager put-secret-value`.
+
+The Expo secret starts as a placeholder string. Put the real raw token in with:
+
+    aws secretsmanager put-secret-value --region us-west-2 \
+      --secret-id relay/<stage>/expo-access-token --secret-string '<token>'
+
+## Kill switch
+
+Stop all push delivery immediately (workers pick it up within about 30 seconds):
+
+    aws ssm put-parameter --region us-west-2 --name /relay/<stage>/delivery-kill-switch \
+      --type String --value paused --overwrite
+
+Resume by writing `running` the same way. Any value other than `paused` means running.

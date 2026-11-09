@@ -9,9 +9,19 @@ import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { BlockPublicAccess, Bucket, BucketEncryption, StorageClass } from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
+import { allow, dbEnv, grantDb, grantSecretRead, type DbRefs } from './grants.js';
 
 export interface IngestStackProps extends StackProps {
   stage: 'dev' | 'prod';
+  db: DbRefs;
+  deliveryQueueArn: string;
+  deliveryQueueUrl: string;
+  idempotencyTableName: string;
+  idempotencyTableArn: string;
+  tokenKeysSecretArn: string;
+  alertKeysSecretArn: string;
+  killSwitchParamName: string;
+  killSwitchParamArn: string;
 }
 
 export class IngestStack extends Stack {
@@ -42,6 +52,8 @@ export class IngestStack extends Stack {
       partitionKey: { name: 'sourceId', type: AttributeType.STRING },
       billingMode: BillingMode.PAY_PER_REQUEST,
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: isProd },
+      // Rows disappear on their own once the alert has expired.
+      timeToLiveAttribute: 'expiresAt',
       removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
     });
 
@@ -67,12 +79,37 @@ export class IngestStack extends Stack {
         NWS_USER_AGENT: 'Relay capstone (contact via GitHub DallasLendaris/Relay)',
         POLL_INTERVAL_SECONDS: '12',
         POLLS_PER_INVOCATION: '5',
+        ...dbEnv(props.db),
+        DELIVERY_QUEUE_URL: props.deliveryQueueUrl,
+        IDEMPOTENCY_TABLE: props.idempotencyTableName,
+        TOKEN_KEYS_SECRET_ARN: props.tokenKeysSecretArn,
+        ALERT_KEYS_SECRET_ARN: props.alertKeysSecretArn,
+        KILL_SWITCH_PARAM: props.killSwitchParamName,
       },
     });
 
     // Least privilege: write-only on the bucket, read/write on the table.
     rawBucket.grantWrite(ingestFn);
     stateTable.grantReadWriteData(ingestFn);
+    grantDb(ingestFn, props.db);
+    allow(ingestFn, ['sqs:SendMessage'], [props.deliveryQueueArn]);
+    // Read/write on the idempotency table (it lives in DeliveryStack, so explicit ARN).
+    allow(
+      ingestFn,
+      [
+        'dynamodb:GetItem',
+        'dynamodb:BatchGetItem',
+        'dynamodb:Query',
+        'dynamodb:PutItem',
+        'dynamodb:UpdateItem',
+        'dynamodb:DeleteItem',
+        'dynamodb:BatchWriteItem',
+      ],
+      [props.idempotencyTableArn],
+    );
+    grantSecretRead(ingestFn, props.tokenKeysSecretArn);
+    grantSecretRead(ingestFn, props.alertKeysSecretArn);
+    allow(ingestFn, ['ssm:GetParameter'], [props.killSwitchParamArn]);
 
     // No retries: the next minute's run catches up on anything missed.
     new Rule(this, 'EveryMinute', {

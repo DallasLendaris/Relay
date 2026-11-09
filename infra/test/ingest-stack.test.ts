@@ -1,12 +1,9 @@
-import { App } from 'aws-cdk-lib';
-import { Match, Template } from 'aws-cdk-lib/assertions';
+import { Match } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
-import { IngestStack } from '../lib/ingest-stack.js';
+import { synthAll } from './helpers.js';
 
 function synth(stage: 'dev' | 'prod') {
-  const app = new App();
-  const stack = new IngestStack(app, `test-${stage}`, { stage, env: { region: 'us-west-2' } });
-  return Template.fromStack(stack);
+  return synthAll(stage).ingest;
 }
 
 describe('IngestStack', () => {
