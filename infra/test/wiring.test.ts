@@ -505,17 +505,18 @@ describe('all stacks', () => {
 });
 
 describe('stack dependency order', () => {
-  // config and data are roots; delivery and fanout need them; api, sender and ingest need fanout
+  // config and data are roots; monitoring needs config; delivery and fanout need them; api, sender and ingest need fanout
   // (and delivery); the edge stack comes last. Equal ranks never depend on each other.
   const RANK: Record<string, number> = {
     config: 0,
     data: 0,
-    delivery: 1,
-    fanout: 1,
-    api: 2,
-    sender: 2,
-    ingest: 2,
-    edge: 3,
+    monitoring: 1, // reads the kill-switch name from config; everything with alarms notifies it
+    delivery: 2,
+    fanout: 2,
+    api: 3,
+    sender: 3,
+    ingest: 3,
+    edge: 4,
   };
 
   for (const stage of ['dev', 'prod'] as const) {

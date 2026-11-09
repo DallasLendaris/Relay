@@ -63,14 +63,57 @@ The Expo secret starts as a placeholder string. Put the real raw token in with:
 
 ## Kill switch
 
-Stop all push delivery immediately (workers pick it up within about 30 seconds):
+The parameter `/relay/<stage>/delivery-kill-switch` stops all push delivery. Any value other than `paused` means running. The planner, shard workers, delivery worker and sender re-read it about every 30 seconds.
+
+**Flip:**
 
     aws ssm put-parameter --region us-west-2 --name /relay/<stage>/delivery-kill-switch \
       --type String --value paused --overwrite
 
-While paused the worker fails every record, so SQS keeps redelivering them (visibility timeout 30 s). The DLQ takes a job only after 100 receives, roughly 50 minutes of pausing. For a longer pause, or if the DLQ alarm fires afterwards, redrive the DLQ back to the delivery queue once you resume.
+**Confirm** (give it about 30 seconds):
 
-Resume by writing `running` the same way. Any value other than `paused` means running.
+- The sender logs `sender.receiving_paused` once when it stops receiving (CloudWatch Logs, the sender log group; filter on that message).
+- The urgent send queue depth (`ApproximateNumberOfMessagesVisible` on the urgent queue) stops falling and starts to grow: nothing is being taken off it.
+
+While paused, nothing is dropped: the sender stops receiving, and shard and delivery workers fail their records so SQS redelivers them (30 s visibility). The shard DLQ and the send DLQs only take a message after many receives (send queues: 100, about 50 minutes), so a long pause can fill them.
+
+**Resume:** write `running`, then replay anything that reached a DLQ while paused:
+
+    aws ssm put-parameter --region us-west-2 --name /relay/<stage>/delivery-kill-switch \
+      --type String --value running --overwrite
+
+1. Shard DLQ: run the shard redrive, see "Runbook: shard DLQ not empty" below.
+2. Send DLQs (urgent, standard): run the send redrive, see "Runbook: urgent or standard send DLQ not empty" below.
+3. The delivery DLQ (legacy worker path): redrive it to the delivery queue from the SQS console.
+
+Every change to this parameter emails the alerts topic (EventBridge rule on `ssm:PutParameter`), so a flip is never silent.
+
+## Monitoring, alerting and audit trail
+
+The `monitoring` stack owns one SNS topic per stage, `relay-<stage>-alerts`. **Every CloudWatch alarm in every stack (except auto scaling's own scale-in/out alarms) notifies this topic on ALARM and on OK**, through a CDK Aspect (`AlarmActionsAspect`), so a new alarm is wired automatically. A test fails if one is missed. The topic emails the address in context `alarmEmail`; AWS sends a confirmation message that must be accepted once. A page to a phone needs that address to be a pager or an SMS-capable email gateway: the topic itself only emails.
+
+    npx cdk deploy --all -c stage=prod -c alarmEmail=oncall@example.com
+
+Prod synth fails without `alarmEmail`, unless `-c allowNoAlarmEmail=true` (alarms then reach nobody).
+
+| Context            | Default              | Meaning                                                                              |
+| ------------------ | -------------------- | ------------------------------------------------------------------------------------ |
+| `alarmEmail`       | none                 | Email subscribed to the alerts topic                                                 |
+| `enableGuardDuty`  | prod true, dev false | Creates the GuardDuty detector (one per region per account: set false if one exists) |
+| `logRetentionDays` | prod 365, dev 30     | Retention of every Lambda, ECS and trail log group                                   |
+| `monthlyBudgetUsd` | prod 600, dev 50     | AWS Budgets limit; emails at 80% and 100% of actual spend                            |
+
+Alarms: DLQs (delivery, plan, shard, urgent, standard, aggregator, index repair), ingest errors, fetch failures and quarantines; sender running tasks below desired for 3 minutes (also the deployment-rollback alarm), `PermanentBreakerOpen`, `GaveUp`, `DeadTargetDropped`, urgent queue age; planner and shard Lambda `Errors`; plan and standard queue age over 120 s; aggregator `IteratorAge` over 60 s; and `delivery.signature_failed` / `fanout.signature_failed` log counts.
+
+**Audit trail.** A multi-region CloudTrail trail with log file validation writes to an encrypted, versioned bucket (kept 1 year, retained when the stack is deleted) and to a log group. EventBridge reports to the topic: writes or deletes of the kill-switch parameter, `PutSecretValue`/`UpdateSecret`/`DeleteSecret` on any `relay/<stage>/` secret, and GuardDuty findings of severity 7 or higher. IAM policy changes are reported by an alarm on the trail's log group (IAM is a global service whose events EventBridge only sees in us-east-1), excluding CloudFormation's own changes.
+
+**Cost.** One AWS Budgets budget per stage. On prod, also a Cost Anomaly Detection monitor per AWS service with an immediate SNS subscription. The budget has no tag filter (it needs the `stage` cost allocation tag activated); if dev and prod share an account, each budget sees the account total.
+
+## Deploying safely
+
+Prod runs the sender fleet by default (`senderEnabled` defaults to true when `stage=prod`), so a deploy that forgets a flag cannot scale delivery to zero. Turning prod's fleet off needs both `-c senderEnabled=false -c iUnderstandSenderStops=true`; with only the first, synth fails. A bad image rolls back: the ECS circuit breaker plus a deployment alarm on running tasks below desired. The first prod deploy needs the explicit off switch once, because the APNs and FCM secrets hold placeholders until you fill them in (see "Sender stack").
+
+Aurora keeps automated backups for 14 days on prod (7 on dev) with tags copied to snapshots. A restore creates a new cluster with a new ARN: point the `data` stack outputs and the Lambda environments at it.
 
 ## Edge hardening, repair outbox and capacity
 
@@ -80,7 +123,7 @@ Resume by writing `running` the same way. Any value other than `paused` means ru
 
 **Cell-index repair.** When the API cannot write a place into the cell index it queues `{op, h3Cell, deviceId, placeId}` to `INDEX_REPAIR_QUEUE_URL`; a repair Lambda re-reads Aurora and redoes the write (idempotent, per-item failures). After 5 failed receives a message goes to the repair DLQ, which has an alarm (`IndexRepairDlqAlarm`). Fix the cause, then redrive the DLQ to the repair queue.
 
-**Capacity context.** `-c auroraMaxAcu=N` (default prod 16, dev 2), `-c checkinsWarmWritesPerSecond=N` (default prod 40,000, dev none; 0 disables), and `-c apiReservedConcurrency=N`, `-c aggregatorReservedConcurrency=N`, `-c repairReservedConcurrency=N` (unset by default so a fresh account deploys). The idempotency table's warm throughput (20,000 writes/s on prod) belongs to the delivery stack and is not set here.
+**Capacity context.** `-c auroraMaxAcu=N` (default prod 16, dev 2), `-c checkinsWarmWritesPerSecond=N` (default prod 40,000, dev none; 0 disables), and `-c apiReservedConcurrency=N`, `-c aggregatorReservedConcurrency=N`, `-c repairReservedConcurrency=N` (unset by default so a fresh account deploys). The idempotency table's warm throughput (20,000 writes/s on prod) is set in the delivery stack.
 
 ## Fan-out stack (statewide scale)
 
@@ -106,11 +149,11 @@ Each DLQ message is re-invoked asynchronously on the shard function and deleted 
 
 ## Sender stack (statewide scale)
 
-The sender fleet (Fargate, 1 vCPU / 2 GB tasks) is **off until you enable it**, because the APNs and FCM secrets are created with placeholder values and a sender that boots with them crash-loops. First deploy, in this order:
+The sender fleet (Fargate, 1 vCPU / 2 GB tasks) runs by default on prod and is off by default on dev. The APNs and FCM secrets are created with placeholder values and a sender that boots with them crash-loops, so the first deploy of a stage keeps the fleet off:
 
-1. `npx cdk deploy ... -c stage=<stage>`: everything is created; the sender service has desiredCount 0 and no auto scaling.
+1. Prod: `npx cdk deploy ... -c stage=prod -c alarmEmail=... -c senderEnabled=false -c iUnderstandSenderStops=true`. Dev: no flag. Everything is created; the sender service has desiredCount 0 and no auto scaling.
 2. Put the real values in `relay/<stage>/apns-key` and `relay/<stage>/fcm-service-account` (`aws secretsmanager put-secret-value`).
-3. `npx cdk deploy ... -c stage=<stage> -c senderEnabled=true`: the fleet starts. Prod keeps at least 10 tasks (override with `-c senderMinTasks=<n>`) and scales to 100 on queue depth (1-minute periods, aggressive steps) and urgent queue age; it scales in only after 15 idle minutes. Dev scales from 0 to 10.
+3. Prod: deploy again with no sender flags. Dev: `-c senderEnabled=true`. The fleet starts. Prod keeps at least 10 tasks (override with `-c senderMinTasks=<n>`) and scales to 100 on queue depth (1-minute periods, aggressive steps) and urgent queue age; it scales in only after 15 idle minutes. Dev scales from 0 to 10.
 
 The planner pre-scales the fleet on an urgent alert (ECS `UpdateService`, scoped to the sender service, never lowering the count; failures are logged and never block fan-out), because queue-metric scaling alone takes 3-5 minutes. It derives the service from the stage (`relay-<stage>-sender`), and the planner reads the same `senderEnabled` flag, so a disabled fleet is never pre-scaled.
 

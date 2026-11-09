@@ -51,8 +51,28 @@ const capacity = Object.fromEntries(
   }),
 );
 
+// Monitoring: -c alarmEmail=... (required on prod unless -c allowNoAlarmEmail=true),
+// -c enableGuardDuty, -c logRetentionDays, -c monthlyBudgetUsd.
+const boolCtx = (name: string): boolean | undefined => {
+  const raw = app.node.tryGetContext(name);
+  return raw === undefined ? undefined : String(raw) === 'true';
+};
+const alarmEmail = app.node.tryGetContext('alarmEmail');
+const enableGuardDuty = boolCtx('enableGuardDuty');
+const allowNoAlarmEmail = boolCtx('allowNoAlarmEmail');
+const logRetentionDays = numberCtx('logRetentionDays');
+const monthlyBudgetUsd = numberCtx('monthlyBudgetUsd');
+const monitoring = {
+  ...(alarmEmail ? { alarmEmail: String(alarmEmail) } : {}),
+  ...(allowNoAlarmEmail !== undefined ? { allowNoAlarmEmail } : {}),
+  ...(enableGuardDuty !== undefined ? { enableGuardDuty } : {}),
+  ...(logRetentionDays !== undefined ? { logRetentionDays } : {}),
+  ...(monthlyBudgetUsd !== undefined ? { monthlyBudgetUsd } : {}),
+};
+
 buildRelayApp(app, {
   capacity,
+  monitoring,
   stage,
   env,
   edgeEnv,

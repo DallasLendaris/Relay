@@ -62,8 +62,29 @@ export const SENDER_SCALE_PER_SHARD = 15_000;
 export const SENDER_RECIPIENTS_PER_TASK_PER_MIN = 9_000;
 /** Context flag shared with the sender stack: the sender fleet only runs once this is "true". */
 export const SENDER_ENABLED_CONTEXT = 'senderEnabled';
-export const isSenderEnabled = (scope: Construct): boolean =>
-  String(scope.node.tryGetContext(SENDER_ENABLED_CONTEXT) ?? 'false') === 'true';
+/** Second flag required to turn the prod fleet off: `-c senderEnabled=false -c iUnderstandSenderStops=true`. */
+export const SENDER_STOPS_ACK_CONTEXT = 'iUnderstandSenderStops';
+/**
+ * Whether the sender fleet runs. Prod defaults to ON, so a deploy that forgets the flag can never
+ * scale the fleet to 0 by accident (the old default killed delivery). Dev defaults to OFF. Turning
+ * prod off must be spelled out with both `-c senderEnabled=false` and `-c iUnderstandSenderStops=true`
+ * (needed once, for the very first prod deploy, before the APNs/FCM secrets hold real values).
+ */
+export const isSenderEnabled = (scope: Construct, stage: string): boolean => {
+  const raw = scope.node.tryGetContext(SENDER_ENABLED_CONTEXT);
+  if (raw === undefined) return stage === 'prod';
+  const on = String(raw) === 'true';
+  if (!on && stage === 'prod') {
+    const ack = String(scope.node.tryGetContext(SENDER_STOPS_ACK_CONTEXT) ?? 'false') === 'true';
+    if (!ack) {
+      throw new Error(
+        `Refusing to deploy prod with the sender fleet off: it would stop all push delivery. ` +
+          `Pass -c ${SENDER_STOPS_ACK_CONTEXT}=true together with -c ${SENDER_ENABLED_CONTEXT}=false if you mean it.`,
+      );
+    }
+  }
+  return on;
+};
 const PLANNER_TIMEOUT_SECONDS = 60;
 const SHARD_MAX_EVENT_AGE = Duration.hours(1);
 const SHARD_RETRY_ATTEMPTS = 2;
@@ -197,7 +218,7 @@ export class FanoutStack extends Stack {
     // A shard that runs short of time hands the rest of its cells to a new invoke of itself.
     allow(shardFn, ['lambda:InvokeFunction'], [shardFunctionArnByName]);
 
-    const senderEnabled = isSenderEnabled(this);
+    const senderEnabled = isSenderEnabled(this, props.stage);
     const senderClusterArn = this.formatArn({
       service: 'ecs',
       resource: 'cluster',

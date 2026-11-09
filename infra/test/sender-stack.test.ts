@@ -141,13 +141,30 @@ describe('SenderStack service', () => {
   });
 });
 
+const STOP = { senderEnabled: 'false', iUnderstandSenderStops: 'true' };
+const prodOff = synth('prod', STOP);
+
 describe('SenderStack gating (placeholder secrets must not crash-loop)', () => {
-  it('without senderEnabled: desiredCount 0 and no auto scaling at all, on dev and prod', () => {
-    for (const t of [dev, prod]) {
-      t.hasResourceProperties('AWS::ECS::Service', { DesiredCount: 0 });
-      t.resourceCountIs('AWS::ApplicationAutoScaling::ScalableTarget', 0);
-      t.resourceCountIs('AWS::ApplicationAutoScaling::ScalingPolicy', 0);
-    }
+  it('dev defaults to off: desiredCount 0 and no auto scaling at all', () => {
+    dev.hasResourceProperties('AWS::ECS::Service', { DesiredCount: 0 });
+    dev.resourceCountIs('AWS::ApplicationAutoScaling::ScalableTarget', 0);
+    dev.resourceCountIs('AWS::ApplicationAutoScaling::ScalingPolicy', 0);
+  });
+
+  it('OPS-4: prod defaults to ON, so a deploy without flags never scales the fleet to 0', () => {
+    const [svc] = Object.values(prod.findResources('AWS::ECS::Service')) as any[];
+    expect(svc.Properties.DesiredCount).toBeUndefined();
+    prod.hasResourceProperties('AWS::ApplicationAutoScaling::ScalableTarget', { MinCapacity: 10 });
+  });
+
+  it('OPS-4: turning prod off needs senderEnabled=false AND iUnderstandSenderStops=true', () => {
+    expect(() => synth('prod', { senderEnabled: 'false' })).toThrow(/iUnderstandSenderStops/);
+    expect(() =>
+      synth('prod', { senderEnabled: 'false', iUnderstandSenderStops: 'false' }),
+    ).toThrow(/Refusing/);
+    prodOff.hasResourceProperties('AWS::ECS::Service', { DesiredCount: 0 });
+    prodOff.resourceCountIs('AWS::ApplicationAutoScaling::ScalableTarget', 0);
+    prodOff.resourceCountIs('AWS::ApplicationAutoScaling::ScalingPolicy', 0);
   });
 
   it('with senderEnabled=true: desiredCount is left to auto scaling', () => {
@@ -155,6 +172,30 @@ describe('SenderStack gating (placeholder secrets must not crash-loop)', () => {
       const [svc] = Object.values(t.findResources('AWS::ECS::Service')) as any[];
       expect(svc.Properties.DesiredCount).toBeUndefined();
       t.resourceCountIs('AWS::ApplicationAutoScaling::ScalableTarget', 1);
+    }
+  });
+
+  it('OPS-4: a bad image rolls back: circuit breaker plus a running-tasks deployment alarm', () => {
+    for (const t of [devOn, prod]) {
+      const [svc] = Object.values(t.findResources('AWS::ECS::Service')) as any[];
+      const cfg = svc.Properties.DeploymentConfiguration;
+      expect(cfg.DeploymentCircuitBreaker).toEqual({ Enable: true, Rollback: true });
+      expect(cfg.Alarms.Enable).toBe(true);
+      expect(cfg.Alarms.Rollback).toBe(true);
+      const alarmLogicalId = Object.keys(
+        t.findResources('AWS::CloudWatch::Alarm', {
+          Properties: { AlarmDescription: Match.stringLikeRegexp('below desired') },
+        }),
+      )[0];
+      expect(alarmLogicalId).toBeDefined();
+      expect(JSON.stringify(cfg.Alarms.AlarmNames)).toContain(alarmLogicalId);
+    }
+  });
+
+  it('a disabled fleet has no deployment alarm to wait on', () => {
+    for (const t of [dev, prodOff]) {
+      const [svc] = Object.values(t.findResources('AWS::ECS::Service')) as any[];
+      expect(svc.Properties.DeploymentConfiguration.Alarms?.Enable ?? false).toBe(false);
     }
   });
 
@@ -293,4 +334,43 @@ describe('SenderStack grants', () => {
 
 it('Aws pseudo parameters can stand in for placeholder ARNs (bin/relay.ts keeps compiling)', () => {
   expect(typeof Aws.ACCOUNT_ID).toBe('string');
+});
+
+describe('SenderStack alarms (OPS-2)', () => {
+  const alarm = (t: Template, re: string) =>
+    Object.values(
+      t.findResources('AWS::CloudWatch::Alarm', {
+        Properties: { AlarmDescription: Match.stringLikeRegexp(re) },
+      }),
+    ) as any[];
+
+  it('running tasks below desired for 3 minutes, from Container Insights', () => {
+    const [a] = alarm(prod, 'below desired');
+    expect(a.Properties.EvaluationPeriods).toBe(3);
+    expect(a.Properties.DatapointsToAlarm).toBe(3);
+    const json = JSON.stringify(a.Properties.Metrics);
+    expect(json).toContain('ECS/ContainerInsights');
+    expect(json).toContain('RunningTaskCount');
+    expect(json).toContain('DesiredTaskCount');
+    expect(json).toContain('relay-prod-sender');
+  });
+
+  it('PermanentBreakerOpen, GaveUp and DeadTargetDropped alarm at >= 1 on Relay/Sender', () => {
+    for (const [id, metric] of [
+      ['PermanentBreakerOpenAlarm', 'PermanentBreakerOpen'],
+      ['GaveUpAlarm', 'GaveUp'],
+      ['DeadTargetDroppedAlarm', 'DeadTargetDropped'],
+    ] as const) {
+      const found = Object.entries(prod.findResources('AWS::CloudWatch::Alarm')).find(([k]) =>
+        k.startsWith(id),
+      );
+      expect(found, id).toBeDefined();
+      const props = (found?.[1] as any).Properties;
+      expect(props.Threshold).toBe(1);
+      expect(props.ComparisonOperator).toBe('GreaterThanOrEqualToThreshold');
+      const json = JSON.stringify(props);
+      expect(json).toContain('Relay/Sender');
+      expect(json).toContain(metric);
+    }
+  });
 });

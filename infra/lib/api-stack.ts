@@ -97,7 +97,7 @@ export class ApiStack extends Stack {
 
     // Cell-index repair outbox: when the API cannot write a device's place into the cell index
     // it queues a message here, and a Lambda redoes the write from Aurora's truth. A message
-    // that keeps failing lands in the DLQ, which pages (a missing index entry is a missed alert).
+    // that keeps failing lands in the DLQ, which alarms to the alerts topic (a missing index entry is a missed alert).
     const repairDlq = new Queue(this, 'IndexRepairDlq', {
       encryption: QueueEncryption.SQS_MANAGED,
       retentionPeriod: Duration.days(14),
