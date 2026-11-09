@@ -48,7 +48,7 @@ describe('late-join Lambda core', () => {
         { alertId: alert.id, deviceId, now: h.time.now },
         keys,
       ),
-    ).toEqual({ ok: true, h3Cell: SJ_CELL });
+    ).toEqual({ ok: true, h3Cell: SJ_CELL, expiresAt: expect.any(Date) });
   });
 
   it('watch and advisory alerts go to the standard queue', async () => {
@@ -156,7 +156,7 @@ describe('the intent is only a hint', () => {
         { alertId: real.id, deviceId, now: h.time.now },
         keys,
       ),
-    ).toEqual({ ok: true, h3Cell: SJ_CELL });
+    ).toEqual({ ok: true, h3Cell: SJ_CELL, expiresAt: expect.any(Date) });
     expect(JSON.stringify(batches)).not.toContain('forged');
   });
 
@@ -276,7 +276,7 @@ describe('multi-place devices: the primary cell', () => {
         { alertId: alert.id, deviceId, now: h.time.now },
         keys,
       ),
-    ).toEqual({ ok: true, h3Cell: LO }); // not HI, though HI was the first place
+    ).toEqual({ ok: true, h3Cell: LO, expiresAt: expect.any(Date) }); // not HI, though HI was the first place
   });
 
   it('an alert over only the non-primary cell still goes out, from that cell', async () => {
@@ -296,7 +296,7 @@ describe('multi-place devices: the primary cell', () => {
         { alertId: alert.id, deviceId, now: h.time.now },
         keys,
       ),
-    ).toEqual({ ok: true, h3Cell: HI });
+    ).toEqual({ ok: true, h3Cell: HI, expiresAt: expect.any(Date) });
   });
 });
 
