@@ -14,6 +14,7 @@ describe('runMigrations', () => {
       '0003_alerts.sql',
       '0004_push_token_unique.sql',
       '0005_alert_cells.sql',
+      '0006_push_targets.sql',
     ]);
     const rows = await exec.query<{ name: string }>(
       'SELECT name FROM schema_migrations ORDER BY name',

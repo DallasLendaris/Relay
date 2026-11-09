@@ -4,6 +4,7 @@ import { awsStores, createHandler } from '../../src/api/handler.js';
 import { MemoryCheckInStore } from '../../src/adapters/memory/checkin-store.js';
 import { MemoryDeviceStore } from '../../src/adapters/memory/device-store.js';
 import { MemoryPlaceStore } from '../../src/adapters/memory/place-store.js';
+import { MemoryCellIndex } from '../../src/scale/cell-index/index.js';
 import type { AlertStore, Geocoder } from '../../src/ports.js';
 
 const LAT = 37.123456;
@@ -23,6 +24,7 @@ const factory = () => ({
   alerts,
   geocoder,
   checkins: new MemoryCheckInStore(),
+  cellIndex: new MemoryCellIndex(),
   loadTokenKeys: async () => new Map<string, string>(),
 });
 

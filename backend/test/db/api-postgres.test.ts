@@ -4,6 +4,7 @@ import { MemoryCheckInStore } from '../../src/adapters/memory/checkin-store.js';
 import { PostgresAlertStore } from '../../src/adapters/postgres/alert-store.js';
 import { PostgresDeviceStore } from '../../src/adapters/postgres/device-store.js';
 import { PostgresPlaceStore } from '../../src/adapters/postgres/place-store.js';
+import { MemoryCellIndex } from '../../src/scale/cell-index/index.js';
 import { createApi, type ApiEvent } from '../../src/api/index.js';
 import { freshDb } from './helpers.js';
 
@@ -17,6 +18,7 @@ beforeEach(async () => {
     alerts: new PostgresAlertStore(db),
     geocoder: { geocode: async () => null },
     checkins: new MemoryCheckInStore(),
+    cellIndex: new MemoryCellIndex(),
     tokenKeys: new Map(),
     clock: { now: () => new Date('2026-11-09T12:00:00Z') },
     newId: randomUUID,

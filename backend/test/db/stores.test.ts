@@ -22,9 +22,14 @@ describe('PostgresDeviceStore', () => {
     const store = new PostgresDeviceStore(db);
     expect(await store.get(DEVICE_ID)).toBeNull();
     await store.create(device());
-    expect(await store.get(DEVICE_ID)).toEqual(device());
+    // A device with only the legacy Expo token also gets the matching native target.
+    expect(await store.get(DEVICE_ID)).toEqual(
+      device({ pushPlatform: 'expo', pushToken: 'ExponentPushToken[abc]' }),
+    );
     await store.update(device({ language: 'es', expoPushToken: null }));
-    expect(await store.get(DEVICE_ID)).toEqual(device({ language: 'es', expoPushToken: null }));
+    expect(await store.get(DEVICE_ID)).toEqual(
+      device({ language: 'es', expoPushToken: null, pushPlatform: null, pushToken: null }),
+    );
   });
 
   it('rejects a duplicate credential hash', async () => {

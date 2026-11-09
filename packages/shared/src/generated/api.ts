@@ -29,7 +29,11 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Store the Expo push token and preferred language for this device. */
+        /**
+         * Store this device's push target and preferred language.
+         * @description Send either the legacy body (expoPushToken) or the native body (platform and token).
+         *     A token held by another device moves to this one.
+         */
         put: operations["setPushToken"];
         post?: never;
         delete?: never;
@@ -191,8 +195,21 @@ export interface components {
             /** @description Secret bearer credential. Store in secure storage; shown only once. */
             credential: string;
         };
-        PushTokenRequest: {
+        PushTokenRequest: components["schemas"]["ExpoPushTokenRequest"] | components["schemas"]["NativePushTokenRequest"];
+        ExpoPushTokenRequest: {
             expoPushToken: string;
+            /** @enum {string} */
+            language: "en" | "es";
+        };
+        NativePushTokenRequest: {
+            /** @enum {string} */
+            platform: "ios" | "android" | "expo";
+            /**
+             * @description ios: APNs device token, 64 to 200 hex characters.
+             *     android: FCM registration token, 100 to 4096 characters of A-Z a-z 0-9 _ : -.
+             *     expo: ExponentPushToken[...].
+             */
+            token: string;
             /** @enum {string} */
             language: "en" | "es";
         };
