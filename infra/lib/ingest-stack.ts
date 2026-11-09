@@ -137,6 +137,17 @@ export class IngestStack extends Stack {
       treatMissingData: TreatMissingData.BREACHING,
     });
 
+    // A quarantined alert is marked seen and never delivered, so a person must look at it.
+    new Alarm(this, 'IngestQuarantinedAlarm', {
+      alarmDescription:
+        'An alert was quarantined (permanent data error) and will not be delivered.',
+      metric: custom('Quarantined'),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: TreatMissingData.NOT_BREACHING,
+    });
+
     new CfnOutput(this, 'RawBucketName', { value: rawBucket.bucketName });
     new CfnOutput(this, 'StateTableName', { value: stateTable.tableName });
 

@@ -87,7 +87,17 @@ describe('IngestStack', () => {
       ComparisonOperator: 'GreaterThanOrEqualToThreshold',
       TreatMissingData: 'breaching',
     });
-    t.resourceCountIs('AWS::CloudWatch::Alarm', 3); // the original Lambda Errors alarm stays
+    t.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      Namespace: 'Relay/Ingest',
+      MetricName: 'Quarantined',
+      Statistic: 'Sum',
+      Threshold: 1,
+      Period: 300,
+      EvaluationPeriods: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+    });
+    t.resourceCountIs('AWS::CloudWatch::Alarm', 4); // the original Lambda Errors alarm stays
   });
 
   it('retains data and enables PITR on prod, destroys on dev', () => {

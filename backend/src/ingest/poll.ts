@@ -62,12 +62,37 @@ export function clearSaveFailures(): void {
   saveFailures.clear();
 }
 
-/** Network and throttling errors get better on their own, so they never count toward quarantine. */
-function isTransient(err: unknown): boolean {
-  const text = `${err instanceof Error ? err.name : ''} ${msg(err)}`;
-  return /time(d )?out|abort|throttl|unavailable|ECONN|ETIMEDOUT|EAI_AGAIN|network|rate exceeded/i.test(
-    text,
-  );
+/**
+ * Thrown by our own code when an alert can never be processed (bad data, failed validation).
+ * This is one of the only things that gets an alert quarantined; see isPermanent.
+ */
+export class PermanentAlertError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PermanentAlertError';
+  }
+}
+
+/**
+ * Postgres SQLSTATE class 22 (data exception) or 23 (integrity violation), found in the Data API
+ * error message ("... SQLState: 23505") or in a code / sqlState property on the error.
+ */
+const DATA_SQLSTATE = /(?:sql\s?state|sqlstate)\W{0,3}(2[23][0-9A-Z]{3})\b/i;
+
+function hasDataSqlState(err: unknown): boolean {
+  if (DATA_SQLSTATE.test(msg(err))) return true;
+  if (typeof err !== 'object' || err === null) return false;
+  const { code, sqlState } = err as { code?: unknown; sqlState?: unknown };
+  return [code, sqlState].some((v) => typeof v === 'string' && /^2[23][0-9A-Z]{3}$/.test(v));
+}
+
+/**
+ * ALLOWLIST: only errors known to be deterministic data problems may quarantine an alert.
+ * Network, auth, throttling, "resuming" and anything unknown are outages: the alert stays
+ * unseen and is retried forever, because dropping a real alert is worse than retrying.
+ */
+function isPermanent(err: unknown): boolean {
+  return err instanceof PermanentAlertError || hasDataSqlState(err);
 }
 
 const SEVERITY_RANK = { emergency: 0, warning: 1, watch: 2, advisory: 3, statement: 4 } as const;
@@ -229,8 +254,8 @@ async function pollInto(deps: PollDeps, counts: PollCounts): Promise<boolean> {
         await markQuietly(deps, alert, counts, log);
         continue;
       }
-      if (stage === 'save' && !isTransient(err)) {
-        // Same non-transient error for the same alert, poll after poll: it will never save.
+      if (stage !== 'deliver' && isPermanent(err)) {
+        // Same permanent data error for the same alert, poll after poll: it will never save.
         const prev = saveFailures.get(alert.sourceId);
         const count = prev && prev.message === msg(err) ? prev.count + 1 : 1;
         saveFailures.set(alert.sourceId, { message: msg(err), count });

@@ -11,6 +11,7 @@ import {
   clearSaveFailures,
   DeliveryPausedError,
   MIN_FEATURE_BUDGET_MS,
+  PermanentAlertError,
   QUARANTINE_AFTER,
   pollLoop,
   pollOnce,
@@ -486,7 +487,7 @@ describe('pollOnce quarantine', () => {
     const client = clientReturning(one);
     const { deps, seen } = makeDeps(client, {
       apply: async () => {
-        throw new Error('column "foo" does not exist');
+        throw new Error('ERROR: invalid input syntax for type integer; SQLState: 22P02');
       },
       log: (e) => entries.push(e),
     });
@@ -507,12 +508,55 @@ describe('pollOnce quarantine', () => {
     expect(client.commits).toBe(1); // nothing left to retry, so the ETag may advance
   });
 
+  it.each([
+    'Aurora DB instance is resuming',
+    'User is not authorized to perform secretsmanager:GetSecretValue',
+    'Communications link failure',
+    'something nobody has seen before',
+  ])('outage error "%s" is never quarantined, even after 10 polls', async (message) => {
+    const { deps, seen } = makeDeps(clientReturning(one), {
+      apply: async () => {
+        throw new Error(message);
+      },
+    });
+    for (let i = 0; i < 10; i++) {
+      const c = await pollOnce(deps);
+      expect(c.quarantined).toBe(0);
+      expect(c.errors).toBe(1);
+    }
+    expect(seen.ids.size).toBe(0);
+  });
+
+  it.each([
+    [
+      '23505',
+      () =>
+        new Error(
+          'ERROR: duplicate key value violates unique constraint "alerts_pkey"; SQLState: 23505',
+        ),
+    ],
+    ['22P02', () => new Error('ERROR: invalid input syntax for type json; SQLState: 22P02')],
+    ['code property', () => Object.assign(new Error('bad'), { code: '23502' })],
+    ['PermanentAlertError', () => new PermanentAlertError('area has no polygon')],
+  ])('%s is quarantined after 5 identical failures', async (_name, make) => {
+    const { deps, seen } = makeDeps(clientReturning(one), {
+      apply: async () => {
+        throw make();
+      },
+    });
+    for (let i = 1; i < QUARANTINE_AFTER; i++) {
+      expect((await pollOnce(deps)).quarantined).toBe(0);
+    }
+    expect((await pollOnce(deps)).quarantined).toBe(1);
+    expect(seen.ids.has('urn:oid:bad')).toBe(true);
+  });
+
   it('a different error, a success, or a transient error resets or skips the count', async () => {
     let mode: 'a' | 'b' | 'timeout' | 'ok' = 'a';
     const { deps, seen } = makeDeps(clientReturning(one), {
       apply: async (alert) => {
-        if (mode === 'a') throw new Error('error A');
-        if (mode === 'b') throw new Error('error B');
+        if (mode === 'a') throw new Error('error A; SQLState: 23505');
+        if (mode === 'b') throw new Error('error B; SQLState: 23505');
         if (mode === 'timeout') throw new Error('Request timed out');
         return { action: 'created', alert };
       },
