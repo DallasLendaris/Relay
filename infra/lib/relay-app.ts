@@ -55,7 +55,7 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
   });
   const db = {
     clusterArn: data.clusterArn,
-    secretArn: data.secretArn,
+    roleSecretArns: data.roleSecretArns,
     databaseName: data.databaseName,
   };
   const killSwitch = {

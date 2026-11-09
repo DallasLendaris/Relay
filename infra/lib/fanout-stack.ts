@@ -179,7 +179,7 @@ export class FanoutStack extends Stack {
       onFailure: new SqsDestination(shardDlq),
       logGroup: logs('ShardLogs'),
       environment: {
-        ...dbEnv(props.db),
+        ...dbEnv(props.db, 'fanout'),
         CELL_INDEX_TABLE: cellIndex.tableName,
         URGENT_QUEUE_URL: urgent.queue.queueUrl,
         STANDARD_QUEUE_URL: standard.queue.queueUrl,
@@ -188,7 +188,7 @@ export class FanoutStack extends Stack {
         KILL_SWITCH_PARAM: props.killSwitchParamName,
       },
     });
-    grantDb(shardFn, props.db);
+    grantDb(shardFn, props.db, 'fanout');
     grantSecretRead(shardFn, props.alertKeysSecretArn);
     grantSecretRead(shardFn, props.tokenKeysSecretArn);
     allow(shardFn, ['ssm:GetParameter'], [props.killSwitchParamArn]);
@@ -218,7 +218,7 @@ export class FanoutStack extends Stack {
       memorySize: 512,
       logGroup: logs('PlannerLogs'),
       environment: {
-        ...dbEnv(props.db),
+        ...dbEnv(props.db, 'fanout'),
         SHARD_FUNCTION_NAME: shardFn.functionName,
         ALERT_KEYS_SECRET_ARN: props.alertKeysSecretArn,
         KILL_SWITCH_PARAM: props.killSwitchParamName,
@@ -235,7 +235,7 @@ export class FanoutStack extends Stack {
     planner.addEventSource(
       new SqsEventSource(plan.queue, { batchSize: 1, reportBatchItemFailures: true }),
     );
-    grantDb(planner, props.db);
+    grantDb(planner, props.db, 'fanout');
     grantSecretRead(planner, props.alertKeysSecretArn);
     allow(planner, ['ssm:GetParameter'], [props.killSwitchParamArn]);
     // Invoke the shard function only (no wildcard, no other functions).

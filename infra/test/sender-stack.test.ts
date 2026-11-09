@@ -1,6 +1,7 @@
 import { App, Aws } from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
+import { DB_ROLES, type DbRefs } from '../lib/grants.js';
 import {
   SENDER_IDLE_MINUTES_BEFORE_SCALE_IN,
   SENDER_MAX_TASKS,
@@ -22,7 +23,12 @@ function synth(stage: 'dev' | 'prod', context: Record<string, string> = {}) {
     stage,
     db: {
       clusterArn: 'arn:aws:rds:us-west-2:111111111111:cluster:db',
-      secretArn: 'arn:aws:secretsmanager:us-west-2:111111111111:secret:db-AbCdEf',
+      roleSecretArns: Object.fromEntries(
+        Object.keys(DB_ROLES).map((r) => [
+          r,
+          `arn:aws:secretsmanager:us-west-2:111111111111:secret:db-${r}-AbCdEf`,
+        ]),
+      ) as DbRefs['roleSecretArns'],
       databaseName: 'relay',
     },
     urgentQueue: queue('send-urgent'),
@@ -267,11 +273,15 @@ describe('SenderStack grants', () => {
       'rds-data:ExecuteStatement',
       'rds-data:RollbackTransaction',
     ]);
-    const secretStatement = statements(dev).find((s) =>
-      actionsOf(s).includes('secretsmanager:GetSecretValue'),
+    const json = JSON.stringify(
+      statements(dev)
+        .filter((s) => actionsOf(s).includes('secretsmanager:GetSecretValue'))
+        .map((s) => resourcesOf(s)),
     );
-    const json = JSON.stringify(resourcesOf(secretStatement));
-    expect(json).toContain('secret:db-AbCdEf');
+    // Its own database role secret only, not the other roles' or the admin one.
+    expect(json).toContain('secret:db-sender-AbCdEf');
+    expect(json).not.toContain('secret:db-api-');
+    expect(json).not.toContain('secret:db-ops-');
     expect(json).toContain('alert-keys');
     expect(json).toContain('ApnsKey');
     expect(json).toContain('FcmServiceAccount');

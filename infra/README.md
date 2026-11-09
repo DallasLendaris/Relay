@@ -47,6 +47,30 @@ Migrations are the SQL files in `backend/migrations`, applied in name order by `
 
 Aurora pauses at 0 ACU (minimum capacity 0, kept on purpose for cost). The first request after an idle period can take about 15 seconds while the cluster resumes; the code is meant to retry the Data API call while the cluster resumes (it reports DatabaseResumingException), so callers should see a slow first request, not an error. Raise `serverlessV2MinCapacity` in `lib/data-stack.ts` if that delay is ever unacceptable.
 
+## Database roles
+
+No Lambda or task uses the Aurora master secret (`relay_admin`). Migration `0011_roles.sql` creates six Postgres roles, and the `data` stack creates one Secrets Manager secret for each (`relay/<stage>/db/<role>`, fixed username, generated password, attached to the cluster). Each compute principal gets `rds-data` on the cluster and `GetSecretValue` on ITS OWN role secret only, and its `DB_SECRET_ARN` points at that secret. The admin secret (the `data` stack's `SecretArn` output) is for the operator running migrations and `scripts/db-roles.ts`; a test fails if any other stack references it.
+
+| Role                  | Used by                                    | Can do                                                                                                                  |
+| --------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `relay_api`           | API Lambda                                 | read/write `devices`, `places`; read alerts; `push_token_moves`, `cell_index_outbox`, `deleted_devices` when they exist |
+| `relay_ingest`        | ingest (queue mode, prod)                  | read/write `alerts`, `alert_source_ids`, `alert_cells`; nothing on devices or places                                    |
+| `relay_ingest_inline` | ingest (inline mode, dev)                  | `relay_ingest` plus read of `devices` and `places` (inline mode plans deliveries in-process)                            |
+| `relay_fanout`        | planner, shard workers                     | read alerts                                                                                                             |
+| `relay_sender`        | sender, legacy delivery worker             | read alerts, `devices`, `places`; update only the three push-target columns of `devices`                                |
+| `relay_ops`           | index repair (and later drainer, backfill) | read `devices`, `places`; `cell_index_outbox`, `deleted_devices` (read) when they exist                                 |
+
+Tables from migrations 0008-0010 (`push_token_moves`, `cell_index_outbox`, `deleted_devices`) are granted by name only if they exist. There are no default privileges: a new table is invisible to every role until it is added to `0011_roles.sql`. Grants are idempotent, and `db-roles.ts` re-applies them, so editing the file and re-running the script is how a new table gets access.
+
+Run order, on first deploy and after any change to the roles:
+
+    npx cdk deploy --all -c stage=dev     # creates the role secrets (roles cannot log in yet)
+    # apply migrations with the admin secret (see "Run the migrations"); 0011 creates the NOLOGIN roles
+    cd infra && npx tsx scripts/db-roles.ts dev \
+      --cluster-arn <ClusterArn> --admin-secret-arn <SecretArn>
+
+`db-roles.ts` re-applies the grants, then for each role reads its secret and runs `ALTER ROLE ... LOGIN PASSWORD`. The statement is built by Postgres `format('%I', '%L')` with the role name and password bound as parameters, and the script never prints a password. It refuses a secret whose username is not the role. Until it has run, Lambdas that use a role secret get an authentication error from the Data API. To rotate a role's password, update that secret and run the script again; the Data API reads the secret on every call, so no redeploy is needed.
+
 ## Keys
 
 Check-in token keys and alert signing keys share the keyring shape `{"current":"k1","keys":{"k1":"<base64>"}}`.

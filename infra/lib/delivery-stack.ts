@@ -78,7 +78,7 @@ export class DeliveryStack extends Stack {
         removalPolicy,
       }),
       environment: {
-        ...dbEnv(props.db),
+        ...dbEnv(props.db, 'sender'),
         EXPO_ACCESS_TOKEN_SECRET_ARN: props.expoSecretArn,
         IDEMPOTENCY_TABLE: idempotency.tableName,
         ALERT_KEYS_SECRET_ARN: props.alertKeysSecretArn,
@@ -90,7 +90,7 @@ export class DeliveryStack extends Stack {
     worker.addEventSource(
       new SqsEventSource(queue, { batchSize: 10, reportBatchItemFailures: true }),
     );
-    grantDb(worker, props.db);
+    grantDb(worker, props.db, 'sender');
     grantSecretRead(worker, props.expoSecretArn);
     grantSecretRead(worker, props.alertKeysSecretArn);
     // Send-time dedupe: claim (PutItem), check (GetItem), markSent (UpdateItem), release on

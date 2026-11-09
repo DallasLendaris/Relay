@@ -40,7 +40,7 @@ import {
   senderMaxTasks,
   senderServiceName,
 } from './fanout-stack.js';
-import { dbEnv, type DbRefs } from './grants.js';
+import { dbEnv, grantDbToRole, type DbRefs } from './grants.js';
 
 /** One SQS queue, passed between stacks as plain strings (like every other prop). */
 export interface QueueRefs {
@@ -207,7 +207,7 @@ export class SenderStack extends Stack {
       stopTimeout: Duration.seconds(SENDER_STOP_TIMEOUT_SECONDS),
       logging: new AwsLogDriver({ streamPrefix: 'sender', logGroup }),
       environment: {
-        ...dbEnv(props.db),
+        ...dbEnv(props.db, 'sender'),
         URGENT_QUEUE_URL: props.urgentQueue.url,
         STANDARD_QUEUE_URL: props.standardQueue.url,
         IDEMPOTENCY_TABLE: props.idempotencyTableName,
@@ -243,18 +243,10 @@ export class SenderStack extends Stack {
     );
     // Dead targets are cleared in the cell index.
     allow(['dynamodb:UpdateItem', 'dynamodb:DeleteItem'], [props.cellIndexTableArn]);
-    allow(
-      [
-        'rds-data:ExecuteStatement',
-        'rds-data:BeginTransaction',
-        'rds-data:CommitTransaction',
-        'rds-data:RollbackTransaction',
-      ],
-      [props.db.clusterArn],
-    );
+    grantDbToRole(taskDef.taskRole, props.db, 'sender');
     allow(
       ['secretsmanager:GetSecretValue'],
-      [props.db.secretArn, apnsSecret.secretArn, fcmSecret.secretArn, props.alertKeysSecretArn],
+      [apnsSecret.secretArn, fcmSecret.secretArn, props.alertKeysSecretArn],
     );
     allow(['ssm:GetParameter'], [props.killSwitchParamArn]);
 
