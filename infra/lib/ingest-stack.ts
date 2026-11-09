@@ -9,6 +9,7 @@ import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { BlockPublicAccess, Bucket, BucketEncryption, StorageClass } from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
+import { INGEST_RESERVED_CONCURRENCY } from './capacity.js';
 import { allow, dbEnv, grantDb, grantSecretRead, type DbRefs } from './grants.js';
 
 export interface IngestStackProps extends StackProps {
@@ -102,7 +103,7 @@ export class IngestStack extends Stack {
       architecture: Architecture.ARM_64,
       timeout: Duration.seconds(70), // 5 polls x 12 s plus headroom
       memorySize: INGEST_MEMORY_MB, // the post-AlertReady CDN publish runs 16 uploads at once
-      reservedConcurrentExecutions: 1, // never two overlapping pollers
+      reservedConcurrentExecutions: INGEST_RESERVED_CONCURRENCY, // never two overlapping pollers; also a floor an API flood cannot take
       logGroup: new LogGroup(this, 'IngestLogs', {
         retention: RetentionDays.ONE_MONTH,
         removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,

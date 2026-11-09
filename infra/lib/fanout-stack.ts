@@ -19,6 +19,7 @@ import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { Queue, QueueEncryption } from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
+import { DEFAULT_SHARD_CONCURRENCY, PLANNER_RESERVED_CONCURRENCY } from './capacity.js';
 import { allow, dbEnv, grantDb, grantSecretRead, type DbRefs } from './grants.js';
 
 export interface FanoutStackProps extends StackProps {
@@ -33,12 +34,32 @@ export interface FanoutStackProps extends StackProps {
    * Lambda concurrency quota, which must be raised first (see docs/scale-quotas.md).
    */
   shardReservedConcurrency?: number;
+  /** Reserved concurrency of the planner (default 10): an API flood cannot starve it (SEC-C-2). */
+  plannerReservedConcurrency?: number;
 }
 
 /** Send queues: a push batch is claimed by the sender for 45 s, so a crashed read returns in 30 s. */
 export const SEND_QUEUE_VISIBILITY_SECONDS = 30;
-export const DEFAULT_SHARD_CONCURRENCY = 500;
+export { DEFAULT_SHARD_CONCURRENCY };
 export const SHARD_TIMEOUT_SECONDS = 60;
+/**
+ * Cell-index table warm throughput on prod (PERF-4a). A new on-demand table serves 4,000 writes/s
+ * and 12,000 reads/s at first and only doubles on previous-peak growth.
+ *  - Reads: a shard worker pages 1,000 entries of about 353 B (eventually consistent, 0.5 RRU per
+ *    4 KB), so a 10M-recipient send in 120 s (83k entries/s) needs about 3.6k RRU/s. 30,000 is
+ *    roughly 8x that for uneven shard bursts and stays under the 40,000 per-table default quota.
+ *  - Writes: not a send-path load. 10,000 covers an onboarding wave or a full re-index by the
+ *    outbox drainer without waiting on doubling.
+ * See docs/scale-quotas.md.
+ */
+export const CELL_INDEX_WARM_READS_PROD = 30_000;
+export const CELL_INDEX_WARM_WRITES_PROD = 10_000;
+/**
+ * The cell-index outbox drainer runs every minute on prod. Dev runs it every 5 minutes so the dev
+ * Aurora cluster (min 0 ACU, auto-pause) can sleep between ticks; prod's cluster never pauses
+ * (min 0.5 ACU), and the every-minute drainer is what also keeps it warm (PERF-5).
+ */
+export const DRAINER_MINUTES = { dev: 5, prod: 1 } as const;
 /** 2048 MB buys about 1.2 vCPU: the shard worker is CPU-bound on token signing and bucketing. */
 export const SHARD_MEMORY_MB = 2048;
 /**
@@ -135,6 +156,14 @@ export class FanoutStack extends Stack {
       sortKey: { name: 'sk', type: AttributeType.STRING },
       billingMode: BillingMode.PAY_PER_REQUEST,
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: isProd },
+      ...(isProd
+        ? {
+            warmThroughput: {
+              readUnitsPerSecond: CELL_INDEX_WARM_READS_PROD,
+              writeUnitsPerSecond: CELL_INDEX_WARM_WRITES_PROD,
+            },
+          }
+        : {}),
       removalPolicy,
     });
 
@@ -263,6 +292,8 @@ export class FanoutStack extends Stack {
       handler: 'plannerHandler',
       timeout: Duration.seconds(PLANNER_TIMEOUT_SECONDS),
       memorySize: 512,
+      reservedConcurrentExecutions:
+        props.plannerReservedConcurrency ?? PLANNER_RESERVED_CONCURRENCY,
       logGroup: logs('PlannerLogs'),
       environment: {
         ...dbEnv(props.db, 'fanout'),
@@ -340,8 +371,9 @@ export class FanoutStack extends Stack {
       ],
       [cellIndex.tableArn],
     );
+    const drainerMinutes = DRAINER_MINUTES[props.stage];
     new Rule(this, 'OutboxDrainerSchedule', {
-      schedule: Schedule.rate(Duration.minutes(1)),
+      schedule: Schedule.rate(Duration.minutes(drainerMinutes)),
       targets: [new LambdaFunction(drainer)],
     });
     new Alarm(this, 'CellIndexOutboxStuckAlarm', {
@@ -360,12 +392,13 @@ export class FanoutStack extends Stack {
     });
     new Alarm(this, 'DrainerNotRunningAlarm', {
       alarmDescription:
-        'The cell-index outbox drainer has not reported for 5 minutes: unfinished index writes are not being redone',
+        'The cell-index outbox drainer has not reported for 3 schedule periods (5 minutes on prod): unfinished index writes are not being redone',
       metric: new Metric({
         namespace: 'Relay/CellIndex',
         metricName: 'OutboxPending',
         statistic: 'SampleCount',
-        period: Duration.minutes(5),
+        // Three schedule periods (5 on prod), so a slower dev schedule never looks like an outage.
+        period: Duration.minutes(Math.max(5, drainerMinutes * 3)),
       }),
       threshold: 1,
       evaluationPeriods: 1,

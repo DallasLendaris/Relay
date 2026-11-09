@@ -1,5 +1,6 @@
 import type { App, Environment } from 'aws-cdk-lib';
 import { ApiStack } from './api-stack.js';
+import { APIGW_BURST, DEFAULT_APIGW_RPS_QUOTA, planConcurrency } from './capacity.js';
 import { ConfigStack } from './config-stack.js';
 import { DataStack } from './data-stack.js';
 import { DeliveryStack } from './delivery-stack.js';
@@ -35,6 +36,19 @@ export interface RelayAppOptions {
     repairReservedConcurrency?: number;
     /** Check-ins table warm write throughput (default prod 40,000, dev none; 0 disables). */
     checkinsWarmWritesPerSecond?: number;
+    /** Check-in totals table warm throughput (default prod 40,000, dev none; 0 disables). */
+    checkinTotalsWarmWritesPerSecond?: number;
+    /**
+     * Lambda concurrent executions the account really has (default 1,000, the AWS default; see
+     * docs/scale-quotas.md). Prod reserves concurrency for the planner, shard workers, ingest,
+     * aggregator and delivery worker, and caps the API at what is left, so the total never
+     * exceeds this minus the 100 AWS keeps unreserved. synth throws when it does not fit.
+     */
+    lambdaConcurrencyQuota?: number;
+    /** HTTP API account throttle quota in rps (default 10,000). The prod stage throttle never exceeds it. */
+    apiGatewayRpsQuota?: number;
+    plannerReservedConcurrency?: number;
+    shardReservedConcurrency?: number;
   };
   /** Alarm email, GuardDuty, log retention and budget (bin/relay.ts reads them from context). */
   monitoring?: MonitoringOptions;
@@ -71,6 +85,18 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     stage,
     ...(o.capacity?.auroraMaxAcu !== undefined ? { maxAcu: o.capacity.auroraMaxAcu } : {}),
   });
+  // Prod reserves concurrency so an API flood cannot starve the send path (SEC-C-2 / RED-4).
+  // Dev stays unreserved, apart from the functions that always had a reservation.
+  const plan = stage === 'prod' ? planConcurrency(o.capacity) : undefined;
+  const rpsQuota = o.capacity?.apiGatewayRpsQuota ?? DEFAULT_APIGW_RPS_QUOTA;
+  const throttle =
+    o.throttle ?? (stage === 'prod' ? { rateLimit: rpsQuota, burstLimit: APIGW_BURST } : undefined);
+  if (stage === 'prod' && throttle && throttle.rateLimit > rpsQuota) {
+    throw new Error(
+      `API throttle ${throttle.rateLimit} rps exceeds the HTTP API account quota of ${rpsQuota} rps ` +
+        `(-c apiGatewayRpsQuota, docs/scale-quotas.md): the excess would never be served`,
+    );
+  }
   const db = {
     clusterArn: data.clusterArn,
     roleSecretArns: data.roleSecretArns,
@@ -96,6 +122,9 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     tokenKeysSecretArn: config.tokenKeysSecretArn,
     alertKeysSecretArn: config.alertKeysSecretArn,
     ...killSwitch,
+    ...(plan
+      ? { plannerReservedConcurrency: plan.planner, shardReservedConcurrency: plan.shard }
+      : {}),
   });
   const latejoin = new LateJoinStack(app, id('latejoin'), {
     env,
@@ -122,18 +151,24 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     ...(o.capacity?.checkinsWarmWritesPerSecond !== undefined
       ? { checkinsWarmWritesPerSecond: o.capacity.checkinsWarmWritesPerSecond }
       : {}),
-    reservedConcurrency: {
-      ...(o.capacity?.apiReservedConcurrency !== undefined
-        ? { api: o.capacity.apiReservedConcurrency }
-        : {}),
-      ...(o.capacity?.aggregatorReservedConcurrency !== undefined
-        ? { aggregator: o.capacity.aggregatorReservedConcurrency }
-        : {}),
-      ...(o.capacity?.repairReservedConcurrency !== undefined
-        ? { repair: o.capacity.repairReservedConcurrency }
-        : {}),
-    },
-    ...(o.throttle ? { throttle: o.throttle } : {}),
+    ...(o.capacity?.checkinTotalsWarmWritesPerSecond !== undefined
+      ? { checkinTotalsWarmWritesPerSecond: o.capacity.checkinTotalsWarmWritesPerSecond }
+      : {}),
+    reservedConcurrency: plan
+      ? { api: plan.api, aggregator: plan.aggregator, repair: plan.repair }
+      : {
+          // Dev: only what was asked for explicitly.
+          ...(o.capacity?.apiReservedConcurrency !== undefined
+            ? { api: o.capacity.apiReservedConcurrency }
+            : {}),
+          ...(o.capacity?.aggregatorReservedConcurrency !== undefined
+            ? { aggregator: o.capacity.aggregatorReservedConcurrency }
+            : {}),
+          ...(o.capacity?.repairReservedConcurrency !== undefined
+            ? { repair: o.capacity.repairReservedConcurrency }
+            : {}),
+        },
+    ...(throttle ? { throttle } : {}),
     crossRegionReferences: true,
   });
   const ingest = new IngestStack(app, id('ingest'), {

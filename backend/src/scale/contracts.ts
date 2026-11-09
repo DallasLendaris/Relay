@@ -99,6 +99,12 @@ export interface ShardJob {
   relaySeverity: Alert['relaySeverity'];
   shardId: string;
   cells: string[];
+  /**
+   * The kill switch as the planner read it, so hundreds of shard workers do not each read SSM
+   * (PERF-4c). A worker uses it only while it is younger than the worker's own cache TTL
+   * (KILL_SWITCH_TTL_MS) and reads SSM itself when it is absent or older. `readAtMs` is epoch ms.
+   */
+  killSwitch?: { paused: boolean; readAtMs: number };
 }
 
 /** Coarse H3 resolution used to shard alert areas (a res-4 cell is about 1,770 km²). */

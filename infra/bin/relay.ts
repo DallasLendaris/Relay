@@ -28,7 +28,8 @@ if (modeCtx !== undefined && modeCtx !== 'queue' && modeCtx !== 'inline') {
 }
 
 // Capacity settings from context, e.g. -c auroraMaxAcu=32 -c apiReservedConcurrency=3000.
-// Reserved concurrency stays unset by default so a fresh account (low Lambda quota) deploys.
+// Prod reserves concurrency by default, sized from -c lambdaConcurrencyQuota (default 1000, the
+// AWS default; raise the real quota first, see docs/scale-quotas.md). Dev stays unreserved.
 const numberCtx = (name: string): number | undefined => {
   const raw = app.node.tryGetContext(name);
   if (raw === undefined) return undefined;
@@ -44,6 +45,11 @@ const capacity = Object.fromEntries(
       'aggregatorReservedConcurrency',
       'repairReservedConcurrency',
       'checkinsWarmWritesPerSecond',
+      'checkinTotalsWarmWritesPerSecond',
+      'lambdaConcurrencyQuota',
+      'apiGatewayRpsQuota',
+      'plannerReservedConcurrency',
+      'shardReservedConcurrency',
     ] as const
   ).flatMap((k) => {
     const v = numberCtx(k);

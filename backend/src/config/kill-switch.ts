@@ -1,7 +1,9 @@
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import { configMetric, errorName, logStaleServed } from './stale.js';
 
-const TTL_MS = 30 * 1000;
+/** How long a read is cached; a ShardJob's passed-in kill-switch value is trusted for the same time. */
+export const KILL_SWITCH_TTL_MS = 30 * 1000;
+const TTL_MS = KILL_SWITCH_TTL_MS;
 /** How long the last good value is served when SSM cannot be read (throttling, an outage). */
 export const KILL_SWITCH_STALE_MS = 10 * 60 * 1000;
 /** After a failed read, wait this long before asking SSM again. */

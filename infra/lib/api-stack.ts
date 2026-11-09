@@ -17,6 +17,7 @@ import { CfnPlaceIndex } from 'aws-cdk-lib/aws-location';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { Queue, QueueEncryption } from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
+import { APIGW_BURST, DEFAULT_APIGW_RPS_QUOTA } from './capacity.js';
 import { allow, dbEnv, grantDb, grantSecretRead, type DbRefs } from './grants.js';
 
 export interface ApiStackProps extends StackProps {
@@ -42,9 +43,17 @@ export interface ApiStackProps extends StackProps {
   requireOriginHeader?: boolean;
   /** Check-ins table warm throughput (writes/s). Default: prod 40,000, dev none. */
   checkinsWarmWritesPerSecond?: number;
-  /** Lambda reserved concurrency. Unset (the default everywhere) means unreserved. */
+  /** Check-in totals table warm throughput (writes/s). Default: prod 40,000, dev none. */
+  checkinTotalsWarmWritesPerSecond?: number;
+  /**
+   * Lambda reserved concurrency. buildRelayApp sets all three on prod (see capacity.ts, SEC-C-2);
+   * unset means unreserved, which is what dev and direct ApiStack users get.
+   */
   reservedConcurrency?: { api?: number; aggregator?: number; repair?: number };
-  /** Stage throttle on $default. Defaults: dev 50 rps / burst 100, prod 20,000 rps / burst 10,000. */
+  /**
+   * Stage throttle on $default. Defaults: dev 50 rps / burst 100; prod the HTTP API account quota
+   * (10,000 rps, burst 5,000). A stage limit above the account quota never applied anyway.
+   */
   throttle?: { rateLimit: number; burstLimit: number };
 }
 
@@ -53,9 +62,22 @@ export const REPAIR_TIMEOUT_SECONDS = 60;
 /** The check-in burst: 1,000,000 devices in about 5 minutes peaks at 20,000 to 50,000 writes/s. */
 export const DEFAULT_CHECKINS_WARM_WRITES = 40_000;
 
+/**
+ * Check-in totals table warm throughput on prod (PERF-4a / PERF-9). The aggregator writes one
+ * marker per stream record inside a DynamoDB transaction, and a transactional write costs 2 WRU,
+ * so a record costs about 2 WRU (the counter update is shared by up to 50 records). A 50,000
+ * check-ins/s peak would be 100,000 WRU/s if the stream kept pace; it does not have to, because
+ * Streams buffer for 24 h and the aggregator retries throttled records. So warm to the 40,000
+ * default per-table quota (20,000 records/s) and, once the quota is raised to 120,000 as
+ * docs/scale-quotas.md asks, pass `-c checkinTotalsWarmWritesPerSecond=100000`.
+ * PERF-9 follow-up (not done): dropping the transaction for a conditional marker Put plus a
+ * counter ADD halves the cost to about 1 WRU per record but needs a new idempotency design.
+ */
+export const DEFAULT_CHECKIN_TOTALS_WARM_WRITES = 40_000;
+
 export const DEFAULT_THROTTLE = {
   dev: { rateLimit: 50, burstLimit: 100 },
-  prod: { rateLimit: 20_000, burstLimit: 10_000 },
+  prod: { rateLimit: DEFAULT_APIGW_RPS_QUOTA, burstLimit: APIGW_BURST },
 } as const;
 
 /**
@@ -94,6 +116,8 @@ export class ApiStack extends Stack {
 
     const warmWrites =
       props.checkinsWarmWritesPerSecond ?? (isProd ? DEFAULT_CHECKINS_WARM_WRITES : 0);
+    const totalsWarmWrites =
+      props.checkinTotalsWarmWritesPerSecond ?? (isProd ? DEFAULT_CHECKIN_TOTALS_WARM_WRITES : 0);
     const requireOrigin = props.requireOriginHeader ?? isProd;
     const reserved = props.reservedConcurrency ?? {};
     const concurrency = (n: number | undefined) =>
@@ -148,6 +172,9 @@ export class ApiStack extends Stack {
       ...tableDefaults,
       partitionKey: { name: 'pk', type: AttributeType.STRING },
       timeToLiveAttribute: 'ttl',
+      ...(totalsWarmWrites > 0
+        ? { warmThroughput: { writeUnitsPerSecond: totalsWarmWrites } }
+        : {}),
     });
     checkinTotals.addGlobalSecondaryIndex({
       indexName: 'byAlert',

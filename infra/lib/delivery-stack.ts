@@ -8,6 +8,7 @@ import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { Queue, QueueEncryption } from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
+import { DELIVERY_RESERVED_CONCURRENCY } from './capacity.js';
 import { allow, dbEnv, grantDb, grantSecretRead, type DbRefs } from './grants.js';
 
 /** Idempotency table warm throughput on prod (writes/s). */
@@ -78,7 +79,7 @@ export class DeliveryStack extends Stack {
       timeout: WORKER_TIMEOUT,
       memorySize: 256,
       // Caps parallel sends so we stay inside Expo's rate limits.
-      reservedConcurrentExecutions: 10,
+      reservedConcurrentExecutions: DELIVERY_RESERVED_CONCURRENCY,
       logGroup: new LogGroup(this, 'WorkerLogs', {
         retention: RetentionDays.ONE_MONTH,
         removalPolicy,

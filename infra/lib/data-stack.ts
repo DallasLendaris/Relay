@@ -24,6 +24,17 @@ export const BACKUP_RETENTION_DAYS = { dev: 7, prod: 14 } as const;
 export const DEFAULT_MAX_ACU = { dev: 2, prod: 16 } as const;
 
 /**
+ * Minimum ACU. Prod keeps 0.5 (PERF-5 / OPS-10 / REL-9): at 0 the cluster pauses when idle and the
+ * first Data API call after a pause waits 15-30 s for the resume, longer than the DB client's
+ * ~17 s retry budget, so the first request after an idle spell could fail, and that first request
+ * may be an alert. 0.5 ACU costs about $44 a month (0.5 x $0.12 per ACU-hour x 730 h, us-west-2).
+ * The cell-index outbox drainer (every minute on prod, see FanoutStack) already touches the
+ * cluster each minute, so on prod it would rarely pause anyway; 0.5 makes that a guarantee instead
+ * of a side effect. Dev stays at 0 and auto-pauses; its drainer runs every 5 minutes.
+ */
+export const MIN_ACU = { dev: 0, prod: 0.5 } as const;
+
+/**
  * Aurora Serverless v2 PostgreSQL, reached only through the RDS Data API (HTTPS).
  * Lambdas therefore do not need a VPC, which avoids NAT gateway costs. The cluster
  * sits in a VPC with isolated subnets only, so it has no route to the internet.
@@ -57,7 +68,7 @@ export class DataStack extends Stack {
       vpc,
       vpcSubnets: { subnetType: SubnetType.PRIVATE_ISOLATED },
       writer: ClusterInstance.serverlessV2('writer'),
-      serverlessV2MinCapacity: 0,
+      serverlessV2MinCapacity: MIN_ACU[props.stage],
       serverlessV2MaxCapacity: props.maxAcu ?? DEFAULT_MAX_ACU[props.stage],
       enableDataApi: true,
       storageEncrypted: true,

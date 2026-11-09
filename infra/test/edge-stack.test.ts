@@ -193,10 +193,10 @@ describe('API stage throttle per stage', () => {
     expect(DEFAULT_THROTTLE.dev).toEqual({ rateLimit: 50, burstLimit: 100 });
   });
 
-  it('prod defaults to 20,000 rps / burst 10,000', () => {
+  it('prod defaults to the HTTP API account quota: 10,000 rps / burst 5,000', () => {
     expect(throttleOf(build('prod').api)).toEqual({
-      ThrottlingRateLimit: 20000,
-      ThrottlingBurstLimit: 10000,
+      ThrottlingRateLimit: 10000,
+      ThrottlingBurstLimit: 5000,
     });
   });
 

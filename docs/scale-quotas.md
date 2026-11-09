@@ -161,6 +161,22 @@ Source: https://developer.apple.com/library/archive/documentation/NetworkingInte
 
 Sources: https://firebase.google.com/docs/cloud-messaging/throttling-and-quotas ; https://firebase.google.com/docs/cloud-messaging/scale-fcm
 
+## How Relay budgets these quotas (prod)
+
+The quota values the stacks assume are CDK context values with today's defaults, so the plan and the real account cannot drift apart unnoticed. `synth` fails when the plan does not fit.
+
+| Context                            | Default | Meaning                                                                       |
+| ---------------------------------- | ------- | ----------------------------------------------------------------------------- |
+| `lambdaConcurrencyQuota`           | 1,000   | Lambda concurrent executions in the account and Region (Service Quotas)       |
+| `apiGatewayRpsQuota`               | 10,000  | HTTP API account throttle; the prod stage throttle is set to it (burst 5,000) |
+| `checkinTotalsWarmWritesPerSecond` | 40,000  | Totals table warm throughput (the per-table default quota)                    |
+
+Lambda reserved concurrency on prod (`infra/lib/capacity.ts`): planner 10, shard workers 500, ingest 1, delivery worker 10, aggregator 50, repair 5, and **API = quota - 100 - 576**. With the default quota that is API 324 (total reserved 900); with the requested 15,000 it is 14,324. AWS keeps 100 unreserved for everything else (late-join, paused consumer, drainer, redrive). At the default quota the API is capped near 1,600 rps (324 concurrent / 0.2 s), far under the 10,000 rps stage throttle: raise the Lambda quota first, then pass the new value so the API cap grows with it.
+
+DynamoDB warm throughput (prod only, PERF-4a): idempotency 20,000 writes/s; cell index 30,000 reads/s and 10,000 writes/s (a 10M send in 120 s reads about 83k entries/s of 353 B, about 3.6k RRU/s, so 30,000 is roughly 8x headroom under the 40,000 per-table quota); check-ins 40,000 writes/s; check-in totals 40,000 writes/s. The totals aggregator pays 2 WRU per record because its marker Put is inside a transaction (PERF-9); a 50k check-ins/s peak would be 100k WRU/s, so request the 120,000 per-table quota and pass `-c checkinTotalsWarmWritesPerSecond=100000`. The streams buffer and the aggregator retries, so a shortfall delays the totals, never the check-in.
+
+Not done: a separate check-in Lambda or route-level concurrency (PERF-8), and disabling the default `execute-api` endpoint (needs a custom domain; see infra/README.md).
+
 ## Top risks
 
 1. **FCM project quota.** Default 600k messages per minute per project (about 10k/s) is below the 16.7k/s needed for 1M in 60 s, and statewide needs about 83k/s. Start the increase early, or split sends across projects.
