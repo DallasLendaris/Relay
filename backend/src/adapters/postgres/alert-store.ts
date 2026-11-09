@@ -8,10 +8,10 @@ interface RecordRow {
 }
 
 /**
- * The Data API rejects requests over 64 KB. save() throws above 60,000 bytes of
- * parameters, leaving room for the SQL text and the request envelope. With cells packed
- * (see packCells) that is roughly 5,000 cells; a larger alert needs a different design
- * (for example the cells in S3), so we fail loudly instead of truncating.
+ * The Data API rejects requests over 64 KB. No single statement may carry more than
+ * 60,000 bytes of parameters (room is left for the SQL text and the request envelope).
+ * Cells are written in chunks, so an alert's cell count is unlimited; only the record
+ * itself (text fields, without cells) must fit, and save() throws a clear error if not.
  */
 export const MAX_SAVE_PARAM_BYTES = 60_000;
 
@@ -30,14 +30,29 @@ export function packCells(cells: string[]): string {
   return 'raw:' + JSON.stringify(cells);
 }
 
-// SQL that reverses packCells into a text[] (the padding "0" is cut off again).
-const UNPACK_CELLS = `CASE WHEN left(p.packed, 4) = 'b64:' THEN
+// SQL that reverses packCells (parameter $2) into a text[]; the padding "0" is cut off again.
+const UNPACK_CELLS = `CASE WHEN left($2, 4) = 'b64:' THEN
       ARRAY(SELECT substring(encode(substring(b.d FROM n * 8 + 1 FOR 8), 'hex') FROM 2)
-              FROM (SELECT decode(substr(p.packed, 5), 'base64') AS d) b,
+              FROM (SELECT decode(substr($2, 5), 'base64') AS d) b,
                    generate_series(0, length(b.d) / 8 - 1) AS n
              ORDER BY n)
-    ELSE ARRAY(SELECT jsonb_array_elements_text(substr(p.packed, 5)::jsonb))
+    ELSE ARRAY(SELECT jsonb_array_elements_text(substr($2, 5)::jsonb))
     END`;
+
+/** Cells per INSERT: 4,000 packed cells are about 44 KB. Unpacked (test-only) cells use fewer. */
+const WRITE_CELL_CHUNK = 4000;
+const WRITE_CELL_CHUNK_UNPACKED = 1000;
+/** Cells per SELECT page: about 30 bytes each as JSON, so 15,000 stays under the 1 MB response limit. */
+const READ_CELL_PAGE = 15_000;
+
+function checkSize(what: string, param: string): void {
+  const bytes = Buffer.byteLength(param);
+  if (bytes > MAX_SAVE_PARAM_BYTES) {
+    throw new Error(
+      `${what} is too large for one Data API request: ${bytes} bytes, limit ${MAX_SAVE_PARAM_BYTES}`,
+    );
+  }
+}
 
 export class PostgresAlertStore implements AlertStore {
   constructor(private readonly db: SqlExecutor) {}
@@ -46,7 +61,7 @@ export class PostgresAlertStore implements AlertStore {
     const rows = await this.db.query<RecordRow>('SELECT record FROM alerts WHERE id = $1::uuid', [
       id,
     ]);
-    return rows[0] ? parseJson<Alert>(rows[0].record) : null;
+    return rows[0] ? this.withCells(parseJson<Alert>(rows[0].record)) : null;
   }
 
   async findBySourceId(sourceId: string): Promise<Alert | null> {
@@ -56,68 +71,95 @@ export class PostgresAlertStore implements AlertStore {
         WHERE s.source_id = $1`,
       [sourceId],
     );
-    return rows[0] ? parseJson<Alert>(rows[0].record) : null;
+    return rows[0] ? this.withCells(parseJson<Alert>(rows[0].record)) : null;
   }
 
   async save(alert: Alert): Promise<void> {
-    // Two parameters only, so the (large) cell list travels once: the record with its
-    // cell list emptied, and the cells packed. SQL puts the cells back into the stored
-    // record and derives id, source_id, state, expires and h3_cells from it.
-    const params = [
-      JSON.stringify({ ...alert, area: { ...alert.area, h3Cells: [] } }),
-      packCells(alert.area.h3Cells),
-    ];
-    const bytes = Buffer.byteLength(params.join(''));
-    if (bytes > MAX_SAVE_PARAM_BYTES) {
-      throw new Error(
-        `Alert ${alert.id} is too large to save through the Data API: ${bytes} bytes ` +
-          `(${alert.area.h3Cells.length} cells), limit ${MAX_SAVE_PARAM_BYTES}`,
+    // The record is stored without its cells; they live in alert_cells.
+    const record = JSON.stringify({ ...alert, area: { ...alert.area, h3Cells: [] } });
+    checkSize(`Alert ${alert.id} (without its cells)`, record);
+    const cells = [...new Set(alert.area.h3Cells)];
+    const size = cells.every((c) => H3_INDEX.test(c))
+      ? WRITE_CELL_CHUNK
+      : WRITE_CELL_CHUNK_UNPACKED;
+    // Build every chunk first so an oversized one fails before anything is written.
+    const chunks = chunk(cells, size).map((part) => packCells(part));
+    for (const packed of chunks) checkSize(`A cell chunk of alert ${alert.id}`, packed);
+
+    // All in one transaction: a failure part-way leaves the old alert untouched.
+    await this.db.transaction(async (tx) => {
+      // Upsert the alert, then register every source id in its chain (one statement).
+      await tx.query(
+        `WITH p AS (SELECT $1::jsonb AS r),
+         upserted AS (
+           INSERT INTO alerts (id, source_id, state, expires, record, updated_at)
+           SELECT (r ->> 'id')::uuid, r ->> 'sourceId', r ->> 'state',
+                  (r ->> 'expires')::timestamptz, r, now()
+             FROM p
+           ON CONFLICT (id) DO UPDATE SET
+             source_id = EXCLUDED.source_id, state = EXCLUDED.state, expires = EXCLUDED.expires,
+             record = EXCLUDED.record, updated_at = now()
+           RETURNING id
+         )
+         INSERT INTO alert_source_ids (source_id, alert_id)
+         SELECT s, (SELECT id FROM upserted)
+           FROM p, jsonb_array_elements_text(
+                  jsonb_build_array(p.r ->> 'sourceId') ||
+                  COALESCE((SELECT jsonb_agg(ref ->> 'sourceId')
+                              FROM jsonb_array_elements(p.r -> 'references') ref), '[]'::jsonb)
+                ) AS s
+         ON CONFLICT (source_id) DO UPDATE SET alert_id = EXCLUDED.alert_id`,
+        [record],
       );
-    }
-    // One statement (Data API runs one per call): upsert the alert, then register every
-    // source id in its chain. The chain's ids now point at this alert.
-    await this.db.query(
-      `WITH p AS (SELECT $1::jsonb AS r, $2::text AS packed),
-       c AS (SELECT ${UNPACK_CELLS} AS cells FROM p),
-       upserted AS (
-         INSERT INTO alerts (id, source_id, state, expires, h3_cells, record, updated_at)
-         SELECT (p.r ->> 'id')::uuid, p.r ->> 'sourceId', p.r ->> 'state',
-                (p.r ->> 'expires')::timestamptz, c.cells,
-                jsonb_set(p.r, '{area,h3Cells}', to_jsonb(c.cells)), now()
-           FROM p, c
-         ON CONFLICT (id) DO UPDATE SET
-           source_id = EXCLUDED.source_id, state = EXCLUDED.state, expires = EXCLUDED.expires,
-           h3_cells = EXCLUDED.h3_cells, record = EXCLUDED.record, updated_at = now()
-         RETURNING id
-       )
-       INSERT INTO alert_source_ids (source_id, alert_id)
-       SELECT s, (SELECT id FROM upserted)
-         FROM p, jsonb_array_elements_text(
-                jsonb_build_array(p.r ->> 'sourceId') ||
-                COALESCE((SELECT jsonb_agg(ref ->> 'sourceId')
-                            FROM jsonb_array_elements(p.r -> 'references') ref), '[]'::jsonb)
-              ) AS s
-       ON CONFLICT (source_id) DO UPDATE SET alert_id = EXCLUDED.alert_id`,
-      params,
-    );
+      await tx.query('DELETE FROM alert_cells WHERE alert_id = $1::uuid', [alert.id]);
+      for (const packed of chunks) {
+        await tx.query(
+          `INSERT INTO alert_cells (alert_id, h3_cell)
+           SELECT $1::uuid, unnest(${UNPACK_CELLS})
+           ON CONFLICT DO NOTHING`,
+          [alert.id, packed],
+        );
+      }
+    });
   }
 
   async listActiveForCells(cells: string[], now: Date): Promise<Alert[]> {
     const found = new Map<string, Alert>();
     for (const part of chunk([...new Set(cells)], CELL_CHUNK)) {
-      // && is array overlap, served by the GIN index. An alert has ended once now is past
-      // the later of expires and ends (GREATEST ignores a null ends).
+      // An alert has ended once now is past the later of expires and ends (GREATEST
+      // ignores a null ends). The cell filter is served by the alert_cells index.
       const rows = await this.db.query<RecordRow>(
-        `SELECT record FROM alerts
-          WHERE state IN ('active', 'updated') AND h3_cells && ${textArrayParam(1)}
-            AND $2::timestamptz < GREATEST(expires, (record ->> 'ends')::timestamptz)`,
+        `SELECT DISTINCT a.id, a.record FROM alerts a
+           JOIN alert_cells c ON c.alert_id = a.id
+          WHERE a.state IN ('active', 'updated') AND c.h3_cell = ANY(${textArrayParam(1)})
+            AND $2::timestamptz < GREATEST(a.expires, (a.record ->> 'ends')::timestamptz)`,
         [JSON.stringify(part), now.toISOString()],
       );
       for (const row of rows) {
         const alert = parseJson<Alert>(row.record);
-        found.set(alert.id, alert);
+        if (!found.has(alert.id)) found.set(alert.id, await this.withCells(alert));
       }
     }
     return [...found.values()];
+  }
+
+  /** Put the alert's cells back into the record, reading them in pages (keyset on h3_cell). */
+  private async withCells(alert: Alert): Promise<Alert> {
+    const h3Cells: string[] = [];
+    let after = '';
+    for (;;) {
+      const rows = await this.db.query<{ h3_cell: string }>(
+        `SELECT h3_cell FROM alert_cells
+          WHERE alert_id = $1::uuid AND h3_cell > $2 ORDER BY h3_cell LIMIT $3::int`,
+        [alert.id, after, READ_CELL_PAGE],
+      );
+      for (const r of rows) h3Cells.push(r.h3_cell);
+      const last = rows[rows.length - 1];
+      if (!last || rows.length < READ_CELL_PAGE) break;
+      after = last.h3_cell;
+    }
+    // JS sort, not SQL collation order: the alert signature covers h3Cells in this exact order,
+    // and SigningAlertStore signs the cells sorted the same way.
+    return { ...alert, area: { ...alert.area, h3Cells: h3Cells.sort() } };
   }
 }

@@ -17,6 +17,15 @@ export class PgliteExecutor implements SqlExecutor {
     const res = await this.pg.query<T>(sql, params);
     return res.rows;
   }
+  /** PGlite's own transaction: commits when fn returns, rolls back when it throws. */
+  transaction<T>(fn: (tx: SqlExecutor) => Promise<T>): Promise<T> {
+    return this.pg.transaction((t) =>
+      fn({
+        query: async <R>(sql: string, params: unknown[]) => (await t.query<R>(sql, params)).rows,
+        transaction: () => Promise.reject(new Error('nested transactions are not supported')),
+      }),
+    );
+  }
 }
 
 /** Fresh database with all migrations except 0001 (PostGIS is not bundled with PGlite). */

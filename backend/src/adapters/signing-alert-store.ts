@@ -27,6 +27,8 @@ export class SigningAlertStore implements AlertStore {
   async save(alert: Alert): Promise<void> {
     const withSummaries: Alert = {
       ...alert,
+      // Canonical cell order (sorted, unique) so every store returns exactly what was signed.
+      area: { ...alert.area, h3Cells: [...new Set(alert.area.h3Cells)].sort() },
       summaries: summariesFor(alert, { timeZone: 'America/Los_Angeles' }),
     };
     await this.inner.save(signAlert(withSummaries, this.currentKey));

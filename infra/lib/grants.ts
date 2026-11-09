@@ -22,7 +22,16 @@ export function allow(fn: IFunction, actions: string[], resources: string[]): vo
 }
 
 export function grantDb(fn: IFunction, db: DbRefs): void {
-  allow(fn, ['rds-data:ExecuteStatement'], [db.clusterArn]);
+  allow(
+    fn,
+    [
+      'rds-data:ExecuteStatement',
+      'rds-data:BeginTransaction',
+      'rds-data:CommitTransaction',
+      'rds-data:RollbackTransaction',
+    ],
+    [db.clusterArn],
+  );
   allow(fn, ['secretsmanager:GetSecretValue'], [db.secretArn]);
 }
 

@@ -1,10 +1,7 @@
 import type { Alert } from '@relay/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { SqlExecutor } from '../../src/db/sql.js';
-import {
-  MAX_SAVE_PARAM_BYTES,
-  PostgresAlertStore,
-} from '../../src/adapters/postgres/alert-store.js';
+import { PostgresAlertStore } from '../../src/adapters/postgres/alert-store.js';
 import { PostgresDeviceStore } from '../../src/adapters/postgres/device-store.js';
 import { PostgresPlaceStore } from '../../src/adapters/postgres/place-store.js';
 import { DEVICE_ID, alert, device, freshDb, place, type PgliteExecutor } from './helpers.js';
@@ -127,6 +124,7 @@ describe('PostgresPlaceStore', () => {
           queries.push(params);
           return db.query(sql, params);
         },
+        transaction: (fn) => db.transaction(fn),
       },
       3,
     );
@@ -240,37 +238,81 @@ describe('PostgresAlertStore', () => {
     expect(await ids('2026-01-02T13:00:00.000Z')).toEqual([]);
   });
 
-  it('round-trips packed cells exactly and in order, including an empty list', async () => {
+  it('round-trips cells (returned sorted), including an empty list, via alert_cells', async () => {
     const store = new PostgresAlertStore(db);
     const cells = manyCells(300);
     await store.save(alert({ area: { ...alert().area, h3Cells: cells } }));
-    expect((await store.get(alert().id))?.area.h3Cells).toEqual(cells);
-    const rows = await db.query<{ n: number }>('SELECT cardinality(h3_cells) AS n FROM alerts', []);
+    expect((await store.get(alert().id))?.area.h3Cells).toEqual([...cells].sort());
+    const rows = await db.query<{ n: number }>('SELECT count(*)::int AS n FROM alert_cells', []);
     expect(rows[0]?.n).toBe(300);
+    const stored = await db.query<{ record: Alert }>('SELECT record FROM alerts', []);
+    expect(stored[0]?.record.area.h3Cells).toEqual([]); // the record itself carries no cells
     await store.save(alert({ area: { ...alert().area, h3Cells: [] } }));
     expect((await store.get(alert().id))?.area.h3Cells).toEqual([]);
   });
 
-  it('save sends the record once: a 5,000-cell alert stays under the 64 KB request limit', async () => {
-    const sent: unknown[][] = [];
-    const spy: SqlExecutor = {
+  /** Executor that records every statement's size and can fail on demand. */
+  const measuring = (failOn?: (n: number) => boolean) => {
+    const sizes: number[] = [];
+    let n = 0;
+    const wrap = (inner: SqlExecutor): SqlExecutor => ({
       query: async (sql, params) => {
-        sent.push(params);
-        return db.query(sql, params);
+        sizes.push(Buffer.byteLength(sql) + Buffer.byteLength(JSON.stringify(params)));
+        if (failOn?.(++n)) throw new Error('boom');
+        return inner.query(sql, params);
       },
-    };
-    const big = alert({ area: { ...alert().area, h3Cells: manyCells(5000) } });
-    await new PostgresAlertStore(spy).save(big);
-    const bytes = Buffer.byteLength(JSON.stringify(sent[0]));
-    expect(bytes).toBeLessThan(64 * 1024);
-    expect(bytes).toBeLessThan(MAX_SAVE_PARAM_BYTES);
-    expect((await new PostgresAlertStore(db).get(big.id))?.area.h3Cells).toEqual(big.area.h3Cells);
+      transaction: (fn) => inner.transaction((tx) => fn(wrap(tx))),
+    });
+    return { exec: wrap(db), sizes };
+  };
+
+  it('saves and round-trips a 60,000-cell alert, every request under 64 KB', async () => {
+    const { exec, sizes } = measuring();
+    const cells = manyCells(60_000);
+    const big = alert({ area: { ...alert().area, h3Cells: cells } });
+    await new PostgresAlertStore(exec).save(big);
+    expect(sizes.length).toBeGreaterThan(10); // chunked
+    expect(Math.max(...sizes)).toBeLessThan(64 * 1024);
+    const got = await new PostgresAlertStore(db).get(big.id);
+    expect(got?.area.h3Cells).toEqual([...cells].sort());
+    expect({ ...got, area: { ...got?.area, h3Cells: [] } }).toEqual({
+      ...big,
+      area: { ...big.area, h3Cells: [] },
+    });
+    // Saving again replaces the cells rather than adding to them.
+    const smaller = { ...big, area: { ...big.area, h3Cells: cells.slice(0, 5) } };
+    await new PostgresAlertStore(db).save(smaller);
+    expect((await new PostgresAlertStore(db).get(big.id))?.area.h3Cells).toHaveLength(5);
   });
 
-  it('save refuses, with a clear error, an alert too big for the Data API', async () => {
-    const huge = alert({ area: { ...alert().area, h3Cells: manyCells(9000) } });
-    await expect(new PostgresAlertStore(db).save(huge)).rejects.toThrow(/too large to save/);
+  it('rolls back everything when a statement fails part-way', async () => {
+    const original = alert({ area: { ...alert().area, h3Cells: manyCells(10) } });
+    await new PostgresAlertStore(db).save(original);
+    // Statements: upsert (1), delete (2), then chunk inserts (3, 4...). Fail on the 2nd chunk.
+    const { exec } = measuring((n) => n === 4);
+    const replacement = alert({
+      event: 'Changed',
+      area: { ...alert().area, h3Cells: manyCells(9000) },
+    });
+    await expect(new PostgresAlertStore(exec).save(replacement)).rejects.toThrow('boom');
+    const got = await new PostgresAlertStore(db).get(original.id);
+    expect(got?.event).toBe(original.event);
+    expect(got?.area.h3Cells).toEqual([...original.area.h3Cells].sort());
+  });
+
+  it('refuses, with a clear error, a record too big for one request', async () => {
+    const huge = alert({ official: { ...alert().official, description: 'x'.repeat(70_000) } });
+    await expect(new PostgresAlertStore(db).save(huge)).rejects.toThrow(/too large/);
     expect(await new PostgresAlertStore(db).get(huge.id)).toBeNull();
+  });
+
+  it('listActiveForCells finds a huge alert by one of its cells and returns all its cells', async () => {
+    const store = new PostgresAlertStore(db);
+    const cells = manyCells(20_000);
+    await store.save(alert({ area: { ...alert().area, h3Cells: cells } }));
+    const found = await store.listActiveForCells([cells[19_999] ?? '', 'nope'], NOW);
+    expect(found).toHaveLength(1);
+    expect(found[0]?.area.h3Cells).toHaveLength(20_000);
   });
 
   it('deleting an alert cascades to its source ids', async () => {

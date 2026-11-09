@@ -1,4 +1,10 @@
-import { ExecuteStatementCommand, RDSDataClient } from '@aws-sdk/client-rds-data';
+import {
+  BeginTransactionCommand,
+  CommitTransactionCommand,
+  ExecuteStatementCommand,
+  RDSDataClient,
+  RollbackTransactionCommand,
+} from '@aws-sdk/client-rds-data';
 import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { DataApiExecutor, toDataApiParam } from '../../src/db/sql.js';
@@ -65,5 +71,33 @@ describe('DataApiExecutor', () => {
   it('returns an empty list when the statement returns no records', async () => {
     rds.on(ExecuteStatementCommand).resolves({});
     expect(await exec().query('DELETE FROM t', [])).toEqual([]);
+  });
+
+  it('runs statements inside one Data API transaction and commits', async () => {
+    rds.on(BeginTransactionCommand).resolves({ transactionId: 'tx-1' });
+    rds.on(ExecuteStatementCommand).resolves({});
+    rds.on(CommitTransactionCommand).resolves({});
+    const out = await exec().transaction(async (tx) => {
+      await tx.query('DELETE FROM t', []);
+      return 'done';
+    });
+    expect(out).toBe('done');
+    expect(rds.commandCalls(ExecuteStatementCommand)[0]?.args[0].input.transactionId).toBe('tx-1');
+    expect(rds.commandCalls(CommitTransactionCommand)[0]?.args[0].input.transactionId).toBe('tx-1');
+    expect(rds.commandCalls(RollbackTransactionCommand)).toHaveLength(0);
+  });
+
+  it('rolls back and rethrows when the work fails', async () => {
+    rds.on(BeginTransactionCommand).resolves({ transactionId: 'tx-2' });
+    rds.on(RollbackTransactionCommand).resolves({});
+    await expect(
+      exec().transaction(async () => {
+        throw new Error('nope');
+      }),
+    ).rejects.toThrow('nope');
+    expect(rds.commandCalls(RollbackTransactionCommand)[0]?.args[0].input.transactionId).toBe(
+      'tx-2',
+    );
+    expect(rds.commandCalls(CommitTransactionCommand)).toHaveLength(0);
   });
 });
