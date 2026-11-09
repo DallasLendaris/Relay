@@ -13,6 +13,9 @@
 --   relay_sender         alerts read; devices read and push-token clearing; places read
 --                        (the dead-target cleanup lists a device's places)
 --   relay_ops            devices and places read, cell-index outbox (repair, drainer, backfill)
+--   relay_latejoin       read-only: devices (incl. push-target timestamps), places, alerts and
+--                        their cells. The late-join Lambda re-derives everything from Aurora and
+--                        writes nothing there (its claims live in DynamoDB).
 --
 -- Tables created later get no grants until they are added here: there are no default privileges.
 
@@ -20,7 +23,7 @@ DO $$
 DECLARE
   r text;
 BEGIN
-  FOREACH r IN ARRAY ARRAY['relay_api', 'relay_ingest', 'relay_ingest_inline', 'relay_fanout', 'relay_sender', 'relay_ops'] LOOP
+  FOREACH r IN ARRAY ARRAY['relay_api', 'relay_ingest', 'relay_ingest_inline', 'relay_fanout', 'relay_sender', 'relay_ops', 'relay_latejoin'] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format('CREATE ROLE %I NOLOGIN', r);
     END IF;
@@ -30,9 +33,9 @@ $$;
 
 GRANT relay_ingest TO relay_ingest_inline;
 
-REVOKE ALL ON ALL TABLES IN SCHEMA public FROM relay_api, relay_ingest, relay_ingest_inline, relay_fanout, relay_sender, relay_ops;
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM relay_api, relay_ingest, relay_ingest_inline, relay_fanout, relay_sender, relay_ops, relay_latejoin;
 
-GRANT USAGE ON SCHEMA public TO relay_api, relay_ingest, relay_ingest_inline, relay_fanout, relay_sender, relay_ops;
+GRANT USAGE ON SCHEMA public TO relay_api, relay_ingest, relay_ingest_inline, relay_fanout, relay_sender, relay_ops, relay_latejoin;
 
 DO $$
 DECLARE
@@ -50,6 +53,10 @@ BEGIN
       (false, 'places', 'relay_ingest_inline', 'SELECT'),
       (false, 'places', 'relay_sender', 'SELECT'),
       (false, 'places', 'relay_ops', 'SELECT'),
+      (false, 'devices', 'relay_latejoin', 'SELECT'),
+      (false, 'places', 'relay_latejoin', 'SELECT'),
+      (false, 'alerts', 'relay_latejoin', 'SELECT'),
+      (false, 'alert_cells', 'relay_latejoin', 'SELECT'),
       (false, 'alerts', 'relay_api', 'SELECT'),
       (false, 'alerts', 'relay_ingest', 'SELECT, INSERT, UPDATE'),
       (false, 'alerts', 'relay_fanout', 'SELECT'),

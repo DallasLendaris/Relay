@@ -34,7 +34,7 @@ describe('DataStack', () => {
   });
 
   it('generates the admin secret (plus one per database role, see db-roles.test.ts) and outputs both ARNs', () => {
-    t.resourceCountIs('AWS::SecretsManager::Secret', 1 + 6);
+    t.resourceCountIs('AWS::SecretsManager::Secret', 1 + 7);
     expect(Object.keys(t.toJSON().Outputs)).toEqual(
       expect.arrayContaining(['ClusterArn', 'SecretArn']),
     );

@@ -75,6 +75,7 @@ function expectedRole(stack: string, id: string, mode: 'inline' | 'queue'): DbRo
   if (stack === 'api') return id.startsWith('IndexRepair') ? 'ops' : 'api';
   if (stack === 'ingest') return mode === 'inline' ? 'ingestInline' : 'ingest';
   if (stack === 'fanout') return id.startsWith('OutboxDrainer') ? 'ops' : 'fanout';
+  if (stack === 'latejoin') return 'latejoin';
   if (stack === 'delivery' || stack === 'sender') return 'sender';
   throw new Error(`no expected database role for ${stack}/${id}: add it to this test`);
 }
@@ -94,8 +95,8 @@ describe.each([
   const adminId = logicalIdOf(app, app.stacks.data.secretArn);
 
   it('covers every compute principal that talks to the database', () => {
-    // api, index repair, ingest, planner, shard, outbox drainer, delivery worker, sender
-    expect(principals.map((p) => p.id.replace(/[0-9A-F]{8}$/, '')).sort()).toHaveLength(8);
+    // api, index repair, ingest, planner, shard, outbox drainer, late-join, delivery worker, sender
+    expect(principals.map((p) => p.id.replace(/[0-9A-F]{8}$/, '')).sort()).toHaveLength(9);
   });
 
   it('gives each principal exactly one DB secret, its own role, in IAM and in DB_SECRET_ARN', () => {

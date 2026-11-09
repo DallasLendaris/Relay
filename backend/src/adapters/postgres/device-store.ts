@@ -1,6 +1,11 @@
-import type { Device, DeviceErasure, DeviceStore } from '../../ports.js';
+import type { Clock, Device, DeviceErasure, DeviceStore } from '../../ports.js';
 import type { SqlExecutor } from '../../db/sql.js';
 import type { PushPlatform, PushTarget } from '../../scale/contracts.js';
+import {
+  PushTokenInUseError,
+  pushTargetHash,
+  type PushTargetMeta,
+} from '../../scale/latejoin/push-target-rules.js';
 import { isoUtc } from './common.js';
 
 interface DeviceRow {
@@ -22,7 +27,11 @@ function targetColumns(device: Device): [PushPlatform | null, string | null] {
 }
 
 export class PostgresDeviceStore implements DeviceStore, DeviceErasure {
-  constructor(private readonly db: SqlExecutor) {}
+  constructor(
+    private readonly db: SqlExecutor,
+    /** Used for the push-target move rules; tests inject a fixed clock. */
+    private readonly clock: Clock = { now: () => new Date() },
+  ) {}
 
   async create(device: Device): Promise<void> {
     await this.db.query(
@@ -87,7 +96,7 @@ export class PostgresDeviceStore implements DeviceStore, DeviceErasure {
     if (opts?.outbox) {
       // The target change and the outbox rows commit together or not at all.
       return this.db.transaction(async (tx) => {
-        const result = await new PostgresDeviceStore(tx).assignPushTarget(
+        const result = await new PostgresDeviceStore(tx, this.clock).assignPushTarget(
           deviceId,
           target,
           language,
@@ -111,23 +120,93 @@ export class PostgresDeviceStore implements DeviceStore, DeviceErasure {
     // One statement (Data API runs one per call). The main UPDATE reads `cleared` in a
     // subquery, which forces the other devices' targets to be cleared first, so the unique
     // indexes never see two holders. Expo keeps expo_push_token in step with push_token.
-    const rows = await this.db.query<{ id: string; displaced: string | null }>(
-      `WITH cleared AS (
+    //
+    // Move rules (push-target-rules.ts): taking a token from another device is allowed only when
+    // that device was inactive for 24 h, or fewer than 2 moves of this token happened in the last
+    // 24 h. `verdict` decides; when it says no, nothing is written and the row comes back with
+    // allowed = false. A successful move is recorded in push_token_moves (token hash only), and
+    // rows older than the window are pruned in the same statement.
+    const rows = await this.db.query<{
+      found: number | string;
+      allowed: boolean;
+      displaced: string | null;
+    }>(
+      `WITH me AS (SELECT id FROM devices WHERE id = $1::uuid),
+       holders AS (
+         SELECT id, COALESCE(push_target_updated_at, created_at) AS last_update
+           FROM devices
+          WHERE push_platform = $2::text AND push_token = $3::text AND id <> $1::uuid
+       ),
+       recent AS (
+         SELECT count(*) AS n FROM push_token_moves
+          WHERE token_hash = $5::text AND moved_at > $6::timestamptz - interval '24 hours'
+       ),
+       verdict AS (
+         SELECT (
+           NOT EXISTS (SELECT 1 FROM holders)
+           OR (SELECT n FROM recent) < 2
+           OR NOT EXISTS (
+                SELECT 1 FROM holders WHERE last_update > $6::timestamptz - interval '24 hours')
+         ) AS allowed
+       ),
+       cleared AS (
          UPDATE devices SET push_platform = NULL, push_token = NULL, expo_push_token = NULL
           WHERE push_platform = $2::text AND push_token = $3::text AND id <> $1::uuid
-            AND EXISTS (SELECT 1 FROM devices WHERE id = $1::uuid)
+            AND EXISTS (SELECT 1 FROM me) AND (SELECT allowed FROM verdict)
+         RETURNING id
+       ),
+       moved AS (
+         INSERT INTO push_token_moves (token_hash, device_id, moved_at)
+         SELECT $5::text, $1::uuid, $6::timestamptz WHERE EXISTS (SELECT 1 FROM cleared)
+         RETURNING 1
+       ),
+       pruned AS (
+         DELETE FROM push_token_moves
+          WHERE token_hash = $5::text AND moved_at <= $6::timestamptz - interval '24 hours'
+         RETURNING 1
+       ),
+       updated AS (
+         UPDATE devices SET push_platform = $2::text, push_token = $3::text,
+                expo_push_token = CASE WHEN $2::text = 'expo' THEN $3::text ELSE NULL END,
+                language = $4,
+                push_target_updated_at = $6::timestamptz,
+                push_target_changed_at = CASE
+                  WHEN push_platform IS NOT DISTINCT FROM $2::text
+                   AND push_token IS NOT DISTINCT FROM $3::text
+                  THEN COALESCE(push_target_changed_at, $6::timestamptz)
+                  ELSE $6::timestamptz END
+          WHERE id = $1::uuid AND (SELECT allowed FROM verdict)
+            AND (SELECT count(*) FROM cleared) >= 0 AND (SELECT count(*) FROM moved) >= 0
+            AND (SELECT count(*) FROM pruned) >= 0
          RETURNING id
        )
-       UPDATE devices SET push_platform = $2::text, push_token = $3::text,
-              expo_push_token = CASE WHEN $2::text = 'expo' THEN $3::text ELSE NULL END,
-              language = $4
-        WHERE id = $1::uuid AND (SELECT count(*) FROM cleared) >= 0
-       RETURNING id, (SELECT string_agg(id::text, ',') FROM cleared) AS displaced`,
-      [deviceId, target.platform, target.token, language],
+       SELECT (SELECT count(*) FROM me) AS found, (SELECT allowed FROM verdict) AS allowed,
+              (SELECT string_agg(id::text, ',') FROM cleared) AS displaced`,
+      [
+        deviceId,
+        target.platform,
+        target.token,
+        language,
+        pushTargetHash(target),
+        this.clock.now().toISOString(),
+      ],
     );
     const row = rows[0];
-    if (!row) throw new Error(`device ${deviceId} not found`);
+    if (!row || Number(row.found) === 0) throw new Error(`device ${deviceId} not found`);
+    if (!row.allowed) throw new PushTokenInUseError();
     return { displaced: row.displaced ? row.displaced.split(',') : [] };
+  }
+
+  /** When the device's push target last changed (see PushTargetMeta), or null for no such device. */
+  async pushTargetMeta(deviceId: string): Promise<PushTargetMeta | null> {
+    const rows = await this.db.query<{ updated_at: string; changed_at: string }>(
+      `SELECT ${isoUtc('COALESCE(push_target_updated_at, created_at)')} AS updated_at,
+              ${isoUtc('COALESCE(push_target_changed_at, created_at)')} AS changed_at
+         FROM devices WHERE id = $1::uuid`,
+      [deviceId],
+    );
+    const r = rows[0];
+    return r ? { updatedAt: new Date(r.updated_at), changedAt: new Date(r.changed_at) } : null;
   }
 
   async clearPushToken(token: string): Promise<void> {

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { PostgresAlertStore } from '../../src/adapters/postgres/alert-store.js';
@@ -28,6 +29,7 @@ const ALL_ROLES = [
   'relay_fanout',
   'relay_sender',
   'relay_ops',
+  'relay_latejoin',
 ];
 
 let db: PgliteExecutor;
@@ -71,7 +73,7 @@ afterEach(async () => {
 });
 
 describe('0011_roles', () => {
-  it('creates the six roles NOLOGIN, so nothing can connect before db-roles sets a password', async () => {
+  it('creates the seven roles NOLOGIN, so nothing can connect before db-roles sets a password', async () => {
     const rows = await db.query<{ rolname: string; rolcanlogin: boolean }>(
       "SELECT rolname, rolcanlogin FROM pg_roles WHERE rolname LIKE 'relay\\_%' ORDER BY rolname",
       [],
@@ -113,6 +115,33 @@ describe('relay_api: devices and places read/write, alerts read', () => {
       const alerts = new PostgresAlertStore(db);
       expect(await alerts.get(ALERT.id)).not.toBeNull();
       expect(await alerts.listActiveForCells(ALERT.area.h3Cells, NOW)).not.toHaveLength(0);
+    });
+  });
+
+  it('runs the erasure, move-rule and outbox statements (DELETE /devices/me, push-target move)', async () => {
+    const a = '88888888-8888-4888-8888-888888888881';
+    const b = '88888888-8888-4888-8888-888888888882';
+    await as('relay_api', async () => {
+      const devices = new PostgresDeviceStore(db);
+      const places = new PostgresPlaceStore(db);
+      await devices.create(device({ id: a, credentialHash: 'd'.repeat(64), expoPushToken: null }));
+      await devices.create(device({ id: b, credentialHash: 'e'.repeat(64), expoPushToken: null }));
+      const target = { platform: 'ios', token: 'moving-token' } as const;
+      await devices.assignPushTarget(a, target, 'en');
+      // Moving the token to b clears it on a, records the move and prunes (push_token_moves).
+      const moved = await devices.assignPushTarget(b, target, 'en', { outbox: true });
+      expect(moved.displaced).toEqual([a]);
+      expect(await devices.pushTargetMeta(b)).not.toBeNull();
+      const p = place({ id: '55555555-5555-4555-8555-555555555556', deviceId: b });
+      const entry = (op: 'put' | 'remove') => ({
+        outbox: { id: randomUUID(), op, h3Cell: p.h3Cell, placeId: p.id },
+      });
+      await places.add(p, entry('put'));
+      await places.remove(b, p.id, entry('remove'));
+      await places.add({ ...p, id: '55555555-5555-4555-8555-555555555557' });
+      expect(await places.removeAllForDevice(b)).toBe(1);
+      expect(await devices.deleteDevice(b, NOW)).toBe(true);
+      expect(await devices.listDeletedDevices()).toContain(b);
     });
   });
 
@@ -229,6 +258,30 @@ describe('relay_ops: devices and places read (repair, drainer, backfill)', () =>
     expect(await denied('relay_ops', 'DELETE FROM places')).toBe(true);
     expect(await denied('relay_ops', 'SELECT * FROM alerts')).toBe(true);
     expect(await denied('relay_ops', 'SELECT * FROM alert_cells')).toBe(true);
+  });
+});
+
+describe('relay_latejoin: read-only devices, places and alerts', () => {
+  it('runs the late-join statements: device, push-target timestamps, places, active alerts', async () => {
+    await as('relay_latejoin', async () => {
+      const devices = new PostgresDeviceStore(db);
+      expect(await devices.get(DEVICE_ID)).not.toBeNull();
+      expect(await devices.pushTargetMeta(DEVICE_ID)).not.toBeNull();
+      expect(await new PostgresPlaceStore(db).listForDevice(DEVICE_ID)).toHaveLength(1);
+      const alerts = new PostgresAlertStore(db);
+      expect(await alerts.listActiveForCells(ALERT.area.h3Cells, NOW)).not.toHaveLength(0);
+      expect(await alerts.get(ALERT.id)).not.toBeNull();
+    });
+  });
+
+  it('writes nothing and reads nothing else', async () => {
+    expect(await denied('relay_latejoin', "UPDATE devices SET language = 'es'")).toBe(true);
+    expect(await denied('relay_latejoin', 'UPDATE devices SET push_token = NULL')).toBe(true);
+    expect(await denied('relay_latejoin', 'DELETE FROM places')).toBe(true);
+    expect(await denied('relay_latejoin', "UPDATE alerts SET state = 'cancelled'")).toBe(true);
+    expect(await denied('relay_latejoin', 'SELECT * FROM push_token_moves')).toBe(true);
+    expect(await denied('relay_latejoin', 'SELECT * FROM deleted_devices')).toBe(true);
+    expect(await denied('relay_latejoin', 'SELECT * FROM cell_index_outbox')).toBe(true);
   });
 });
 

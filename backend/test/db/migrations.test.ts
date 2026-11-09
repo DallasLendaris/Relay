@@ -16,6 +16,7 @@ describe('runMigrations', () => {
       '0005_alert_cells.sql',
       '0006_push_targets.sql',
       '0007_push_token_lookup_index.sql',
+      '0008_push_token_moves.sql',
       '0009_cell_index_outbox.sql',
       '0010_minimize_places_tombstones.sql',
       '0011_roles.sql',

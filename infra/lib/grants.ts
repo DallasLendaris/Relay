@@ -11,6 +11,7 @@ import type { IFunction } from 'aws-cdk-lib/aws-lambda';
  *   fanout        alerts read (planner and shard workers)
  *   sender        alerts read, devices read and push-target clearing, places read (sender, legacy worker)
  *   ops           devices and places read, cell-index outbox (index repair, drainer, backfill)
+ *   latejoin      read-only: devices, places, alerts and their cells (the late-join Lambda)
  */
 export const DB_ROLES = {
   api: 'relay_api',
@@ -19,6 +20,7 @@ export const DB_ROLES = {
   fanout: 'relay_fanout',
   sender: 'relay_sender',
   ops: 'relay_ops',
+  latejoin: 'relay_latejoin',
 } as const;
 export type DbRole = keyof typeof DB_ROLES;
 

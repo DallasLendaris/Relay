@@ -1,7 +1,6 @@
 import type { SQSEvent } from 'aws-lambda';
 import { randomUUID } from 'node:crypto';
 import type { Alert } from '@relay/shared';
-import { cellToChildren, cellToParent } from 'h3-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryAlertStore } from '../../src/adapters/memory/alert-store.js';
 import { MemoryCheckInStore } from '../../src/adapters/memory/checkin-store.js';
@@ -11,9 +10,8 @@ import { createApi, type ApiEvent } from '../../src/api/index.js';
 import { cellForPoint } from '../../src/geo/index.js';
 import { MemoryCellIndex, MemoryIndexRepairQueue } from '../../src/scale/cell-index/index.js';
 import { applyRepair, createRepairHandler } from '../../src/scale/cell-index/repair.js';
-import type { CellIndex, SendQueue } from '../../src/scale/contracts.js';
-import { MemorySendQueue } from '../../src/scale/fanout/queues.js';
-import { verifyCheckInToken } from '../../src/tokens/index.js';
+import type { CellIndex } from '../../src/scale/contracts.js';
+import { MemoryLateJoinQueue, type LateJoinQueue } from '../../src/scale/latejoin/index.js';
 
 const NOW = new Date('2026-11-09T12:00:00Z');
 const APNS = 'ab12'.repeat(16);
@@ -88,10 +86,10 @@ let places: MemoryPlaceStore;
 let alerts: InMemoryAlertStore;
 let index: FailingIndex;
 let repairs: MemoryIndexRepairQueue;
-let sendQueue: MemorySendQueue;
+let lateQueue: MemoryLateJoinQueue;
 let logs: string[];
 
-function build(opts: { lateJoin?: boolean; sendQueue?: SendQueue; repair?: boolean } = {}) {
+function build(opts: { lateJoin?: boolean; queue?: LateJoinQueue; repair?: boolean } = {}) {
   return createApi({
     devices,
     places,
@@ -100,9 +98,7 @@ function build(opts: { lateJoin?: boolean; sendQueue?: SendQueue; repair?: boole
     checkins: new MemoryCheckInStore(),
     cellIndex: index,
     ...(opts.repair === false ? {} : { repairQueue: repairs }),
-    ...(opts.lateJoin === false
-      ? {}
-      : { lateJoin: { sendQueue: opts.sendQueue ?? sendQueue, tokenKey: KEY } }),
+    ...(opts.lateJoin === false ? {} : { lateJoin: { queue: opts.queue ?? lateQueue } }),
     tokenKeys: new Map([[KEY.id, KEY.secret]]),
     clock: { now: () => NOW },
     newId: randomUUID,
@@ -114,12 +110,12 @@ beforeEach(() => {
   logs = [];
   vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => void logs.push(a.join(' ')));
   vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => void logs.push(a.join(' ')));
-  devices = new MemoryDeviceStore();
+  devices = new MemoryDeviceStore({ now: () => NOW });
   places = new MemoryPlaceStore();
   alerts = new InMemoryAlertStore();
   index = new FailingIndex();
   repairs = new MemoryIndexRepairQueue();
-  sendQueue = new MemorySendQueue();
+  lateQueue = new MemoryLateJoinQueue();
   route = build();
 });
 afterEach(() => vi.restoreAllMocks());
@@ -311,88 +307,42 @@ describe('repair Lambda', () => {
   });
 });
 
-describe('late joiners', () => {
-  const batchesOf = (q: 'urgent' | 'standard') => sendQueue.batches(q);
-
-  it('POST /places sends the active alert to a device that already has a target', async () => {
-    const alert = makeAlert();
-    await alerts.save(alert);
+describe('late-join intents (the API only asks; the late-join Lambda sends)', () => {
+  it('POST /places enqueues a place_added intent for a device that already has a target', async () => {
+    await alerts.save(makeAlert());
     const { deviceId, credential } = await register();
     await setToken(credential);
+    lateQueue.intents.length = 0; // the token change queued its own intent
     const res = await addPlace(credential);
     expect(res.status).toBe(201);
-    const [batch] = batchesOf('urgent');
-    expect(batchesOf('urgent')).toHaveLength(1);
-    expect(batchesOf('standard')).toEqual([]);
-    expect(batch).toMatchObject({
-      alertId: alert.id,
-      sourceId: alert.sourceId,
-      relaySeverity: 'warning',
-      batchKey: `${alert.id}:warning:late:${deviceId}`,
-      attempt: 0,
-    });
-    expect(batch?.recipients).toHaveLength(1);
-    expect(batch?.recipients[0]).toMatchObject({
-      deviceId,
-      target: { platform: 'ios', token: APNS },
-      language: 'en',
-    });
-    // A v2 token with the place's cell signed in, valid until the alert ends.
-    const verified = verifyCheckInToken(
-      batch?.recipients[0]?.checkInToken ?? '',
-      { alertId: alert.id, deviceId, now: NOW },
-      new Map([[KEY.id, KEY.secret]]),
-    );
-    expect(verified).toEqual({
-      ok: true,
-      h3Cell: SJ_CELL,
-      expiresAt: expect.any(Date),
-    });
-  });
-
-  it('watch and advisory alerts go to the standard queue', async () => {
-    await alerts.save(makeAlert({ relaySeverity: 'watch', event: 'Flood Watch' }));
-    const { credential } = await register();
-    await setToken(credential);
-    await addPlace(credential);
-    expect(batchesOf('standard')).toHaveLength(1);
-    expect(batchesOf('urgent')).toEqual([]);
-  });
-
-  it('skips statements, expired, cancelled and other-area alerts, and devices with no target', async () => {
-    await alerts.save(makeAlert({ relaySeverity: 'statement' }));
-    await alerts.save(makeAlert({ expires: '2026-11-09T10:00:00Z' }));
-    await alerts.save(makeAlert({ state: 'cancelled' }));
-    const far = cellToChildren(cellToParent(SJ_CELL, 3), 7).find((c) => c !== SJ_CELL) as string;
-    await alerts.save(makeAlert({}, [far]));
-    const withTarget = await register();
-    await setToken(withTarget.credential);
-    await addPlace(withTarget.credential);
-    expect(batchesOf('urgent')).toEqual([]);
-    expect(batchesOf('standard')).toEqual([]);
-
-    await alerts.save(makeAlert());
-    const noTarget = await register();
-    await addPlace(noTarget.credential);
-    expect(batchesOf('urgent')).toEqual([]);
-  });
-
-  it('PUT push-token sends active alerts for the places the device already has', async () => {
-    const alert = makeAlert();
-    await alerts.save(alert);
-    const { deviceId, credential } = await register();
-    await addPlace(credential); // no target yet: nothing to send
-    expect(batchesOf('urgent')).toEqual([]);
-    expect((await setToken(credential)).status).toBe(204);
-    expect(batchesOf('urgent').map((b) => b.batchKey)).toEqual([
-      `${alert.id}:warning:late:${deviceId}`,
+    expect(lateQueue.intents).toEqual([
+      { deviceId, placeId: res.body?.['id'], reason: 'place_added' },
     ]);
   });
 
-  it('a send queue failure never fails the API call', async () => {
+  it('PUT push-token enqueues a push_target intent', async () => {
+    const { deviceId, credential } = await register();
+    await addPlace(credential); // no target yet: no intent
+    expect(lateQueue.intents).toEqual([]);
+    expect((await setToken(credential)).status).toBe(204);
+    expect(lateQueue.intents).toEqual([{ deviceId, reason: 'push_target' }]);
+  });
+
+  it('never builds a SendBatch or mints a check-in token: the intent carries ids only', async () => {
     await alerts.save(makeAlert());
+    const { credential } = await register();
+    await setToken(credential);
+    await addPlace(credential);
+    for (const intent of lateQueue.intents) {
+      expect(Object.keys(intent).sort()).toEqual(expect.arrayContaining(['deviceId', 'reason']));
+      expect(JSON.stringify(intent)).not.toContain('checkInToken');
+      expect(JSON.stringify(intent)).not.toContain(APNS);
+    }
+  });
+
+  it('a queue failure never fails the API call', async () => {
     route = build({
-      sendQueue: {
+      queue: {
         enqueue: async () => {
           throw new Error('sqs down');
         },
@@ -406,22 +356,22 @@ describe('late joiners', () => {
     expect(logs.join('\n')).not.toContain(APNS);
   });
 
-  it('an alert store failure never fails the API call', async () => {
-    alerts.listActiveForCells = async () => {
-      throw new Error('aurora down');
-    };
-    const { credential } = await register();
-    await setToken(credential);
-    expect((await addPlace(credential)).status).toBe(201);
-  });
-
-  it('without lateJoin deps nothing is sent', async () => {
-    await alerts.save(makeAlert());
+  it('without lateJoin deps nothing is queued', async () => {
     route = build({ lateJoin: false });
     const { credential } = await register();
     await setToken(credential);
     await addPlace(credential);
-    expect(batchesOf('urgent')).toEqual([]);
+    expect(lateQueue.intents).toEqual([]);
+  });
+
+  it('answers 409 push_token_in_use when a token keeps moving between active devices', async () => {
+    const results: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      const { credential } = await register();
+      results.push((await setToken(credential)).status);
+    }
+    // Device 1 takes the free token, devices 2 and 3 are the two allowed moves, 4 is refused.
+    expect(results).toEqual([204, 204, 204, 409]);
   });
 });
 
@@ -439,7 +389,6 @@ describe('multi-place devices: deviceCells and the primary cell', () => {
     ...(await index.listForCell(LO)).entries,
     ...(await index.listForCell(HI)).entries,
   ];
-  const lateBatches = () => sendQueue.batches('urgent');
 
   it('the cells differ', () => expect(LO).not.toBe(HI));
 
@@ -504,59 +453,5 @@ describe('multi-place devices: deviceCells and the primary cell', () => {
       { op: 'update', h3Cell: '', deviceId, placeId: '' },
     );
     for (const e of await all()) expect(e.deviceCells).toEqual(BOTH);
-  });
-
-  it('a late push for a new place that is NOT the primary cell is skipped', async () => {
-    await alerts.save(makeAlert({}, BOTH));
-    const { credential } = await register();
-    await setToken(credential);
-    await add(credential, loSpot); // the device gets its late push for the primary cell
-    expect(lateBatches()).toHaveLength(1);
-    const res = await add(credential, hiSpot); // HI is not the primary: no second push
-    expect(res.status).toBe(201);
-    expect(lateBatches()).toHaveLength(1);
-  });
-
-  it('a late push for a new place that IS the primary cell is sent, with that cell in the token', async () => {
-    const alert = makeAlert({}, BOTH);
-    await alerts.save(alert);
-    const { deviceId, credential } = await register();
-    await setToken(credential);
-    await add(credential, hiSpot); // the only place, so primary: late push, cleared below
-    sendQueue.messages.urgent.length = 0;
-    await add(credential, loSpot); // LO is now the primary
-    const [batch] = lateBatches();
-    expect(batch?.batchKey).toBe(`${alert.id}:warning:late:${deviceId}`);
-    expect(
-      verifyCheckInToken(
-        batch?.recipients[0]?.checkInToken ?? '',
-        { alertId: alert.id, deviceId, now: NOW },
-        new Map([[KEY.id, KEY.secret]]),
-      ),
-    ).toEqual({ ok: true, h3Cell: LO, expiresAt: expect.any(Date) });
-  });
-
-  it('an alert that covers only the non-primary cell still gets its late push', async () => {
-    await alerts.save(makeAlert({}, [HI]));
-    const { credential } = await register();
-    await setToken(credential);
-    await add(credential, loSpot);
-    expect(lateBatches()).toHaveLength(0); // LO is outside this alert
-    await add(credential, hiSpot);
-    expect(lateBatches()).toHaveLength(1); // HI is the smallest cell of (deviceCells ∩ area)
-  });
-
-  it('a push token registered later sends one late push for the primary cell only', async () => {
-    const alert = makeAlert({}, BOTH);
-    await alerts.save(alert);
-    const { deviceId, credential } = await register();
-    await add(credential, loSpot);
-    await add(credential, hiSpot);
-    expect(lateBatches()).toHaveLength(0); // no target yet
-    await setToken(credential);
-    const batches = lateBatches();
-    expect(batches).toHaveLength(1);
-    expect(batches[0]?.recipients).toHaveLength(1);
-    expect(batches[0]?.batchKey).toBe(`${alert.id}:warning:late:${deviceId}`);
   });
 });

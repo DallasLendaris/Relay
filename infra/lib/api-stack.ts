@@ -29,9 +29,12 @@ export interface ApiStackProps extends StackProps {
   cellIndexTableArn: string;
   /** Secret CloudFront sends as x-relay-origin-verify (ConfigStack). */
   originVerifySecretArn: string;
-  /** Send queues (FanoutStack): late-joining devices are sent active alerts straight from the API. */
-  urgentQueue: { arn: string; url: string };
-  standardQueue: { arn: string; url: string };
+  /**
+   * Late-join intent queue (LateJoinStack). The API may only SEND to it; the late-join Lambda is
+   * its only consumer and does the real sending. The API has no permission on the urgent and
+   * standard send queues at all.
+   */
+  lateJoinQueue: { arn: string; url: string };
   /**
    * Refuse requests without the origin header (REQUIRE_ORIGIN_HEADER). Default: prod true, dev
    * false (dev is reached directly by developers and the app's dev builds).
@@ -173,19 +176,16 @@ export class ApiStack extends Stack {
         DEVICE_CREDENTIAL_KEYS_SECRET_ARN: props.deviceCredentialKeysSecretArn,
         CELL_INDEX_TABLE: props.cellIndexTableName,
         INDEX_REPAIR_QUEUE_URL: repairQueue.queueUrl,
-        URGENT_QUEUE_URL: props.urgentQueue.url,
-        STANDARD_QUEUE_URL: props.standardQueue.url,
+        LATEJOIN_QUEUE_URL: props.lateJoinQueue.url,
         ORIGIN_VERIFY_SECRET_ARN: props.originVerifySecretArn,
         REQUIRE_ORIGIN_HEADER: requireOrigin ? 'true' : 'false',
       },
       ...concurrency(reserved.api),
     });
     grantSecretRead(apiFn, props.originVerifySecretArn);
-    allow(
-      apiFn,
-      ['sqs:SendMessage'],
-      [repairQueue.queueArn, props.urgentQueue.arn, props.standardQueue.arn],
-    );
+    // The API can enqueue repairs and late-join INTENTS only. It has no permission on the urgent
+    // and standard send queues (SEC-C-1): a compromised API cannot push an alert to any device.
+    allow(apiFn, ['sqs:SendMessage'], [repairQueue.queueArn, props.lateJoinQueue.arn]);
 
     // Repair Lambda: re-reads Aurora and rewrites the cell-index entries the API failed to write.
     const repairFn = new NodejsFunction(this, 'IndexRepairFunction', {
@@ -230,6 +230,10 @@ export class ApiStack extends Stack {
 
     grantDb(apiFn, props.db, 'api');
     allow(apiFn, ['geo:SearchPlaceIndexForText'], [placeIndex.attrArn]);
+    // Read access to the token keyring is kept for VERIFYING check-in tokens (the route is
+    // stateless). Known limitation: the same secret holds the current signing key, so a
+    // compromised API could still mint a token; without send-queue access it can no longer
+    // deliver one to any phone. Asymmetric token signing would close the rest.
     grantSecretRead(apiFn, props.tokenKeysSecretArn);
     grantSecretRead(apiFn, props.deviceCredentialKeysSecretArn);
     // Check-in rows: written with PutItem, read back with GetItem.
