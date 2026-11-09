@@ -20,7 +20,8 @@ import { QUEUE_FOR_SEVERITY } from '../scale/contracts.js';
 import { SqsPlanQueue, type PlanQueue } from '../scale/fanout/queues.js';
 import { AlertPublisher, type PublishOptions } from '../scale/publish/alert-publisher.js';
 import { S3PublicObjectWriter } from '../scale/publish/s3-object-writer.js';
-import { createAlertVerifier } from '../signing/index.js';
+import { createAlertVerifier } from '../signing/alertSignature.js';
+import type { AlertSigning } from '../signing/memory.js';
 import { parseFeed } from './feed.js';
 import type { EngineDeps } from './handler.js';
 import { applyMessage } from './lifecycle.js';
@@ -33,7 +34,8 @@ export interface PipelineDeps {
   places: PlaceStore;
   devices: DeviceStore;
   queue: DeliveryQueue;
-  alertKeys: Keyring;
+  /** Signs saved alerts (KMS in AWS) and the public keys that verify them before delivery. */
+  alertSigning: AlertSigning;
   tokenKeys: Keyring;
   isDeliveryPaused(): Promise<boolean>;
   /** Used for zone-geometry lookups. */
@@ -75,7 +77,7 @@ const jsonLogger: Logger = {
 export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
   const clock = deps.clock ?? { now: () => new Date() };
   const logger = deps.logger ?? jsonLogger;
-  const verifyAlert = createAlertVerifier(deps.alertKeys.all);
+  const verifyAlert = createAlertVerifier(deps.alertSigning.publicKeys);
   const env = deps.env ?? process.env;
   const queueMode = env.FANOUT_MODE === 'queue';
   let planQueue = deps.planQueue;
@@ -126,7 +128,7 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
         clock,
       })
     : undefined;
-  const store = new SigningAlertStore(deps.alertStore, deps.alertKeys.current);
+  const store = new SigningAlertStore(deps.alertStore, deps.alertSigning.signer);
 
   /** Publishes the alert JSON, then the shard indexes (bounded). Never throws. */
   async function publishPublic(saved: Alert): Promise<void> {

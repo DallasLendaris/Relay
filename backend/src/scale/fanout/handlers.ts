@@ -17,7 +17,7 @@ import { clearKeyringCache, loadKeyring } from '../../config/secrets.js';
 import { DataApiExecutor } from '../../db/sql.js';
 import type { Context } from 'aws-lambda';
 import type { Logger } from '../../delivery/types.js';
-import { createAlertVerifier } from '../../signing/index.js';
+import { alertVerifierFromEnv } from '../../signing/kms.js';
 import { createCheckInToken, type TokenKey } from '../../tokens/index.js';
 import type { FanoutRefusal } from './common.js';
 import { CachedAlertReader } from './alert-cache.js';
@@ -190,7 +190,7 @@ const PLANNER_ENV = [
   'DB_CLUSTER_ARN',
   'DB_SECRET_ARN',
   'DB_NAME',
-  'ALERT_KEYS_SECRET_ARN',
+  'ALERT_VERIFY_KEYS',
   'KILL_SWITCH_PARAM',
   'PAUSED_QUEUE_URL',
 ] as const;
@@ -205,7 +205,7 @@ const SHARD_ENV = [
   'URGENT_QUEUE_URL',
   'STANDARD_QUEUE_URL',
   'CELL_INDEX_TABLE',
-  'ALERT_KEYS_SECRET_ARN',
+  'ALERT_VERIFY_KEYS',
   'TOKEN_KEYS_SECRET_ARN',
   'KILL_SWITCH_PARAM',
   'PAUSED_QUEUE_URL',
@@ -245,9 +245,10 @@ function buildPlanner(env: Record<string, string | undefined>) {
   };
   const withKeys = async (): Promise<PlannerDeps> => ({
     ...base,
-    verifyAlert: createAlertVerifier((await loadKeyring(e.ALERT_KEYS_SECRET_ARN)).all),
+    verifyAlert: await alertVerifierFromEnv(env),
   });
-  // Keys are read per invocation (loadKeyring caches for 5 minutes), so rotation is picked up.
+  // The alert verifier (public keys and memo) is built once per container; the refresh path
+  // only re-reads keyrings.
   const paused = new SqsPausedQueue(new SQSClient({}), e.PAUSED_QUEUE_URL);
   return async (event: SQSEvent) =>
     buildPlannerHandler(
@@ -288,13 +289,13 @@ function buildShard(env: Record<string, string | undefined>) {
   };
   const paused = new SqsPausedQueue(new SQSClient({}), e.PAUSED_QUEUE_URL);
   const withKeys = async (): Promise<ShardWorkerDeps> => {
-    const [alertKeys, tokenKeys] = await Promise.all([
-      loadKeyring(e.ALERT_KEYS_SECRET_ARN),
+    const [verifyAlert, tokenKeys] = await Promise.all([
+      alertVerifierFromEnv(env),
       loadKeyring(e.TOKEN_KEYS_SECRET_ARN),
     ]);
     return {
       ...base,
-      verifyAlert: createAlertVerifier(alertKeys.all),
+      verifyAlert,
       makeCheckInToken: makeCheckInTokenFor(tokenKeys.current),
     };
   };

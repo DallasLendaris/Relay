@@ -12,8 +12,8 @@ import { DynamoIdempotencyStore } from '../adapters/aws/dynamo-idempotency-store
 import { PostgresAlertStore } from '../adapters/postgres/alert-store.js';
 import { PostgresDeviceStore } from '../adapters/postgres/device-store.js';
 import { createKillSwitch } from '../config/kill-switch.js';
-import { clearKeyringCache, loadKeyring, loadSecretString } from '../config/secrets.js';
-import { createAlertVerifier } from '../signing/index.js';
+import { loadSecretString } from '../config/secrets.js';
+import { alertVerifierFromEnv } from '../signing/kms.js';
 import { DataApiExecutor } from '../db/sql.js';
 import type { Logger } from './types.js';
 import { deliveryWorker } from './worker.js';
@@ -37,9 +37,7 @@ export function resolveExpoAccessToken(raw: string, log: Logger): string | undef
   return token;
 }
 
-type Deps = Omit<Parameters<typeof deliveryWorker>[1], 'verifyAlert'> & {
-  alertKeysArn: string;
-};
+type Deps = Parameters<typeof deliveryWorker>[1];
 let deps: Promise<Deps> | undefined;
 
 async function buildDeps(env: Record<string, string | undefined>): Promise<Deps> {
@@ -49,7 +47,7 @@ async function buildDeps(env: Record<string, string | undefined>): Promise<Deps>
     DB_NAME,
     EXPO_ACCESS_TOKEN_SECRET_ARN,
     IDEMPOTENCY_TABLE,
-    ALERT_KEYS_SECRET_ARN,
+    ALERT_VERIFY_KEYS,
     KILL_SWITCH_PARAM,
   } = env;
   if (
@@ -57,11 +55,11 @@ async function buildDeps(env: Record<string, string | undefined>): Promise<Deps>
     !DB_SECRET_ARN ||
     !DB_NAME ||
     !IDEMPOTENCY_TABLE ||
-    !ALERT_KEYS_SECRET_ARN ||
+    !ALERT_VERIFY_KEYS ||
     !KILL_SWITCH_PARAM
   ) {
     throw new Error(
-      'DB_CLUSTER_ARN, DB_SECRET_ARN, DB_NAME, IDEMPOTENCY_TABLE, ALERT_KEYS_SECRET_ARN and KILL_SWITCH_PARAM must be set',
+      'DB_CLUSTER_ARN, DB_SECRET_ARN, DB_NAME, IDEMPOTENCY_TABLE, ALERT_VERIFY_KEYS and KILL_SWITCH_PARAM must be set',
     );
   }
   // The Expo access token is optional. When set, it goes out as a bearer token.
@@ -77,7 +75,8 @@ async function buildDeps(env: Record<string, string | undefined>): Promise<Deps>
       DynamoDBDocumentClient.from(new DynamoDBClient({})),
       IDEMPOTENCY_TABLE,
     ),
-    alertKeysArn: ALERT_KEYS_SECRET_ARN,
+    // Public keys are fetched once per container (kms:GetPublicKey); verification is local.
+    verifyAlert: await alertVerifierFromEnv(env),
     isDeliveryPaused: createKillSwitch(KILL_SWITCH_PARAM),
     onDeadToken: (token) => devices.clearPushToken(token),
     clock: { now: () => new Date() },
@@ -91,16 +90,5 @@ export const handler = async (event: SQSEvent): Promise<SQSBatchResponse> => {
     deps = undefined;
     throw err;
   });
-  const built = await deps;
-  // Loaded per invocation (cached 5 minutes inside loadKeyring) so key rotation is picked up.
-  let verify = createAlertVerifier((await loadKeyring(built.alertKeysArn)).all);
-  return deliveryWorker(event, {
-    ...built,
-    verifyAlert: (alert) => verify(alert),
-    // A signature failure may just mean a key was rotated in after our cache filled.
-    refreshKeys: async () => {
-      clearKeyringCache();
-      verify = createAlertVerifier((await loadKeyring(built.alertKeysArn)).all);
-    },
-  });
+  return deliveryWorker(event, await deps);
 };

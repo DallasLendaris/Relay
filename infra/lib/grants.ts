@@ -87,6 +87,50 @@ export function grantDbToRole(principal: IRole, db: DbRefs, role: DbRole): void 
   for (const s of dbStatements(db, role)) principal.addToPrincipalPolicy(s);
 }
 
+/**
+ * Alert signing (KMS asymmetric). Writers (the ingest Lambda; the operator running alert-recall)
+ * sign with `current`; every verifier accepts each key in `verify` (current first) and needs only
+ * kms:GetPublicKey, fetched once per container. Nobody but a writer can produce a signature.
+ */
+export interface AlertSigningRefs {
+  current: { kid: string; keyArn: string };
+  verify: { kid: string; keyArn: string }[];
+}
+
+/** ALERT_VERIFY_KEYS for a verifier. */
+export function alertVerifyEnv(s: AlertSigningRefs) {
+  return {
+    ALERT_VERIFY_KEYS: JSON.stringify(s.verify.map((k) => ({ kid: k.kid, kmsKeyId: k.keyArn }))),
+  };
+}
+
+/** Writer env: the verify list plus ALERT_SIGNING_KMS_KEY and ALERT_SIGNING_KID. */
+export function alertSignEnv(s: AlertSigningRefs) {
+  return {
+    ...alertVerifyEnv(s),
+    ALERT_SIGNING_KMS_KEY: s.current.keyArn,
+    ALERT_SIGNING_KID: s.current.kid,
+  };
+}
+
+export function alertVerifyStatement(s: AlertSigningRefs): PolicyStatement {
+  return new PolicyStatement({
+    effect: Effect.ALLOW,
+    actions: ['kms:GetPublicKey'],
+    resources: s.verify.map((k) => k.keyArn),
+  });
+}
+
+export function grantAlertVerify(fn: IFunction, s: AlertSigningRefs): void {
+  fn.addToRolePolicy(alertVerifyStatement(s));
+}
+
+/** kms:Sign on the current key. Only the alert writers get this. */
+export function grantAlertSign(fn: IFunction, s: AlertSigningRefs): void {
+  allow(fn, ['kms:Sign'], [s.current.keyArn]);
+  grantAlertVerify(fn, s);
+}
+
 export function grantSecretRead(fn: IFunction, secretArn: string): void {
   allow(fn, ['secretsmanager:GetSecretValue'], [secretArn]);
 }

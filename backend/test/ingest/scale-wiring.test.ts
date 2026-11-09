@@ -12,6 +12,7 @@ import { validateScaleEnv } from '../../src/ingest/handler.js';
 import { createIngestPipeline, ZONE_PACK_KEY } from '../../src/ingest/pipeline.js';
 import { MemoryPlanQueue } from '../../src/scale/fanout/queues.js';
 import { activeShardKey } from '../../src/scale/publish/paths.js';
+import { TEST_SIGNING } from '../signing/test-signing.js';
 
 const feed = JSON.parse(
   readFileSync(new URL('../fixtures/nws/active-ca-mixed.json', import.meta.url), 'utf8'),
@@ -48,7 +49,7 @@ function build(env: Record<string, string | undefined>) {
     places: new MemoryPlaceStore(),
     devices: new MemoryDeviceStore(),
     queue: new MemoryDeliveryQueue(),
-    alertKeys: ring('a1', 'alert-secret'),
+    alertSigning: TEST_SIGNING,
     tokenKeys: ring('t1', 'token-secret'),
     isDeliveryPaused: async () => false,
     fetch: fetchSpy as unknown as typeof fetch,

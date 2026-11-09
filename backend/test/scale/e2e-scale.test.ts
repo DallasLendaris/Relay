@@ -46,6 +46,7 @@ import { createDeadTargetClearer } from '../../src/scale/sender/dead-target.js';
 import { processBatch, type BatchOutcome } from '../../src/scale/sender/sender.js';
 import { createAlertVerifier } from '../../src/signing/index.js';
 import { createDeviceCredential } from '../../src/tokens/index.js';
+import { TEST_SIGNING } from '../signing/test-signing.js';
 
 const feed = JSON.parse(
   readFileSync(new URL('../fixtures/nws/active-ca-mixed.json', import.meta.url), 'utf8'),
@@ -55,7 +56,6 @@ const ring = (id: string, secret: string) => ({
   current: { id, secret },
   all: new Map([[id, secret]]),
 });
-const ALERT_KEYS = ring('a1', 'alert-secret');
 const TOKEN_KEYS = ring('t1', 'token-secret');
 const CRED_KEY = { id: 'c1', secret: 'credential-secret' };
 const SEND_NOW = new Date('2026-11-09T15:00:00Z');
@@ -171,7 +171,7 @@ describe('statewide scale path, in memory', () => {
       places: new MemoryPlaceStore(),
       devices: new MemoryDeviceStore(),
       queue: directQueue,
-      alertKeys: ALERT_KEYS,
+      alertSigning: TEST_SIGNING,
       tokenKeys: TOKEN_KEYS,
       isDeliveryPaused: async () => false,
       fetch: (async () => new Response('{}', { status: 404 })) as typeof fetch,
@@ -249,7 +249,7 @@ describe('statewide scale path, in memory', () => {
     const push = new FakePushService();
     const sendQueue = new MemorySendQueue();
     const idempotency = new MemoryIdempotencyStore(clock);
-    const verifyAlert = createAlertVerifier(ALERT_KEYS.all);
+    const verifyAlert = createAlertVerifier(TEST_SIGNING.publicKeys);
     const outcomes: BatchOutcome[] = [];
     const senderDeps = {
       idempotency,

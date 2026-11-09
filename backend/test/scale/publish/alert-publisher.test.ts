@@ -24,8 +24,9 @@ import {
   type PublicAlertDocument,
 } from '@relay/shared';
 import { createAlertVerifier } from '../../../src/signing/index.js';
+import { TEST_SIGNING } from '../../signing/test-signing.js';
 
-const KEY = { id: 'k1', secret: 'test-secret-not-real' };
+const KEY = TEST_SIGNING.signer;
 const NOW = new Date('2026-06-01T12:00:00Z');
 
 const LA = latLngToCell(34.05, -118.25, 7);
@@ -131,12 +132,12 @@ describe('AlertPublisher via SigningAlertStore', () => {
     expect(body.area.cellCount).toBe(2);
     expect(body.official.description).toBe('d');
     expect(body.summaries.length).toBeGreaterThan(0);
-    expect(body.signature).toMatch(/^v1\.k1\./);
+    expect(body.signature).toMatch(/^v2\.a1\./);
 
     // Authenticity: the signature is the alert's own and still verifies on the full alert; the
     // document is exactly what the full, verified alert produces (cells bound by digest).
     expect(body.signature).toBe(saved.signature);
-    expect(createAlertVerifier(new Map([[KEY.id, KEY.secret]]))(saved)).toBe(true);
+    expect(createAlertVerifier(TEST_SIGNING.publicKeys)(saved)).toBe(true);
     expect(documentMatchesAlert(body, saved)).toBe(true);
     expect(body.area.cellsSha256).toBe(cellsDigest([LA, LA2]));
     expect(documentMatchesAlert(body, { ...saved, area: { ...saved.area, h3Cells: [LA] } })).toBe(
@@ -275,7 +276,7 @@ describe('AlertPublisher via SigningAlertStore', () => {
     const inner = new InMemoryAlertStore();
     const store = new SigningAlertStore(inner, KEY);
     await store.save(alert(A, [LA]));
-    expect((await inner.get(A))?.signature).toMatch(/^v1\./);
+    expect((await inner.get(A))?.signature).toMatch(/^v2\./);
     expect(writer.puts).toEqual([]);
   });
 

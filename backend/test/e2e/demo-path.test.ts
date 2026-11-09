@@ -26,6 +26,7 @@ import { pollOnce } from '../../src/ingest/poll.js';
 import { createAlertVerifier, verifyAlertSignature } from '../../src/signing/index.js';
 import { verifyCheckInToken } from '../../src/tokens/index.js';
 import type { Keyring } from '../../src/config/secrets.js';
+import { TEST_SIGNING } from '../signing/test-signing.js';
 
 const readFixture = (name: string) =>
   readFileSync(new URL(`../fixtures/nws/${name}.json`, import.meta.url), 'utf8');
@@ -39,7 +40,6 @@ const ring = (id: string, secret: string): Keyring => ({
   current: { id, secret },
   all: new Map([[id, secret]]),
 });
-const alertKeys = ring('a1', 'alert-secret');
 const tokenKeys = ring('t1', 'token-secret');
 
 // A point inside the Flash Flood Warning polygon (active-ca-mixed) and the Flood Warning
@@ -101,7 +101,7 @@ function setup(opts: { queue?: MemoryDeliveryQueue; feed?: string } = {}) {
     places,
     devices,
     queue,
-    alertKeys,
+    alertSigning: TEST_SIGNING,
     tokenKeys,
     isDeliveryPaused: async () => kill.ingestPaused,
     fetch: fakeFetch,
@@ -129,7 +129,7 @@ function setup(opts: { queue?: MemoryDeliveryQueue; feed?: string } = {}) {
       sender,
       alerts: alertStore,
       idempotency,
-      verifyAlert: createAlertVerifier(alertKeys.all),
+      verifyAlert: createAlertVerifier(TEST_SIGNING.publicKeys),
       isDeliveryPaused: async () => kill.workerPaused,
       onDeadToken: (token) => devices.clearPushToken(token),
       clock,
@@ -213,7 +213,7 @@ describe('demo path', () => {
     const stored = await s.alertStore.get(alertId);
     expect(stored?.event).toBe('Flash Flood Warning');
     expect(stored?.signature).toBeTruthy();
-    expect(stored && verifyAlertSignature(stored, alertKeys.all)).toEqual({ ok: true });
+    expect(stored && verifyAlertSignature(stored, TEST_SIGNING.publicKeys)).toEqual({ ok: true });
     expect(stored?.summaries.map((x) => x.language).sort()).toEqual(['en', 'es']);
 
     // Polling the same feed again plans and sends nothing more.
@@ -355,7 +355,7 @@ describe('demo path', () => {
       devices: s.devices,
       queue,
       tokenKey: tokenKeys.current,
-      verifyAlert: createAlertVerifier(alertKeys.all),
+      verifyAlert: createAlertVerifier(TEST_SIGNING.publicKeys),
       isDeliveryPaused: async () => true,
       clock,
       logger: noopLogger,
@@ -402,7 +402,7 @@ describe('demo path', () => {
       devices: s.devices,
       queue,
       tokenKey: tokenKeys.current,
-      verifyAlert: createAlertVerifier(alertKeys.all),
+      verifyAlert: createAlertVerifier(TEST_SIGNING.publicKeys),
       isDeliveryPaused: async () => false,
       clock,
       logger: noopLogger,

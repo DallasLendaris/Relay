@@ -11,9 +11,10 @@ import { createIngestPipeline } from '../../src/ingest/pipeline.js';
 import { verifyAlertSignature } from '../../src/signing/index.js';
 import { parseArgs, recallAlert } from '../../scripts/alert-recall.js';
 import { alert as dbAlert, freshDb } from '../db/helpers.js';
+import { TEST_SIGNING } from '../signing/test-signing.js';
 
-const key = { id: 'k1', secret: 'secret' };
-const keys = new Map([[key.id, key.secret]]);
+const key = TEST_SIGNING.signer;
+const keys = TEST_SIGNING.publicKeys;
 const ID = '6f1c1d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f';
 
 function active(over: Partial<Alert> = {}): Alert {
@@ -149,7 +150,7 @@ describe('pipeline wiring', () => {
       places: new MemoryPlaceStore(),
       devices: new MemoryDeviceStore(),
       queue: new MemoryDeliveryQueue(),
-      alertKeys: { current: key, all: keys },
+      alertSigning: TEST_SIGNING,
       tokenKeys: { current: { id: 't', secret: 't' }, all: new Map([['t', 't']]) },
       isDeliveryPaused: async () => false,
       fetch: (async () => new Response('{}', { status: 404 })) as typeof fetch,

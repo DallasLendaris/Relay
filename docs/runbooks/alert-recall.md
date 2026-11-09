@@ -39,9 +39,13 @@ ingest Lambda):
 
 ```
 DB_CLUSTER_ARN=...  DB_SECRET_ARN=...  DB_NAME=...
-ALERT_KEYS_SECRET_ARN=...
+ALERT_SIGNING_KMS_KEY=alias/relay/<stage>/alert-signing-v<n>  ALERT_SIGNING_KID=<stage>-alert-v<n>
 PUBLIC_ALERTS_BUCKET=...  PUBLIC_ALERTS_REGION=...
 ```
+
+The operator's role needs `kms:Sign` on that key (ConfigStack output `AlertSigningKeyArn`); no
+deployed principal other than the ingest Lambda holds it. Grant it for the recall and remove it
+afterwards. The kid must be the current entry in the verifiers' `ALERT_VERIFY_KEYS`.
 
 1. Find the alert id. In the app/API it is `id` in `GET /alerts`; in the database it is
    `alerts.id`.

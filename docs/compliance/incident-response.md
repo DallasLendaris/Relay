@@ -98,21 +98,21 @@ To resume, write `running` the same way, then redrive DLQs, then watch the sende
 
 Keys and secrets and what each protects:
 
-| Secret                                          | Compromise means                                                                                             |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `relay/<stage>/alert-keys` (HMAC)               | Someone can sign a forged alert. Five identities can read it, including the Fargate sender (SEC-C-7, RED-2). |
-| `relay/<stage>/token-keys`                      | Someone can mint check-in tokens.                                                                            |
-| `relay/<stage>/device-credential-keys`          | Someone can derive device credentials and impersonate devices.                                               |
-| `relay/<stage>/apns-key`, `fcm-service-account` | Someone can send pushes to your app as Relay.                                                                |
-| Aurora admin secret (`relay_admin`)             | Full read and write on all personal data (PRIV-6).                                                           |
-| `relay/<stage>/origin-verify`                   | The CloudFront origin guard can be bypassed.                                                                 |
+| Secret                                          | Compromise means                                                                                      |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| KMS `alias/relay/<stage>/alert-signing-v<n>`    | `kms:Sign` lets someone sign a forged alert. Only the ingest Lambda (and a recall operator) holds it. |
+| `relay/<stage>/token-keys`                      | Someone can mint check-in tokens.                                                                     |
+| `relay/<stage>/device-credential-keys`          | Someone can derive device credentials and impersonate devices.                                        |
+| `relay/<stage>/apns-key`, `fcm-service-account` | Someone can send pushes to your app as Relay.                                                         |
+| Aurora admin secret (`relay_admin`)             | Full read and write on all personal data (PRIV-6).                                                    |
+| `relay/<stage>/origin-verify`                   | The CloudFront origin guard can be bypassed.                                                          |
 
 Steps:
 
 1. Declare SEV-1. Pause delivery (playbook B) if alert or push keys are involved.
 2. Preserve evidence: secret version history, any CloudTrail data if it exists (it does not by default), logs.
 3. **Rotate the HMAC keyrings:** `npm run seed-keys -- <stage> --rotate` in `infra/` adds a new key id and makes it current. Old keys stay in the keyring so existing tokens still verify, and loaders cache for about 5 minutes (`infra/README.md`). For a real compromise you must then **remove the old key id** from the keyring so forgeries stop verifying. That invalidates tokens and alerts signed by it, so plan the user impact: lost check-in links for open alerts, re-signing of active alerts.
-4. **Known defect:** `--rotate` names the new key `k{count+1}`, so after a key has been deleted it can overwrite a live key (SEC-C-5, OPS-8). Check the keyring contents with `aws secretsmanager get-secret-value` before and after, and do not delete a key id and then rotate again without checking.
+4. **Alert signing key:** add the next `alertSigningVersions` entry and deploy (infra/README.md "Alert signing key"); for a compromise, drop the old version from the list at once so verifiers stop accepting it, then re-sign active alerts. `seed-keys --rotate` kids are monotonic and never overwrite a live key (SEC-C-5 fixed).
 5. **Device-credential keyring:** rotating without keeping the old key forces every device to re-register (OPS-6, SEC-A-2). Keep the old key during a normal rotation. Remove it only for a confirmed compromise, and tell users.
 6. **APNs and FCM:** create a new key in the Apple or Google console, write it to the secret, and **force a new sender deployment** because the sender caches it (undocumented, OPS-8). Revoke the old key.
 7. **Aurora:** rotate the admin secret in Secrets Manager. There is no rotation schedule today. Check that all consumers re-read it, because they cache.

@@ -4,15 +4,16 @@ import { PostgresAlertStore } from '../../src/adapters/postgres/alert-store.js';
 import { SigningAlertStore } from '../../src/adapters/signing-alert-store.js';
 import { createAlertVerifier } from '../../src/signing/index.js';
 import { alert, freshDb } from './helpers.js';
+import { TEST_SIGNING } from '../signing/test-signing.js';
 
 // Delivery refuses any alert whose signature fails, so an alert must still verify after a
 // trip through the real Postgres store (cells are stored in a separate table and reassembled).
 describe('signed alert survives a Postgres round trip', () => {
   it('verifies after save and reload, even when cells arrive unsorted with duplicates', async () => {
     const db = await freshDb();
-    const key = { id: 'k1', secret: 'test-secret-for-roundtrip' };
+    const key = TEST_SIGNING.signer;
     const store = new SigningAlertStore(new PostgresAlertStore(db), key);
-    const verify = createAlertVerifier(new Map([[key.id, key.secret]]));
+    const verify = createAlertVerifier(TEST_SIGNING.publicKeys);
 
     const cells = gridDisk(latLngToCell(37.33, -121.88, 7), 3);
     const shuffled = [...cells].reverse().concat(cells.slice(0, 5));

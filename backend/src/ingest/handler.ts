@@ -6,6 +6,7 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { RDSDataClient } from '@aws-sdk/client-rds-data';
 import { S3Client } from '@aws-sdk/client-s3';
+import { KMSClient } from '@aws-sdk/client-kms';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
@@ -17,6 +18,8 @@ import { PostgresDeviceStore } from '../adapters/postgres/device-store.js';
 import { PostgresPlaceStore } from '../adapters/postgres/place-store.js';
 import { createKillSwitch } from '../config/kill-switch.js';
 import { loadKeyring } from '../config/secrets.js';
+import type { AlertSigner } from '../signing/alertSignature.js';
+import { alertSignerFromEnv, loadAlertPublicKeys, parseVerifyKeys } from '../signing/kms.js';
 import { DataApiExecutor } from '../db/sql.js';
 import { MIN_POLL_INTERVAL_MS, createNwsClient, sharedGate } from './nws-client.js';
 import { createIngestPipeline, type PipelineDeps } from './pipeline.js';
@@ -192,7 +195,9 @@ const REQUIRED_ENV = [
   'DB_NAME',
   'DELIVERY_QUEUE_URL',
   'TOKEN_KEYS_SECRET_ARN',
-  'ALERT_KEYS_SECRET_ARN',
+  'ALERT_SIGNING_KMS_KEY',
+  'ALERT_SIGNING_KID',
+  'ALERT_VERIFY_KEYS',
   'KILL_SWITCH_PARAM',
   'NWS_USER_AGENT',
 ] as const;
@@ -229,6 +234,8 @@ interface Runtime {
   env: Record<(typeof REQUIRED_ENV)[number], string>;
   stores: Pick<PipelineDeps, 'alertStore' | 'places' | 'devices' | 'queue' | 'isDeliveryPaused'>;
   secrets: SecretsManagerClient;
+  kms: KMSClient;
+  signer: AlertSigner;
 }
 
 function buildRuntime(source: Record<string, string | undefined>): Runtime {
@@ -243,9 +250,12 @@ function buildRuntime(source: Record<string, string | undefined>): Runtime {
     env.DB_SECRET_ARN,
     env.DB_NAME,
   );
+  const kms = new KMSClient({});
   return {
     env,
     secrets: new SecretsManagerClient({}),
+    kms,
+    signer: alertSignerFromEnv(env, kms),
     stores: {
       alertStore: new PostgresAlertStore(db),
       places: new PostgresPlaceStore(db),
@@ -263,15 +273,16 @@ export const handler = async (
   context: LambdaContext,
 ): Promise<{ polls: PollCounts[] }> => {
   runtime ??= buildRuntime(process.env);
-  const { env, stores, secrets } = runtime;
-  // loadKeyring caches for 5 minutes, so a rotated secret is picked up while warm.
-  const [alertKeys, tokenKeys] = await Promise.all([
-    loadKeyring(env.ALERT_KEYS_SECRET_ARN, secrets),
+  const { env, stores, secrets, kms, signer } = runtime;
+  // loadKeyring caches for 5 minutes, so a rotated secret is picked up while warm. Alert public
+  // keys are fetched from KMS once per container; signing calls KMS once per saved alert.
+  const [publicKeys, tokenKeys] = await Promise.all([
+    loadAlertPublicKeys(parseVerifyKeys(env.ALERT_VERIFY_KEYS), kms),
     loadKeyring(env.TOKEN_KEYS_SECRET_ARN, secrets),
   ]);
   const engine = createIngestPipeline({
     ...stores,
-    alertKeys,
+    alertSigning: { signer, publicKeys },
     tokenKeys,
     fetch,
     userAgent: env.NWS_USER_AGENT,

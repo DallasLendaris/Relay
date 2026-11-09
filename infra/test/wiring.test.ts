@@ -420,12 +420,11 @@ describe('ConfigStack', () => {
   });
 
   it('has keyring-shaped key secrets and an Expo secret', () => {
-    t.resourceCountIs('AWS::SecretsManager::Secret', 5); // plus the origin-verify secret
+    t.resourceCountIs('AWS::SecretsManager::Secret', 4); // plus the origin-verify secret
     t.hasResourceProperties('AWS::SecretsManager::Secret', {
       Name: 'relay/dev/token-keys',
       SecretString: Match.stringLikeRegexp('"current":"k1".*"keys"'),
     });
-    t.hasResourceProperties('AWS::SecretsManager::Secret', { Name: 'relay/dev/alert-keys' });
     t.hasResourceProperties('AWS::SecretsManager::Secret', {
       Name: 'relay/dev/device-credential-keys',
       SecretString: Match.stringLikeRegexp('"current":"k1".*"keys"'),

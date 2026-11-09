@@ -16,9 +16,10 @@ import {
 } from '../../src/ingest/poll.js';
 import type { SeenStore } from '../../src/ports.js';
 import { verifyAlertSignature } from '../../src/signing/index.js';
+import { TEST_SIGNING } from '../signing/test-signing.js';
 
 const NOW = new Date('2026-11-09T18:30:00Z');
-const key = { id: 'k1', secret: 'secret' };
+const key = TEST_SIGNING.signer;
 
 function alert(over: Partial<Alert> = {}): Alert {
   return {
@@ -160,7 +161,7 @@ describe('SAFE-12: feed reconciliation', () => {
     expect(stored?.state).toBe('cancelled');
     expect(stored?.summaries).toEqual([]);
     expect(stored?.signature).not.toBeNull();
-    expect(verifyAlertSignature(stored as Alert, new Map([[key.id, key.secret]]))).toEqual({
+    expect(verifyAlertSignature(stored as Alert, TEST_SIGNING.publicKeys)).toEqual({
       ok: true,
     });
     expect(t.published.map((p) => p.id)).toEqual([alert().id]); // republished

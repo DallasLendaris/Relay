@@ -4,26 +4,32 @@
  * CDN copy and the shard index drop it. It does NOT send a "cancelled" push: see
  * docs/runbooks/alert-recall.md.
  *
- *   DB_CLUSTER_ARN=... DB_SECRET_ARN=... DB_NAME=... ALERT_KEYS_SECRET_ARN=... \
+ *   DB_CLUSTER_ARN=... DB_SECRET_ARN=... DB_NAME=... \
+ *   ALERT_SIGNING_KMS_KEY=alias/relay/<stage>/alert-signing-v<n> ALERT_SIGNING_KID=<stage>-alert-v<n> \
  *   PUBLIC_ALERTS_BUCKET=... PUBLIC_ALERTS_REGION=... \
  *     npx tsx backend/scripts/alert-recall.ts <alert-id> --reason "why" [--dry-run]
  *
  * Without PUBLIC_ALERTS_BUCKET the stored alert is still cancelled but nothing is republished
  * (the script says so). The reason is written to the structured log line `alert.recalled`.
+ *
+ * IAM the operator needs (an alert writer, like the ingest Lambda): kms:Sign on the current alert
+ * signing key (ConfigStack output AlertSigningKeyArn), rds-data:ExecuteStatement and
+ * secretsmanager:GetSecretValue on the cluster and a role secret that can write alerts
+ * (relay/<stage>/db/relay_ingest), and s3:PutObject on the public alerts bucket when republishing.
+ * Grant kms:Sign to the operator role for the recall only; nothing else holds it.
  */
 import { pathToFileURL } from 'node:url';
 import { RDSDataClient } from '@aws-sdk/client-rds-data';
 import { S3Client } from '@aws-sdk/client-s3';
-import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { SigningAlertStore } from '../src/adapters/signing-alert-store.js';
 import { PostgresAlertStore } from '../src/adapters/postgres/alert-store.js';
-import { loadKeyring } from '../src/config/secrets.js';
 import { DataApiExecutor } from '../src/db/sql.js';
 import type { Logger } from '../src/delivery/types.js';
 import { H3_RESOLUTION } from '../src/geo/index.js';
 import type { AlertStore } from '../src/ports.js';
 import { AlertPublisher } from '../src/scale/publish/alert-publisher.js';
 import { S3PublicObjectWriter } from '../src/scale/publish/s3-object-writer.js';
+import { alertSignerFromEnv } from '../src/signing/kms.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -131,9 +137,8 @@ async function main(): Promise<void> {
     requireEnv('DB_SECRET_ARN'),
     requireEnv('DB_NAME'),
   );
-  const keys = await loadKeyring(requireEnv('ALERT_KEYS_SECRET_ARN'), new SecretsManagerClient({}));
   const inner = new PostgresAlertStore(db);
-  const store = new SigningAlertStore(inner, keys.current);
+  const store = new SigningAlertStore(inner, alertSignerFromEnv(process.env));
   const bucket = process.env['PUBLIC_ALERTS_BUCKET'];
   const region = process.env['PUBLIC_ALERTS_REGION'];
   const publisher = bucket

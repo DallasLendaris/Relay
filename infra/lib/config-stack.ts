@@ -1,7 +1,17 @@
-import { CfnOutput, RemovalPolicy, SecretValue, Stack, StackProps, Tags } from 'aws-cdk-lib';
+import {
+  CfnOutput,
+  Duration,
+  RemovalPolicy,
+  SecretValue,
+  Stack,
+  StackProps,
+  Tags,
+} from 'aws-cdk-lib';
+import { Key, KeySpec, KeyUsage } from 'aws-cdk-lib/aws-kms';
 import { Secret } from 'aws-cdk-lib/aws-secretsmanager';
 import { StringParameter } from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
+import type { AlertSigningRefs } from './grants.js';
 
 export interface ConfigStackProps extends StackProps {
   stage: 'dev' | 'prod';
@@ -10,7 +20,17 @@ export interface ConfigStackProps extends StackProps {
    * edge stack can resolve it by name at deploy time (see originVerifySecretName).
    */
   originVerifyReplicaRegion?: string;
+  /**
+   * Alert signing key versions (default [1]). Each is its own KMS ECC_NIST_P256 key; the highest
+   * signs, and verifiers accept all of them. To rotate, add the next version, deploy, and drop
+   * the old one once alerts signed with it have expired (README "Alert signing key").
+   */
+  alertSigningVersions?: number[];
 }
+
+/** The kid written into signatures by alert signing key `version` (no "." allowed). */
+export const alertSigningKid = (stage: string, version: number): string =>
+  `${stage}-alert-v${version}`;
 
 /** Name of the origin-verify secret; the edge stack resolves its replica by this name. */
 export const originVerifySecretName = (stage: string): string => `relay/${stage}/origin-verify`;
@@ -29,7 +49,8 @@ export const KEY_PLACEHOLDER = 'REPLACE_ME_RUN_SEED_KEYS';
  */
 export class ConfigStack extends Stack {
   readonly tokenKeysSecretArn: string;
-  readonly alertKeysSecretArn: string;
+  /** KMS asymmetric alert signing key(s): writers get kms:Sign, verifiers kms:GetPublicKey. */
+  readonly alertSigning: AlertSigningRefs;
   readonly deviceCredentialKeysSecretArn: string;
   readonly expoSecretArn: string;
   /** Shared secret CloudFront sends as x-relay-origin-verify; the API Lambda checks it. */
@@ -54,7 +75,25 @@ export class ConfigStack extends Stack {
       });
 
     const tokenKeys = keyring('TokenKeys', 'token-keys');
-    const alertKeys = keyring('AlertKeys', 'alert-keys');
+    // Alert signing (SEC-C-7, RED-2): an asymmetric KMS key, not a shared secret. The private key
+    // never leaves KMS. Grants are IAM policies on the principals (see grants.ts): kms:Sign for
+    // the ingest Lambda only, kms:GetPublicKey for verifiers. The default key policy delegates to
+    // IAM in this account. KMS asymmetric keys cannot rotate automatically; rotate by version.
+    const versions = [...new Set(props.alertSigningVersions ?? [1])].sort((a, b) => a - b);
+    if (versions.length === 0 || versions.some((v) => !Number.isInteger(v) || v < 1)) {
+      throw new Error('alertSigningVersions must be positive integers');
+    }
+    const signingKeys = versions.map((version) => {
+      const key = new Key(this, version === 1 ? 'AlertSigningKey' : `AlertSigningKeyV${version}`, {
+        keySpec: KeySpec.ECC_NIST_P256,
+        keyUsage: KeyUsage.SIGN_VERIFY,
+        alias: `alias/relay/${stage}/alert-signing-v${version}`,
+        description: `Relay ${stage} alert signing key v${version} (ECDSA P-256)`,
+        removalPolicy,
+        pendingWindow: Duration.days(stage === 'prod' ? 30 : 7),
+      });
+      return { kid: alertSigningKid(stage, version), keyArn: key.keyArn };
+    });
     // Signs and verifies stateless device credentials (check-ins). Same placeholder shape, so the
     // backend keyring loader rejects it until `npm run seed-keys` has run.
     const deviceCredentialKeys = keyring('DeviceCredentialKeys', 'device-credential-keys');
@@ -96,7 +135,9 @@ export class ConfigStack extends Stack {
     });
 
     this.tokenKeysSecretArn = tokenKeys.secretArn;
-    this.alertKeysSecretArn = alertKeys.secretArn;
+    const current = signingKeys[signingKeys.length - 1];
+    if (!current) throw new Error('no alert signing key');
+    this.alertSigning = { current, verify: [...signingKeys].reverse() };
     this.deviceCredentialKeysSecretArn = deviceCredentialKeys.secretArn;
     this.expoSecretArn = expo.secretArn;
     this.originVerifySecretArn = originVerify.secretArn;
@@ -105,6 +146,8 @@ export class ConfigStack extends Stack {
     this.killSwitchParamArn = killSwitch.parameterArn;
 
     new CfnOutput(this, 'KillSwitchParam', { value: this.killSwitchParamName });
+    new CfnOutput(this, 'AlertSigningKeyArn', { value: current.keyArn });
+    new CfnOutput(this, 'AlertSigningKid', { value: current.kid });
 
     Tags.of(this).add('project', 'relay');
     Tags.of(this).add('stage', stage);
