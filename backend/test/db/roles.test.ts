@@ -302,7 +302,9 @@ describe('tables added by other migrations (granted by name when present)', () =
     await rerunMigration();
 
     await as('relay_api', async () => {
-      await db.pg.exec(`INSERT INTO cell_index_outbox (device_id, op) VALUES ('${DEVICE_ID}', 'put')`);
+      await db.pg.exec(
+        `INSERT INTO cell_index_outbox (device_id, op) VALUES ('${DEVICE_ID}', 'put')`,
+      );
       await db.pg.exec(`INSERT INTO deleted_devices VALUES ('${DEVICE_ID}', now())`);
       await db.pg.exec(`INSERT INTO push_token_moves VALUES ('h', '${DEVICE_ID}', now())`);
       await db.pg.exec("DELETE FROM push_token_moves WHERE token_hash = 'h'");

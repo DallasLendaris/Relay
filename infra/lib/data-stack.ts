@@ -1,4 +1,4 @@
-import { CfnOutput, RemovalPolicy, Stack, StackProps, Tags } from 'aws-cdk-lib';
+import { CfnOutput, Duration, RemovalPolicy, Stack, StackProps, Tags } from 'aws-cdk-lib';
 import { SubnetType, Vpc } from 'aws-cdk-lib/aws-ec2';
 import {
   AuroraPostgresEngineVersion,
@@ -17,6 +17,9 @@ export interface DataStackProps extends StackProps {
   /** Aurora Serverless v2 maximum ACU. Default: prod 16, dev 2. */
   maxAcu?: number;
 }
+
+/** Automated backup (point-in-time recovery window) in days. */
+export const BACKUP_RETENTION_DAYS = { dev: 7, prod: 14 } as const;
 
 export const DEFAULT_MAX_ACU = { dev: 2, prod: 16 } as const;
 
@@ -64,6 +67,10 @@ export class DataStack extends Stack {
       // Prod keeps a final snapshot on removal; dev is disposable.
       removalPolicy: isProd ? RemovalPolicy.SNAPSHOT : RemovalPolicy.DESTROY,
       deletionProtection: isProd,
+      // The default is 1 day: a bad migration or a bad delete noticed on day 2 would be
+      // unrecoverable. Tags are copied so snapshots stay attributable (cost, ownership).
+      backup: { retention: Duration.days(BACKUP_RETENTION_DAYS[props.stage]) },
+      copyTagsToSnapshot: true,
     });
 
     // fromGeneratedSecret always creates a secret; the guard satisfies the type.

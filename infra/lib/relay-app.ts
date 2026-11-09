@@ -7,6 +7,14 @@ import { EdgeStack, publicAlertsBucketName } from './edge-stack.js';
 import { FanoutStack } from './fanout-stack.js';
 import { IngestStack, type FanoutMode } from './ingest-stack.js';
 import { LateJoinStack } from './latejoin-stack.js';
+import {
+  addAggregatorAlarms,
+  addDeliveryAlarms,
+  addFanoutAlarms,
+  applyMonitoring,
+  MonitoringStack,
+  type MonitoringOptions,
+} from './monitoring-stack.js';
 import { SenderStack } from './sender-stack.js';
 
 export interface RelayAppOptions {
@@ -28,6 +36,8 @@ export interface RelayAppOptions {
     /** Check-ins table warm write throughput (default prod 40,000, dev none; 0 disables). */
     checkinsWarmWritesPerSecond?: number;
   };
+  /** Alarm email, GuardDuty, log retention and budget (bin/relay.ts reads them from context). */
+  monitoring?: MonitoringOptions;
   /** Prefix of every stack id. Default `relay-${stage}`. */
   prefix?: string;
 }
@@ -36,7 +46,7 @@ export interface RelayAppOptions {
  * Builds every stack. bin/relay.ts and the infra tests both call it, so the tests exercise the
  * real wiring. Values flow between stacks as plain props (ARNs, names, URLs).
  *
- * Dependency order (acyclic): config -> data -> fanout -> latejoin -> api, and sender, ingest -> edge. Delivery
+ * Dependency order (acyclic): config -> monitoring -> data -> fanout -> latejoin -> api, and sender, ingest -> edge. Delivery
  * sits beside fanout (it needs config and data only). Nothing depends back on edge: ingest names
  * the public-alerts bucket deterministically instead of referencing it.
  */
@@ -48,6 +58,13 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     env,
     stage,
     originVerifyReplicaRegion: edgeEnv.region,
+  });
+  // Every other stack depends on monitoring: they all notify its SNS topic.
+  const monitoring = new MonitoringStack(app, id('monitoring'), {
+    env,
+    stage,
+    killSwitchParamName: config.killSwitchParamName,
+    ...o.monitoring,
   });
   const data = new DataStack(app, id('data'), {
     env,
@@ -166,5 +183,22 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
   // Edge is deployed last: it fronts the API and the bucket that ingest writes to.
   edge.addDependency(ingest);
 
-  return { config, data, delivery, fanout, latejoin, api, ingest, sender, edge };
+  // Alarms on resources the stacks do not expose are added in the owning stack's scope.
+  addFanoutAlarms(fanout, {
+    planQueueArn: fanout.planQueueArn,
+    standardQueueName: fanout.standardQueueName,
+  });
+  addAggregatorAlarms(api);
+  addDeliveryAlarms(delivery);
+
+  // Every CloudWatch alarm notifies the alerts topic; every log group gets the stage's retention.
+  // Edge (us-east-1) has no alarms, and an SNS topic in another region could not serve them.
+  // Config is retention-only: monitoring reads its kill-switch name, so config must not depend on it.
+  for (const stack of [data, delivery, fanout, latejoin, api, ingest, sender, monitoring]) {
+    applyMonitoring(stack, monitoring, { alarms: true });
+  }
+  applyMonitoring(config, monitoring, { alarms: false });
+  applyMonitoring(edge, monitoring, { alarms: false });
+
+  return { config, monitoring, data, delivery, fanout, latejoin, api, ingest, sender, edge };
 }

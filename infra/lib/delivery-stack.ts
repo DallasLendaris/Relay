@@ -10,6 +10,9 @@ import { Queue, QueueEncryption } from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import { allow, dbEnv, grantDb, grantSecretRead, type DbRefs } from './grants.js';
 
+/** Idempotency table warm throughput on prod (writes/s). */
+export const IDEMPOTENCY_WARM_WRITES_PROD = 20_000;
+
 export interface DeliveryStackProps extends StackProps {
   stage: 'dev' | 'prod';
   db: DbRefs;
@@ -59,6 +62,9 @@ export class DeliveryStack extends Stack {
       partitionKey: { name: 'pk', type: AttributeType.STRING },
       billingMode: BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: 'ttl',
+      // A new on-demand table starts at 4,000 writes/s and doubles gradually; warm throughput
+      // provisions the headroom up front for a statewide send (prod only).
+      ...(isProd ? { warmThroughput: { writeUnitsPerSecond: IDEMPOTENCY_WARM_WRITES_PROD } } : {}),
       removalPolicy,
     });
 

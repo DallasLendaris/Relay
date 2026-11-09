@@ -13,7 +13,9 @@ export type Templates = { [K in keyof Stacks]: Template };
  */
 const cache = new Map<string, { stacks: Stacks; templates: Templates }>();
 
-type Options = Partial<Pick<RelayAppOptions, 'throttle' | 'fanoutMode' | 'capacity'>>;
+type Options = Partial<
+  Pick<RelayAppOptions, 'throttle' | 'fanoutMode' | 'capacity' | 'monitoring'>
+>;
 
 export function synthApp(stage: 'dev' | 'prod' = 'dev', options: Options = {}) {
   const key = JSON.stringify([stage, options]);
@@ -25,6 +27,8 @@ export function synthApp(stage: 'dev' | 'prod' = 'dev', options: Options = {}) {
     env: { account: '111111111111', region: 'us-west-2' },
     edgeEnv: { account: '111111111111', region: 'us-east-1' },
     prefix: stage,
+    // Prod refuses to synth without an alarm email.
+    monitoring: { alarmEmail: 'ops@example.com' },
     ...options,
   });
   const templates = Object.fromEntries(

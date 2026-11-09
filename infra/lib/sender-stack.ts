@@ -8,7 +8,13 @@ import {
   StackProps,
   Tags,
 } from 'aws-cdk-lib';
-import { Alarm, ComparisonOperator, MathExpression, Metric } from 'aws-cdk-lib/aws-cloudwatch';
+import {
+  Alarm,
+  ComparisonOperator,
+  MathExpression,
+  Metric,
+  TreatMissingData,
+} from 'aws-cdk-lib/aws-cloudwatch';
 import {
   GatewayVpcEndpointAwsService,
   Peer,
@@ -20,6 +26,7 @@ import {
 import { DockerImageAsset, Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import {
   AwsLogDriver,
+  AlarmBehavior,
   Cluster,
   ContainerImage,
   ContainerInsights,
@@ -105,13 +112,17 @@ function senderMinTasks(scope: Construct, maxTasks: number): number {
  * The sender service: long-running Fargate tasks that drain the urgent and standard send queues
  * and push to APNs and FCM. Scaled on queue depth and age.
  *
- * Gating: the APNs and FCM secrets are created with placeholder values, and a sender that boots
- * with them crash-loops (and the circuit breaker would roll the deploy back). So desiredCount is 0
- * and no auto scaling exists until the context flag senderEnabled=true. Order for a first deploy:
- *   1. deploy without the flag (secrets and everything else are created, fleet at 0)
+ * Gating (see isSenderEnabled): prod runs the fleet by default, so a deploy can never scale it to 0
+ * by accident. The APNs and FCM secrets are created with placeholder values, and a sender that
+ * boots with them crash-loops, so the very first prod deploy (and any dev deploy before the
+ * secrets are real) turns the fleet off explicitly:
+ *   1. deploy with `-c senderEnabled=false -c iUnderstandSenderStops=true` (prod) or no flag (dev)
  *   2. put the real APNs and FCM values into the two secrets
- *   3. deploy again with -c senderEnabled=true (the fleet starts at its minimum)
+ *   3. deploy again with no flag on prod, or `-c senderEnabled=true` on dev
  * The planner reads the same flag, so it never pre-scales a fleet that is off.
+ *
+ * A bad image rolls back: the ECS circuit breaker catches tasks that never start, and a deployment
+ * alarm (running tasks below desired for 3 minutes) catches tasks that start and then die.
  */
 export class SenderStack extends Stack {
   readonly clusterName: string;
@@ -250,7 +261,43 @@ export class SenderStack extends Stack {
     );
     allow(['ssm:GetParameter'], [props.killSwitchParamArn]);
 
-    const enabled = isSenderEnabled(this);
+    const enabled = isSenderEnabled(this, props.stage);
+
+    // Running tasks below desired for 3 minutes (Container Insights). Names are the fixed physical
+    // names, not the service object, because the service takes this alarm as a deployment alarm.
+    // It doubles as the deployment-rollback signal below. FILL: a task-less service may stop
+    // publishing RunningTaskCount, which must count as 0.
+    const taskMetric = (metricName: string) =>
+      new Metric({
+        namespace: 'ECS/ContainerInsights',
+        metricName,
+        dimensionsMap: {
+          ClusterName: senderClusterName(props.stage),
+          ServiceName: senderServiceName(props.stage),
+        },
+        statistic: 'Minimum',
+        period: Duration.minutes(1),
+      });
+    const runningBelowDesiredAlarm = enabled
+      ? new Alarm(this, 'RunningTasksBelowDesiredAlarm', {
+          alarmDescription:
+            'Sender running tasks have been below desired for 3 minutes: the fleet is down or crash-looping',
+          metric: new MathExpression({
+            expression: 'FILL(desired, 0) - FILL(running, 0)',
+            usingMetrics: {
+              desired: taskMetric('DesiredTaskCount'),
+              running: taskMetric('RunningTaskCount'),
+            },
+            period: Duration.minutes(1),
+          }),
+          threshold: 0,
+          evaluationPeriods: 3,
+          datapointsToAlarm: 3,
+          comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
+          treatMissingData: TreatMissingData.NOT_BREACHING,
+        })
+      : undefined;
+
     const service = new FargateService(this, 'Service', {
       cluster,
       serviceName: senderServiceName(props.stage),
@@ -261,8 +308,17 @@ export class SenderStack extends Stack {
       minHealthyPercent: 100,
       maxHealthyPercent: 200,
       circuitBreaker: { rollback: true },
-      // Off (0) until senderEnabled=true; then left to auto scaling so a deploy never resets the
-      // fleet size.
+      // A deploy whose tasks start and then die trips the alarm and rolls back to the last good image.
+      ...(runningBelowDesiredAlarm
+        ? {
+            deploymentAlarms: {
+              alarmNames: [runningBelowDesiredAlarm.alarmName],
+              behavior: AlarmBehavior.ROLLBACK_ON_ALARM,
+            },
+          }
+        : {}),
+      // Off (0) only when the fleet is disabled; otherwise left to auto scaling so a deploy never
+      // resets the fleet size.
       ...(enabled ? {} : { desiredCount: 0 }),
     });
 
@@ -356,6 +412,52 @@ export class SenderStack extends Stack {
       evaluationPeriods: 2,
       comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
     });
+
+    // ---- Sender self-reported metrics (EMF, namespace Relay/Sender) ----
+    // PermanentBreakerOpen and DeadTargetDropped have no dimensions; GaveUp is per Queue.
+    const senderMetric = (metricName: string, dimensionsMap?: Record<string, string>) =>
+      new Metric({
+        namespace: 'Relay/Sender',
+        metricName,
+        statistic: 'Sum',
+        period: Duration.minutes(1),
+        ...(dimensionsMap ? { dimensionsMap } : {}),
+      });
+    const atLeastOne = (
+      alarmId: string,
+      alarmDescription: string,
+      metric: Metric | MathExpression,
+    ) =>
+      new Alarm(this, alarmId, {
+        alarmDescription,
+        metric,
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator: ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: TreatMissingData.NOT_BREACHING,
+      });
+    atLeastOne(
+      'PermanentBreakerOpenAlarm',
+      'Sender permanent-failure breaker opened: pushes are failing for good (bad APNs/FCM credentials?)',
+      senderMetric('PermanentBreakerOpen'),
+    );
+    atLeastOne(
+      'GaveUpAlarm',
+      'Sender gave up on recipients (retry window expired): some people were not notified',
+      new MathExpression({
+        expression: 'FILL(u, 0) + FILL(s, 0)',
+        usingMetrics: {
+          u: senderMetric('GaveUp', { Queue: 'urgent' }),
+          s: senderMetric('GaveUp', { Queue: 'standard' }),
+        },
+        period: Duration.minutes(1),
+      }),
+    );
+    atLeastOne(
+      'DeadTargetDroppedAlarm',
+      'Sender dropped dead-token cleanups (queue full): stale tokens are piling up',
+      senderMetric('DeadTargetDropped'),
+    );
 
     this.clusterName = cluster.clusterName;
     this.serviceName = service.serviceName;
