@@ -18,7 +18,7 @@ import { S3ZoneProvider } from '../geo/s3-zone-provider.js';
 import type { AlertStore, Clock, DeliveryQueue, DeviceStore, PlaceStore } from '../ports.js';
 import { QUEUE_FOR_SEVERITY } from '../scale/contracts.js';
 import { SqsPlanQueue, type PlanQueue } from '../scale/fanout/queues.js';
-import { AlertPublisher } from '../scale/publish/alert-publisher.js';
+import { AlertPublisher, type PublishOptions } from '../scale/publish/alert-publisher.js';
 import { S3PublicObjectWriter } from '../scale/publish/s3-object-writer.js';
 import { createAlertVerifier } from '../signing/index.js';
 import { parseFeed } from './feed.js';
@@ -54,7 +54,13 @@ export interface PipelineDeps {
    * region, PUBLIC_ALERTS_REGION). Default: a real S3Client. Tests inject fakes.
    */
   s3?: (region?: string) => S3Client;
+  /** Limits for the post-AlertReady CDN publish (default: 16 in flight, 15 s total). */
+  publishOptions?: PublishOptions;
 }
+
+/** CDN publish limits: shard index files in flight, and the total time cap for them. */
+export const PUBLISH_CONCURRENCY = 16;
+export const PUBLISH_DEADLINE_MS = 15_000;
 
 /** Where the zone pack lives in ZONE_PACK_BUCKET (fixed by the pack builder). */
 export const ZONE_PACK_KEY = 'zones/v1/california.json.gz';
@@ -109,7 +115,24 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
         clock,
       })
     : undefined;
-  const store = new SigningAlertStore(deps.alertStore, deps.alertKeys.current, publisher);
+  const store = new SigningAlertStore(deps.alertStore, deps.alertKeys.current);
+
+  /** Publishes the alert JSON, then the shard indexes (bounded). Never throws. */
+  async function publishPublic(saved: Alert): Promise<void> {
+    if (!publisher) return;
+    try {
+      await publisher.publish(saved, {
+        concurrency: PUBLISH_CONCURRENCY,
+        deadlineMs: PUBLISH_DEADLINE_MS,
+        ...deps.publishOptions,
+      });
+    } catch (err) {
+      logger.error('publish.failed', {
+        alertId: saved.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 
   /**
    * Queue mode: same checks and pause semantics as planDelivery, then hand the alert to the
@@ -146,10 +169,17 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
     cellsFor: (area) => cellsForAlertArea(area, zones, { warn: (m, f) => logger.warn(m, f) }),
     apply: (alert) => applyMessage(alert, { store, clock }),
     async onApplied(result) {
+      if (result.action === 'cancelled') {
+        // Nothing to plan, but the alert must drop out of the public index.
+        const saved = await store.get(result.alert.id);
+        if (saved) await publishPublic(saved);
+        return;
+      }
       if (result.action !== 'created' && result.action !== 'updated') return;
+      let saved: Alert | null = null;
       try {
         // Reload so delivery sees exactly what was stored: signed, with summaries.
-        const saved = await store.get(result.alert.id);
+        saved = await store.get(result.alert.id);
         if (!saved) {
           throw new Error(`saved alert ${result.alert.id} not found for delivery planning`);
         }
@@ -183,6 +213,9 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
         // the next poll plans delivery again.
         logger.error('delivery planning failed', { alertId: result.alert.id, error: String(err) });
         throw err;
+      } finally {
+        // After AlertReady (or the inline plan): public data is never on the critical path.
+        if (saved) await publishPublic(saved);
       }
     },
   };

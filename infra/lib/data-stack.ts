@@ -12,7 +12,11 @@ import { Construct } from 'constructs';
 
 export interface DataStackProps extends StackProps {
   stage: 'dev' | 'prod';
+  /** Aurora Serverless v2 maximum ACU. Default: prod 16, dev 2. */
+  maxAcu?: number;
 }
+
+export const DEFAULT_MAX_ACU = { dev: 2, prod: 16 } as const;
 
 /**
  * Aurora Serverless v2 PostgreSQL, reached only through the RDS Data API (HTTPS).
@@ -43,7 +47,7 @@ export class DataStack extends Stack {
       vpcSubnets: { subnetType: SubnetType.PRIVATE_ISOLATED },
       writer: ClusterInstance.serverlessV2('writer'),
       serverlessV2MinCapacity: 0,
-      serverlessV2MaxCapacity: 2,
+      serverlessV2MaxCapacity: props.maxAcu ?? DEFAULT_MAX_ACU[props.stage],
       enableDataApi: true,
       storageEncrypted: true,
       defaultDatabaseName: this.databaseName,

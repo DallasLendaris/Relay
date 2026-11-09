@@ -1,9 +1,20 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Alert, CheckIn, components } from '@relay/shared';
 import { cellForPoint } from '../geo/index.js';
-import type { CellIndex, CellIndexEntry, PushTarget } from '../scale/contracts.js';
-import { targetOf } from '../scale/cell-index/util.js';
 import {
+  QUEUE_FOR_SEVERITY,
+  type CellIndex,
+  type CellIndexEntry,
+  type PushTarget,
+  type SendBatch,
+  type SendQueue,
+  type SendQueueName,
+} from '../scale/contracts.js';
+import type { IndexRepairMessage, IndexRepairQueue } from '../scale/cell-index/repair-queue.js';
+import { targetOf } from '../scale/cell-index/util.js';
+import { alertEndTime } from '../delivery/eligibility.js';
+import {
+  createCheckInToken,
   createDeviceCredential,
   verifyCheckInToken,
   verifyDeviceCredential,
@@ -43,6 +54,17 @@ export interface ApiDeps {
   tokenKeys: Map<string, string>;
   /** DynamoDB cell index, written through from here. Aurora stays the record. */
   cellIndex: CellIndex;
+  /**
+   * Where a failed cell-index write is queued for the repair Lambda (INDEX_REPAIR_QUEUE_URL).
+   * Without it a failure is only logged, and the backfill reconciles.
+   */
+  repairQueue?: IndexRepairQueue;
+  /**
+   * Late joiners: a device that registers a place or a push target while an alert is already
+   * active missed the fan-out (re-planning skips batches already sent), so the API sends it the
+   * active alerts itself, as single-recipient batches. Needs the send queues and a token key.
+   */
+  lateJoin?: { sendQueue: SendQueue; tokenKey: TokenKey };
   /**
    * Device credential keys by key id, for stateless credentials (see tokens/deviceCredential.ts).
    * Without it, only old two-part credentials verify.
@@ -136,8 +158,31 @@ function parsePushTarget(body: Record<string, unknown>): PushTarget {
 export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult> {
   const router = new Router();
 
-  /** Runs a cell index write. Failure is logged and swallowed; the backfill reconciles. */
-  async function writeThrough(op: string, fn: () => Promise<void>): Promise<void> {
+  /** Queues repairs for the repair Lambda. Never throws: the original write already failed. */
+  async function enqueueRepair(messages: IndexRepairMessage[]): Promise<void> {
+    if (!deps.repairQueue) return;
+    try {
+      await deps.repairQueue.enqueue(messages);
+    } catch (err) {
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          msg: 'cellindex.repair_enqueue_failed',
+          error: err instanceof Error ? err.name : 'UnknownError',
+        }),
+      );
+    }
+  }
+
+  /**
+   * Runs a cell index write. A failure never fails the request (Aurora is the record); it is
+   * logged and the repair messages are queued so the repair Lambda redoes it from Aurora's truth.
+   */
+  async function writeThrough(
+    op: string,
+    fn: () => Promise<void>,
+    repairs: IndexRepairMessage[],
+  ): Promise<void> {
     try {
       await fn();
     } catch (err) {
@@ -147,6 +192,69 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
           level: 'warn',
           msg: 'cellindex.write_failed',
           op,
+          error: err instanceof Error ? err.name : 'UnknownError',
+          repairQueued: deps.repairQueue !== undefined,
+        }),
+      );
+      await enqueueRepair(repairs);
+    }
+  }
+
+  /**
+   * Sends the alerts already active over `cells` to one device that just registered a place or a
+   * push target. The batch key is per device and alert, so repeating this (a second place, a token
+   * refresh) is deduplicated by the sender's claim. Best effort: a failure never fails the API
+   * call. A device registered a moment before the planner reads its cell can get both this and
+   * the planned batch; both carry the alert id as collapse key, so the phone shows one.
+   */
+  async function sendLateJoinAlerts(
+    deviceId: string,
+    target: PushTarget | null,
+    language: 'en' | 'es',
+    cells: string[],
+  ): Promise<void> {
+    const late = deps.lateJoin;
+    if (!late || !target || cells.length === 0) return;
+    try {
+      const now = deps.clock.now();
+      const active = await deps.alerts.listActiveForCells(cells, now);
+      const batches: Record<SendQueueName, SendBatch[]> = { urgent: [], standard: [] };
+      for (const alert of active) {
+        const queue = QUEUE_FOR_SEVERITY[alert.relaySeverity];
+        if (!queue) continue; // statements are in-app only
+        if (alert.state !== 'active' && alert.state !== 'updated') continue;
+        const expiresAt = alertEndTime(alert);
+        if (expiresAt.getTime() <= now.getTime()) continue;
+        const areaCells = new Set(alert.area.h3Cells);
+        const h3Cell = cells.find((c) => areaCells.has(c));
+        if (!h3Cell) continue;
+        batches[queue].push({
+          alertId: alert.id,
+          sourceId: alert.sourceId,
+          relaySeverity: alert.relaySeverity,
+          batchKey: `${alert.id}:${alert.relaySeverity}:late:${deviceId}`,
+          recipients: [
+            {
+              deviceId,
+              target,
+              language,
+              checkInToken: createCheckInToken(
+                { alertId: alert.id, deviceId, h3Cell, expiresAt },
+                late.tokenKey,
+              ),
+            },
+          ],
+          attempt: 0,
+        });
+      }
+      for (const queue of ['urgent', 'standard'] as const) {
+        if (batches[queue].length > 0) await late.sendQueue.enqueue(queue, batches[queue]);
+      }
+    } catch (err) {
+      console.warn(
+        JSON.stringify({
+          level: 'warn',
+          msg: 'latejoin.failed',
           error: err instanceof Error ? err.name : 'UnknownError',
         }),
       );
@@ -167,6 +275,17 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       { target, language },
     );
   }
+
+  const allPlaces = (deviceId: string): IndexRepairMessage => ({
+    op: 'update',
+    h3Cell: '',
+    deviceId,
+    placeId: '',
+  });
+  const targetKey = (d: Device): string => {
+    const t = targetOf(d);
+    return `${t?.platform ?? ''}:${t?.token ?? ''}:${d.language}`;
+  };
 
   /** Reads `Authorization: Bearer <deviceId>.<secret>` and returns the device, or throws 401. */
   async function authenticate(req: Request): Promise<Device> {
@@ -235,14 +354,31 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     // Moves the target here if another (reinstalled) device still holds it.
     const { displaced } = await deps.devices.assignPushTarget(device.id, target, language);
     // Keep the cell index in step. A failure here never fails the request (Aurora is the
-    // record); the backfill script reconciles.
-    await writeThrough('update_device', async () => {
-      await syncDevice(device.id, target, language);
-      for (const otherId of displaced) {
-        const other = await deps.devices.get(otherId);
-        if (other) await syncDevice(otherId, null, other.language);
+    // record); the failed update is queued for the repair Lambda.
+    await writeThrough('update_device', () => syncDevice(device.id, target, language), [
+      allPlaces(device.id),
+    ]);
+    for (const otherId of displaced) {
+      await writeThrough(
+        'update_device',
+        async () => {
+          const other = await deps.devices.get(otherId);
+          if (other) await syncDevice(otherId, null, other.language);
+        },
+        [allPlaces(otherId)],
+      );
+    }
+    // A device that just got a target missed any alert that is already active: send it now.
+    if (deps.lateJoin) {
+      try {
+        const cells = [
+          ...new Set((await deps.places.listForDevice(device.id)).map((p) => p.h3Cell)),
+        ];
+        await sendLateJoinAlerts(device.id, target, language, cells);
+      } catch {
+        /* best effort */
       }
-    });
+    }
     return noContent();
   });
 
@@ -312,14 +448,42 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       createdAt: deps.clock.now().toISOString(),
     };
     await deps.places.add(place);
+    // Read the device's CURRENT target now, after the place is saved. The row loaded for
+    // authentication is from the start of the request; a push token registered in between would
+    // otherwise be written as null here. Residual race: a token registered after this read but
+    // before the put lands is not seen by that request's syncDevice (the entry did not exist
+    // yet); the re-read below catches it and queues a repair. A change after the re-read is
+    // picked up by the next sync or the backfill.
+    let current: Device = device;
+    try {
+      current = (await deps.devices.get(device.id)) ?? device;
+    } catch {
+      /* use the authenticated row */
+    }
     const entry: CellIndexEntry = {
       h3Cell: place.h3Cell,
       deviceId: device.id,
       placeId: place.id,
-      target: targetOf(device),
-      language: device.language,
+      target: targetOf(current),
+      language: current.language,
     };
-    await writeThrough('put', () => deps.cellIndex.put([entry]));
+    const repairPut: IndexRepairMessage = {
+      op: 'put',
+      h3Cell: place.h3Cell,
+      deviceId: device.id,
+      placeId: place.id,
+    };
+    await writeThrough('put', () => deps.cellIndex.put([entry]), [repairPut]);
+    try {
+      const after = (await deps.devices.get(device.id)) ?? current;
+      if (targetKey(after) !== targetKey(current)) {
+        await enqueueRepair([{ ...repairPut, op: 'update' }]);
+        current = after;
+      }
+    } catch {
+      /* the verification read is best effort */
+    }
+    await sendLateJoinAlerts(device.id, targetOf(current), current.language, [place.h3Cell]);
     return json(201, toPlaceBody(place));
   });
 
@@ -339,7 +503,9 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     if (!place || !(await deps.places.remove(device.id, placeId))) {
       throw new HttpError(404, 'not_found', 'Place not found');
     }
-    await writeThrough('remove', () => deps.cellIndex.remove(place.h3Cell, device.id, place.id));
+    await writeThrough('remove', () => deps.cellIndex.remove(place.h3Cell, device.id, place.id), [
+      { op: 'remove', h3Cell: place.h3Cell, deviceId: device.id, placeId: place.id },
+    ]);
     return noContent();
   });
 

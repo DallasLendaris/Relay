@@ -129,10 +129,11 @@ describe('ingest publisher wiring', () => {
     if (!norm.ok) throw new Error(norm.reason);
     norm.alert.area.h3Cells = await built.engine.cellsFor(norm.alert.area);
     const result = await built.engine.apply(norm.alert);
+    await built.engine.onApplied?.(result); // planning, then the CDN publish
     return { ...built, result };
   }
 
-  it('PUBLIC_ALERTS_BUCKET: every signed save is published, from a client in PUBLIC_ALERTS_REGION', async () => {
+  it('PUBLIC_ALERTS_BUCKET: every applied alert is published, from a client in PUBLIC_ALERTS_REGION', async () => {
     s3Mock.on(PutObjectCommand).resolves({});
     const { result, regions } = await applyOne({
       PUBLIC_ALERTS_BUCKET: 'public-bucket',
@@ -146,7 +147,7 @@ describe('ingest publisher wiring', () => {
     expect(keys.some((k) => k?.startsWith(activeShardKey('').slice(0, -'.json'.length)))).toBe(
       true,
     );
-    // The published alert is the SIGNED one (the publisher runs after signing).
+    // The published alert is the SIGNED one (the publisher runs after signing and AlertReady).
     const full = puts.find((p) => p.Key === publicAlertKey(result.alert.id));
     expect((JSON.parse(String(full?.Body)) as { signature: unknown }).signature).not.toBeNull();
   });
@@ -159,6 +160,60 @@ describe('ingest publisher wiring', () => {
     });
     expect(result.action).toBe('created');
     expect(await alertStore.get(result.alert.id)).not.toBeNull();
+  });
+
+  it('queue mode: AlertReady is published BEFORE any S3 write, and the alert JSON is the first PUT', async () => {
+    const seenAtPut: number[] = [];
+    const keys: string[] = [];
+    const ref: { queue?: { messages: unknown[] } } = {};
+    s3Mock.on(PutObjectCommand).callsFake((input: { Key?: string }) => {
+      seenAtPut.push(ref.queue?.messages.length ?? -1);
+      keys.push(String(input.Key));
+      return {};
+    });
+    const built = build({
+      FANOUT_MODE: 'queue',
+      PLAN_QUEUE_URL: 'https://sqs/plan',
+      PUBLIC_ALERTS_BUCKET: 'public-bucket',
+      PUBLIC_ALERTS_REGION: 'us-east-1',
+    });
+    ref.queue = built.planQueue;
+    const norm = built.engine.normalize(feed.features[0]);
+    if (!norm.ok) throw new Error(norm.reason);
+    norm.alert.area.h3Cells = await built.engine.cellsFor(norm.alert.area);
+    const result = await built.engine.apply(norm.alert);
+    await built.engine.onApplied?.(result);
+    expect(built.planQueue.messages).toHaveLength(1);
+    expect(keys[0]).toBe(publicAlertKey(result.alert.id));
+    expect(keys.length).toBeGreaterThan(1);
+    expect(seenAtPut.every((n) => n === 1)).toBe(true);
+  });
+
+  it('the CDN publish is capped by publishOptions.deadlineMs and never blocks onApplied', async () => {
+    s3Mock.on(PutObjectCommand).callsFake(async (input: { Key?: string }) => {
+      if (String(input.Key).includes('/active/')) await new Promise(() => {});
+      return {};
+    });
+    const { engine, planQueue } = build({
+      FANOUT_MODE: 'queue',
+      PLAN_QUEUE_URL: 'https://sqs/plan',
+      PUBLIC_ALERTS_BUCKET: 'public-bucket',
+      PUBLIC_ALERTS_REGION: 'us-east-1',
+    });
+    const norm = engine.normalize(feed.features[0]);
+    if (!norm.ok) throw new Error(norm.reason);
+    norm.alert.area.h3Cells = await engine.cellsFor(norm.alert.area);
+    const result = await engine.apply(norm.alert);
+    // Default cap is 15 s; a hung shard write must not hold onApplied past it. Use fake timers.
+    vi.useFakeTimers();
+    try {
+      const done = engine.onApplied?.(result);
+      await vi.advanceTimersByTimeAsync(15_001);
+      await expect(done).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(planQueue.messages).toHaveLength(1);
   });
 
   it('without PUBLIC_ALERTS_BUCKET nothing is published', async () => {

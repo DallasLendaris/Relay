@@ -10,9 +10,19 @@ export interface PublicObjectWriter {
   putJson(key: string, body: string, cacheControl: string): Promise<void>;
 }
 
-/** Called by SigningAlertStore after a signed alert has been saved. Must never throw. */
+/** Limits for one publish. Defaults: 16 shard files in flight, 15 s for the whole shard fan-out. */
+export interface PublishOptions {
+  concurrency?: number;
+  /** Total time cap for the shard index files (the alert JSON itself is not capped). */
+  deadlineMs?: number;
+}
+
+export const DEFAULT_PUBLISH_CONCURRENCY = 16;
+export const DEFAULT_PUBLISH_DEADLINE_MS = 15_000;
+
+/** Called by the ingest pipeline after the alert was handed to delivery. Must never throw. */
 export interface PostSavePublisher {
-  publish(saved: Alert): Promise<void>;
+  publish(saved: Alert, options?: PublishOptions): Promise<void>;
 }
 
 /** One entry of an active index file. */
@@ -81,16 +91,57 @@ export class AlertPublisher implements PostSavePublisher {
     this.clock = opts.clock ?? { now: () => new Date() };
   }
 
-  async publish(saved: Alert): Promise<void> {
+  async publish(saved: Alert, options: PublishOptions = {}): Promise<void> {
+    const concurrency = Math.max(1, options.concurrency ?? DEFAULT_PUBLISH_CONCURRENCY);
+    const deadlineMs = options.deadlineMs ?? DEFAULT_PUBLISH_DEADLINE_MS;
     try {
+      // The alert JSON goes first: it is the one object every phone needs.
       await this.opts.writer.putJson(
         publicAlertKey(saved.id),
         JSON.stringify(saved),
         PUBLIC_CACHE_CONTROL,
       );
       const now = this.clock.now();
-      for (const shard of shardsOf(saved.area.h3Cells)) {
-        await this.publishShard(shard, saved, now);
+      const shards = shardsOf(saved.area.h3Cells);
+      let next = 0;
+      let done = 0;
+      let failed = 0;
+      let timedOut = false;
+      const worker = async (): Promise<void> => {
+        while (!timedOut && next < shards.length) {
+          const shard = shards[next++];
+          if (shard === undefined) return;
+          try {
+            await this.publishShard(shard, saved, now);
+            done++;
+          } catch (err) {
+            failed++;
+            this.logger.error('publish.shard_failed', {
+              alertId: saved.id,
+              shard,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+      };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const cap = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), deadlineMs);
+      });
+      const pool = Promise.all(
+        Array.from({ length: Math.min(concurrency, shards.length) }, worker),
+      );
+      const outcome = await Promise.race([pool.then(() => 'done' as const), cap]);
+      clearTimeout(timer);
+      if (outcome === 'timeout') {
+        timedOut = true; // no new shard starts; writes already in flight are abandoned
+        this.logger.warn('publish.deadline_exceeded', {
+          alertId: saved.id,
+          shards: shards.length,
+          published: done,
+          failed,
+          deadlineMs,
+        });
       }
     } catch (err) {
       this.logger.error('publish.failed', {

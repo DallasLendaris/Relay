@@ -411,7 +411,7 @@ describe('ConfigStack', () => {
   });
 
   it('has keyring-shaped key secrets and an Expo secret', () => {
-    t.resourceCountIs('AWS::SecretsManager::Secret', 4);
+    t.resourceCountIs('AWS::SecretsManager::Secret', 5); // plus the origin-verify secret
     t.hasResourceProperties('AWS::SecretsManager::Secret', {
       Name: 'relay/dev/token-keys',
       SecretString: Match.stringLikeRegexp('"current":"k1".*"keys"'),
@@ -687,7 +687,8 @@ describe('check-in aggregator', () => {
   );
 
   it('reads the checkins stream in batches of 1000 with a 2 s window and per-item failures', () => {
-    t.resourceCountIs('AWS::Lambda::EventSourceMapping', 1);
+    // The second mapping is the cell-index repair queue (tested below).
+    t.resourceCountIs('AWS::Lambda::EventSourceMapping', 2);
     t.hasResourceProperties('AWS::Lambda::EventSourceMapping', {
       BatchSize: 1000,
       MaximumBatchingWindowInSeconds: 2,

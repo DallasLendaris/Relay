@@ -27,7 +27,32 @@ if (modeCtx !== undefined && modeCtx !== 'queue' && modeCtx !== 'inline') {
   throw new Error(`fanoutMode must be "queue" or "inline", got "${String(modeCtx)}"`);
 }
 
+// Capacity settings from context, e.g. -c auroraMaxAcu=32 -c apiReservedConcurrency=3000.
+// Reserved concurrency stays unset by default so a fresh account (low Lambda quota) deploys.
+const numberCtx = (name: string): number | undefined => {
+  const raw = app.node.tryGetContext(name);
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) throw new Error(`${name} must be a non-negative number`);
+  return n;
+};
+const capacity = Object.fromEntries(
+  (
+    [
+      'auroraMaxAcu',
+      'apiReservedConcurrency',
+      'aggregatorReservedConcurrency',
+      'repairReservedConcurrency',
+      'checkinsWarmWritesPerSecond',
+    ] as const
+  ).flatMap((k) => {
+    const v = numberCtx(k);
+    return v === undefined ? [] : [[k, v]];
+  }),
+);
+
 buildRelayApp(app, {
+  capacity,
   stage,
   env,
   edgeEnv,

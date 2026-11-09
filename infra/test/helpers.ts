@@ -13,7 +13,7 @@ export type Templates = { [K in keyof Stacks]: Template };
  */
 const cache = new Map<string, { stacks: Stacks; templates: Templates }>();
 
-type Options = Partial<Pick<RelayAppOptions, 'throttle' | 'fanoutMode'>>;
+type Options = Partial<Pick<RelayAppOptions, 'throttle' | 'fanoutMode' | 'capacity'>>;
 
 export function synthApp(stage: 'dev' | 'prod' = 'dev', options: Options = {}) {
   const key = JSON.stringify([stage, options]);

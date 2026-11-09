@@ -48,6 +48,13 @@ export const RECORDS_PER_TRANSACTION = 50;
 const CONFLICT_ATTEMPTS = 4;
 const CONCURRENCY = 8;
 const MARKER_TTL_SECONDS = 3 * 24 * 3600;
+/**
+ * Counter rows expire this long after they are first written. The stream carries no alert end
+ * time, but a check-in only exists while its alert is live (the token expires with the alert),
+ * and NWS alerts last hours to a few days, so the first check-in plus 30 days is the alert's end
+ * plus roughly four weeks. `if_not_exists` keeps the first value: later batches never extend it.
+ */
+export const TOTALS_TTL_SECONDS = 30 * 24 * 3600;
 
 interface Counted {
   record: DynamoDBRecord;
@@ -70,7 +77,9 @@ export function createAggregator(
     let pending = chunk;
     let skipped = 0;
     for (let attempt = 0; pending.length > 0;) {
-      const ttl = Math.floor(now().getTime() / 1000) + MARKER_TTL_SECONDS;
+      const nowSeconds = Math.floor(now().getTime() / 1000);
+      const ttl = nowSeconds + MARKER_TTL_SECONDS;
+      const totalsTtl = nowSeconds + TOTALS_TTL_SECONDS;
       try {
         await deps.doc.send(
           new TransactWriteCommand({
@@ -79,8 +88,16 @@ export function createAggregator(
                 Update: {
                   TableName: deps.totalsTable,
                   Key: { pk: `${alertId}#${h3Cell}` },
-                  UpdateExpression: 'ADD checkedIn :n SET alertId = :a, h3Cell = :c',
-                  ExpressionAttributeValues: { ':n': pending.length, ':a': alertId, ':c': h3Cell },
+                  UpdateExpression:
+                    'ADD checkedIn :n SET alertId = :a, h3Cell = :c, #ttl = if_not_exists(#ttl, :ttl)',
+                  // "ttl" is a DynamoDB reserved word, hence the name placeholder.
+                  ExpressionAttributeNames: { '#ttl': 'ttl' },
+                  ExpressionAttributeValues: {
+                    ':n': pending.length,
+                    ':a': alertId,
+                    ':c': h3Cell,
+                    ':ttl': totalsTtl,
+                  },
                 },
               },
               ...pending.map((p) => ({
