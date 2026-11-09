@@ -2,11 +2,20 @@ import { fileURLToPath } from 'node:url';
 import { CfnOutput, Duration, RemovalPolicy, Stack, StackProps, Tags } from 'aws-cdk-lib';
 import { HttpApi, HttpMethod, HttpStage } from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
-import { AttributeType, BillingMode, Table } from 'aws-cdk-lib/aws-dynamodb';
-import { Architecture, Runtime } from 'aws-cdk-lib/aws-lambda';
+import { Alarm, ComparisonOperator, TreatMissingData } from 'aws-cdk-lib/aws-cloudwatch';
+import {
+  AttributeType,
+  BillingMode,
+  ProjectionType,
+  StreamViewType,
+  Table,
+} from 'aws-cdk-lib/aws-dynamodb';
+import { Architecture, Runtime, StartingPosition } from 'aws-cdk-lib/aws-lambda';
+import { DynamoEventSource, SqsDlq } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { CfnPlaceIndex } from 'aws-cdk-lib/aws-location';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
+import { Queue, QueueEncryption } from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import { allow, dbEnv, grantDb, grantSecretRead, type DbRefs } from './grants.js';
 
@@ -14,9 +23,15 @@ export interface ApiStackProps extends StackProps {
   stage: 'dev' | 'prod';
   db: DbRefs;
   tokenKeysSecretArn: string;
+  deviceCredentialKeysSecretArn: string;
+  /** Cell-index table (FanoutStack): the API writes a device's places into it. */
+  cellIndexTableName: string;
+  cellIndexTableArn: string;
   /** Stage throttle on $default. Defaults: dev 50 rps / burst 100, prod 20,000 rps / burst 10,000. */
   throttle?: { rateLimit: number; burstLimit: number };
 }
+
+export const AGGREGATOR_TIMEOUT_SECONDS = 60;
 
 export const DEFAULT_THROTTLE = {
   dev: { rateLimit: 50, burstLimit: 100 },
@@ -61,17 +76,25 @@ export class ApiStack extends Stack {
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: isProd },
       removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
     };
-    // One row per device per alert, so a device counts once however many times it checks in.
+    // Stateless check-ins: one row per device per alert (pk = alertId#deviceId), so a device
+    // counts once however many times it checks in. The stream feeds the aggregator.
     const checkins = new Table(this, 'CheckinsTable', {
       ...tableDefaults,
-      partitionKey: { name: 'alertId', type: AttributeType.STRING },
-      sortKey: { name: 'deviceId', type: AttributeType.STRING },
+      partitionKey: { name: 'pk', type: AttributeType.STRING },
+      stream: StreamViewType.NEW_IMAGE,
     });
-    // Running count per alert and H3 cell. This is what agencies see (never the rows above).
+    // Running count per alert and H3 cell (written only by the aggregator). This is what
+    // agencies see, never the rows above. The byAlert index lists an alert's cells; ttl expires
+    // old alerts.
     const checkinTotals = new Table(this, 'CheckinTotalsTable', {
       ...tableDefaults,
+      partitionKey: { name: 'pk', type: AttributeType.STRING },
+      timeToLiveAttribute: 'ttl',
+    });
+    checkinTotals.addGlobalSecondaryIndex({
+      indexName: 'byAlert',
       partitionKey: { name: 'alertId', type: AttributeType.STRING },
-      sortKey: { name: 'h3Cell', type: AttributeType.STRING },
+      projectionType: ProjectionType.ALL,
     });
 
     const apiFn = new NodejsFunction(this, 'ApiFunction', {
@@ -91,24 +114,83 @@ export class ApiStack extends Stack {
         ...dbEnv(props.db),
         PLACE_INDEX_NAME: placeIndexName,
         CHECKINS_TABLE: checkins.tableName,
-        CHECKIN_TOTALS_TABLE: checkinTotals.tableName,
         TOKEN_KEYS_SECRET_ARN: props.tokenKeysSecretArn,
+        DEVICE_CREDENTIAL_KEYS_SECRET_ARN: props.deviceCredentialKeysSecretArn,
+        CELL_INDEX_TABLE: props.cellIndexTableName,
       },
     });
 
     grantDb(apiFn, props.db);
     allow(apiFn, ['geo:SearchPlaceIndexForText'], [placeIndex.attrArn]);
     grantSecretRead(apiFn, props.tokenKeysSecretArn);
-    // DynamoDB has no IAM action called TransactWriteItems. A transaction is authorized
-    // item by item: each Put needs dynamodb:PutItem, each Update needs dynamodb:UpdateItem
-    // (conditions on those writes need nothing extra). dynamodb:ConditionCheckItem is only
-    // for a standalone ConditionCheck operation, which the check-in transaction does not
-    // use, so it is deliberately not granted. Add it if that ever changes.
+    grantSecretRead(apiFn, props.deviceCredentialKeysSecretArn);
+    // Check-in rows: written with PutItem, read back with GetItem.
+    allow(apiFn, ['dynamodb:PutItem', 'dynamodb:GetItem'], [checkins.tableArn]);
+    // Cell index: replace/clear a device's places (BatchWriteItem, DeleteItem), re-point tokens
+    // (UpdateItem), read them back (Query, GetItem) and upsert (PutItem).
     allow(
       apiFn,
-      ['dynamodb:PutItem', 'dynamodb:GetItem', 'dynamodb:UpdateItem'],
-      [checkins.tableArn, checkinTotals.tableArn],
+      [
+        'dynamodb:BatchWriteItem',
+        'dynamodb:DeleteItem',
+        'dynamodb:UpdateItem',
+        'dynamodb:Query',
+        'dynamodb:GetItem',
+        'dynamodb:PutItem',
+      ],
+      [props.cellIndexTableArn],
     );
+
+    // Check-in aggregator: turns the checkins stream into per-cell totals.
+    // DynamoDB has no IAM action called TransactWriteItems. A transaction is authorized item by
+    // item: each Put needs dynamodb:PutItem and each Update needs dynamodb:UpdateItem (conditions
+    // need nothing extra). ConditionCheckItem is only for a standalone ConditionCheck, which the
+    // aggregator does not use.
+    const aggregatorDlq = new Queue(this, 'AggregatorDlq', {
+      encryption: QueueEncryption.SQS_MANAGED,
+      retentionPeriod: Duration.days(14),
+    });
+    const aggregatorFn = new NodejsFunction(this, 'AggregatorFunction', {
+      entry: fileURLToPath(
+        new URL('../../backend/src/scale/checkins/aggregator.ts', import.meta.url),
+      ),
+      depsLockFilePath: fileURLToPath(new URL('../../package-lock.json', import.meta.url)),
+      projectRoot: fileURLToPath(new URL('../../', import.meta.url)),
+      handler: 'handler',
+      runtime: Runtime.NODEJS_22_X,
+      architecture: Architecture.ARM_64,
+      timeout: Duration.seconds(AGGREGATOR_TIMEOUT_SECONDS),
+      memorySize: 512,
+      logGroup: new LogGroup(this, 'AggregatorLogs', {
+        retention: RetentionDays.ONE_MONTH,
+        removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+      }),
+      environment: { CHECKIN_TOTALS_TABLE: checkinTotals.tableName },
+    });
+    allow(aggregatorFn, ['dynamodb:UpdateItem', 'dynamodb:PutItem'], [checkinTotals.tableArn]);
+    aggregatorFn.addEventSource(
+      new DynamoEventSource(checkins, {
+        startingPosition: StartingPosition.TRIM_HORIZON,
+        batchSize: 1000,
+        maxBatchingWindow: Duration.seconds(2),
+        reportBatchItemFailures: true,
+        bisectBatchOnError: true,
+        retryAttempts: 10,
+        parallelizationFactor: 10,
+        onFailure: new SqsDlq(aggregatorDlq),
+      }),
+    );
+    new Alarm(this, 'AggregatorDlqAlarm', {
+      alarmDescription: 'Check-in stream records failed after retries: totals are undercounted',
+      metric: aggregatorDlq.metricApproximateNumberOfMessagesVisible({
+        period: Duration.minutes(1),
+        statistic: 'Maximum',
+      }),
+      threshold: 0,
+      evaluationPeriods: 1,
+      comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: TreatMissingData.NOT_BREACHING,
+    });
 
     // The stage is created by hand below so we can set throttling on $default.
     const api = new HttpApi(this, 'HttpApi', {

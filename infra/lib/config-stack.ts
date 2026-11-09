@@ -22,6 +22,7 @@ export const KEY_PLACEHOLDER = 'REPLACE_ME_RUN_SEED_KEYS';
 export class ConfigStack extends Stack {
   readonly tokenKeysSecretArn: string;
   readonly alertKeysSecretArn: string;
+  readonly deviceCredentialKeysSecretArn: string;
   readonly expoSecretArn: string;
   readonly killSwitchParamName: string;
   readonly killSwitchParamArn: string;
@@ -43,6 +44,9 @@ export class ConfigStack extends Stack {
 
     const tokenKeys = keyring('TokenKeys', 'token-keys');
     const alertKeys = keyring('AlertKeys', 'alert-keys');
+    // Signs and verifies stateless device credentials (check-ins). Same placeholder shape, so the
+    // backend keyring loader rejects it until `npm run seed-keys` has run.
+    const deviceCredentialKeys = keyring('DeviceCredentialKeys', 'device-credential-keys');
 
     // Optional. The value is the raw Expo access token; replace it by hand.
     const expo = new Secret(this, 'ExpoAccessToken', {
@@ -61,6 +65,7 @@ export class ConfigStack extends Stack {
 
     this.tokenKeysSecretArn = tokenKeys.secretArn;
     this.alertKeysSecretArn = alertKeys.secretArn;
+    this.deviceCredentialKeysSecretArn = deviceCredentialKeys.secretArn;
     this.expoSecretArn = expo.secretArn;
     this.killSwitchParamName = killSwitch.parameterName;
     this.killSwitchParamArn = killSwitch.parameterArn;

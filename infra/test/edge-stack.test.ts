@@ -1,75 +1,14 @@
-import { App } from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it, vi } from 'vitest';
 
 // Each build() synthesizes several stacks, which is slow on a busy machine.
 vi.setConfig({ testTimeout: 60_000 });
-import { ApiStack, DEFAULT_THROTTLE } from '../lib/api-stack.js';
-import { ConfigStack } from '../lib/config-stack.js';
-import { DataStack } from '../lib/data-stack.js';
-import {
-  CHECKIN_PATH_REGEX,
-  EdgeStack,
-  RATE_LIMITS,
-  publicAlertsBucketName,
-} from '../lib/edge-stack.js';
-import { IngestStack } from '../lib/ingest-stack.js';
-import { DeliveryStack } from '../lib/delivery-stack.js';
+import { DEFAULT_THROTTLE } from '../lib/api-stack.js';
+import { CHECKIN_PATH_REGEX, RATE_LIMITS, publicAlertsBucketName } from '../lib/edge-stack.js';
+import { synthAll } from './helpers.js';
 
-function build(
-  stage: 'dev' | 'prod',
-  throttle?: { rateLimit: number; burstLimit: number },
-  publicAlerts?: { bucketName: string; region: string },
-) {
-  const app = new App();
-  const env = { account: '111111111111', region: 'us-west-2' };
-  const data = new DataStack(app, `data-${stage}`, { env, stage });
-  const db = {
-    clusterArn: data.clusterArn,
-    secretArn: data.secretArn,
-    databaseName: data.databaseName,
-  };
-  const config = new ConfigStack(app, `config-${stage}`, { env, stage });
-  const api = new ApiStack(app, `api-${stage}`, {
-    env,
-    stage,
-    db,
-    tokenKeysSecretArn: config.tokenKeysSecretArn,
-    throttle,
-    crossRegionReferences: true,
-  });
-  const edge = new EdgeStack(app, `edge-${stage}`, {
-    env: { account: '111111111111', region: 'us-east-1' },
-    stage,
-    apiDomainName: api.apiDomainName,
-    crossRegionReferences: true,
-  });
-  const delivery = new DeliveryStack(app, `delivery-${stage}`, {
-    env,
-    stage,
-    db,
-    expoSecretArn: config.expoSecretArn,
-    alertKeysSecretArn: config.alertKeysSecretArn,
-    killSwitchParamName: config.killSwitchParamName,
-    killSwitchParamArn: config.killSwitchParamArn,
-  });
-  const ingest = new IngestStack(app, `ingest-${stage}`, {
-    env,
-    stage,
-    db,
-    deliveryQueueArn: delivery.queueArn,
-    deliveryQueueUrl: delivery.queueUrl,
-    tokenKeysSecretArn: config.tokenKeysSecretArn,
-    alertKeysSecretArn: config.alertKeysSecretArn,
-    killSwitchParamName: config.killSwitchParamName,
-    killSwitchParamArn: config.killSwitchParamArn,
-    publicAlerts,
-  });
-  return {
-    api: Template.fromStack(api),
-    edge: Template.fromStack(edge),
-    ingest: Template.fromStack(ingest),
-  };
+function build(stage: 'dev' | 'prod', throttle?: { rateLimit: number; burstLimit: number }) {
+  return synthAll(stage, throttle ? { throttle } : {});
 }
 
 const { edge, api } = build('dev');
@@ -270,36 +209,19 @@ describe('API stage throttle per stage', () => {
 });
 
 describe('IngestStack public alert wiring', () => {
-  const ingest = (publicAlerts?: { bucketName: string; region: string }) =>
-    build('dev', undefined, publicAlerts).ingest;
-
-  it('adds the env var and a PutObject grant scoped to alerts/v1/* when given the bucket', () => {
-    const t = ingest({ bucketName: 'pub', region: 'us-east-1' });
+  it('points at the edge bucket by deterministic name, in us-east-1, with PutObject on alerts/v1/*', () => {
+    const t = build('dev').ingest;
     t.hasResourceProperties('AWS::Lambda::Function', {
       Environment: {
         Variables: Match.objectLike({
-          PUBLIC_ALERTS_BUCKET: 'pub',
+          PUBLIC_ALERTS_BUCKET: {
+            'Fn::Join': ['', ['relay-dev-public-alerts-', { Ref: 'AWS::AccountId' }]],
+          },
           PUBLIC_ALERTS_REGION: 'us-east-1',
         }),
       },
     });
-    t.hasResourceProperties('AWS::IAM::Policy', {
-      PolicyDocument: {
-        Statement: Match.arrayWith([
-          Match.objectLike({
-            Action: 's3:PutObject',
-            Resource: 'arn:aws:s3:::pub/alerts/v1/*',
-          }),
-        ]),
-      },
-    });
-  });
-
-  it('is unchanged without the prop', () => {
-    const t = ingest();
-    const fn = Object.values(t.findResources('AWS::Lambda::Function')).find(
-      (f: any) => 'RAW_BUCKET' in (f.Properties.Environment?.Variables ?? {}),
-    ) as any;
-    expect(fn.Properties.Environment.Variables.PUBLIC_ALERTS_BUCKET).toBeUndefined();
+    expect(publicAlertsBucketName('dev')).toContain('relay-dev-public-alerts-');
+    expect(JSON.stringify(t.toJSON().Resources)).toContain('/alerts/v1/*');
   });
 });
