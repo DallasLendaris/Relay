@@ -24,7 +24,7 @@ body:
     attributes:
       label: Done when
       description: How we'll know it's finished. Something anyone on the team could check.
-      placeholder: "- New NWS alerts appear in the database within 60 seconds"
+      placeholder: '- New NWS alerts appear in the database within 60 seconds'
     validations:
       required: true
   - type: textarea
