@@ -24,11 +24,17 @@ describe('PostgresDeviceStore', () => {
     await store.create(device());
     // A device with only the legacy Expo token also gets the matching native target.
     expect(await store.get(DEVICE_ID)).toEqual(
-      device({ pushPlatform: 'expo', pushToken: 'ExponentPushToken[abc]' }),
+      device({ pushPlatform: 'expo', pushToken: 'ExponentPushToken[abc]', pushProject: null }),
     );
     await store.update(device({ language: 'es', expoPushToken: null }));
     expect(await store.get(DEVICE_ID)).toEqual(
-      device({ language: 'es', expoPushToken: null, pushPlatform: null, pushToken: null }),
+      device({
+        language: 'es',
+        expoPushToken: null,
+        pushPlatform: null,
+        pushToken: null,
+        pushProject: null,
+      }),
     );
   });
 

@@ -99,3 +99,17 @@ END
 $$;
 
 GRANT UPDATE (expo_push_token, push_platform, push_token) ON TABLE devices TO relay_sender;
+
+-- push_project (migration 0012, FCM project sharding) is cleared together with the token, so the
+-- sender needs UPDATE on it too. The column does not exist until 0012 runs, so this is granted by
+-- name only when present; db-roles.ts re-applies this file after 0012, and 0012 grants it as well.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'devices' AND column_name = 'push_project'
+  ) THEN
+    GRANT UPDATE (push_project) ON TABLE devices TO relay_sender;
+  END IF;
+END
+$$;

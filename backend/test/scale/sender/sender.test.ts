@@ -43,6 +43,28 @@ describe('processBatch: claim states', () => {
   });
 });
 
+describe('processBatch: FCM project routing data', () => {
+  it('hands each recipient target, with its Firebase project, to the push sender', async () => {
+    const t = makeDeps();
+    await seedAlert(t.alerts);
+    const batch = makeBatch({}, 3);
+    const [first, second] = batch.recipients;
+    if (!first || !second) throw new Error('recipients');
+    second.target = { platform: 'android', token: 'tok1', project: 'relay-b' };
+    await processBatch(batch, t.deps);
+    const sent = t.push.calls.flat();
+    expect(sent.find((m) => m.target.token === 'tok1')?.target).toEqual({
+      platform: 'android',
+      token: 'tok1',
+      project: 'relay-b',
+    });
+    expect(sent.find((m) => m.target.token === 'tok0')?.target).toEqual({
+      platform: 'ios',
+      token: 'tok0',
+    });
+  });
+});
+
 describe('processBatch: eligibility', () => {
   const cases: Array<[string, Partial<Alert>, boolean, string]> = [
     ['test status', { status: 'Test' }, true, 'not_actual'],

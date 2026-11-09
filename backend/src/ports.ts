@@ -60,6 +60,11 @@ export interface Device {
    */
   pushPlatform?: PushPlatform | null;
   pushToken?: string | null;
+  /**
+   * Android only: the Firebase project (adapters/push/fcm-projects.ts) the FCM token was
+   * registered with. Null/absent: the default project, or not an Android target.
+   */
+  pushProject?: string | null;
   language: 'en' | 'es';
   createdAt: string;
 }

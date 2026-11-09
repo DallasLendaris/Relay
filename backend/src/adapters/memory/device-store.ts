@@ -81,6 +81,7 @@ export class MemoryDeviceStore implements DeviceStore, DeviceErasure {
     for (const other of holders) {
       other.pushPlatform = null;
       other.pushToken = null;
+      other.pushProject = null;
       other.expoPushToken = null;
       displaced.push(other.id);
     }
@@ -95,6 +96,7 @@ export class MemoryDeviceStore implements DeviceStore, DeviceErasure {
       ...device,
       pushPlatform: target.platform,
       pushToken: target.token,
+      pushProject: target.platform === 'android' ? (target.project ?? null) : null,
       expoPushToken: target.platform === 'expo' ? target.token : null,
       language,
     });
@@ -107,6 +109,7 @@ export class MemoryDeviceStore implements DeviceStore, DeviceErasure {
         device.expoPushToken = null;
         device.pushPlatform = null;
         device.pushToken = null;
+        device.pushProject = null;
       }
     }
   }

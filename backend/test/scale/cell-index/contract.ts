@@ -92,6 +92,31 @@ export function cellIndexContract(name: string, make: () => CellIndex): void {
       ]);
     });
 
+    it('keeps the Android Firebase project of a target through put, update and list', async () => {
+      const index = make();
+      const dev = entry(1).deviceId;
+      const token = 'f'.repeat(120);
+      await index.put([entry(1, { target: { platform: 'android', token, project: 'relay-b' } })]);
+      expect((await listAll(index, CELL)).entries[0]?.target).toEqual({
+        platform: 'android',
+        token,
+        project: 'relay-b',
+      });
+      const moved = { platform: 'android' as const, token, project: 'relay-c' };
+      await index.updateDevice(dev, [{ h3Cell: CELL, placeId: entry(1).placeId }], {
+        target: moved,
+        language: 'en',
+      });
+      expect((await listAll(index, CELL)).entries[0]?.target).toEqual(moved);
+      // No project stays no project (the default project).
+      const plain = { platform: 'android' as const, token };
+      await index.updateDevice(dev, [{ h3Cell: CELL, placeId: entry(1).placeId }], {
+        target: plain,
+        language: 'en',
+      });
+      expect((await listAll(index, CELL)).entries[0]?.target).toEqual(plain);
+    });
+
     it('updateDevice patches target and language on that device only, and never recreates', async () => {
       const index = make();
       const dev = entry(1).deviceId;

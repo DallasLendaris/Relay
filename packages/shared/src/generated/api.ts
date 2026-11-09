@@ -217,6 +217,13 @@ export interface components {
             deviceId: string;
             /** @description Secret bearer credential. Store in secure storage; shown only once. */
             credential: string;
+            /**
+             * @description Android only. The Firebase project this device's app must register its FCM token
+             *     with (initialize a secondary FirebaseApp for it when it is not the default project).
+             *     Send it back as fcmProject with the token in PUT /devices/me/push-token. Absent when
+             *     the server uses a single Firebase project.
+             */
+            fcmProject?: string;
         };
         PushTokenRequest: components["schemas"]["ExpoPushTokenRequest"] | components["schemas"]["NativePushTokenRequest"];
         ExpoPushTokenRequest: {
@@ -233,6 +240,12 @@ export interface components {
              *     expo: ExponentPushToken[...].
              */
             token: string;
+            /**
+             * @description Android only. The Firebase project the FCM token was registered with, as returned
+             *     by POST /devices. Must be one of the server's configured projects, otherwise 400.
+             *     Omit it when the app registered with the default (first) project.
+             */
+            fcmProject?: string;
             /** @enum {string} */
             language: "en" | "es";
         };

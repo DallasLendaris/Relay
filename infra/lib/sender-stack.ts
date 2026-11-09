@@ -47,6 +47,7 @@ import {
   senderMaxTasks,
   senderServiceName,
 } from './fanout-stack.js';
+import { fcmProjectIds } from './fcm-projects.js';
 import { dbEnv, grantDbToRole, type DbRefs } from './grants.js';
 
 /** One SQS queue, passed between stacks as plain strings (like every other prop). */
@@ -181,12 +182,19 @@ export class SenderStack extends Stack {
       ),
       removalPolicy,
     });
+    // Android pushes are spread over N Firebase projects (PERF-1). With none configured the
+    // secret holds one service account object (one project); with N ids it holds a JSON array of
+    // N service accounts, one per project id. The sender checks that the two agree at startup.
+    const projectIds = fcmProjectIds(this);
+    const fcmPlaceholder =
+      projectIds.length === 0
+        ? { type: 'service_account', project_id: 'REPLACE_ME' }
+        : projectIds.map((id) => ({ type: 'service_account', project_id: id }));
     const fcmSecret = new Secret(this, 'FcmServiceAccount', {
       secretName: `relay/${props.stage}/fcm-service-account`,
-      description: 'Firebase service account JSON for FCM HTTP v1',
-      secretStringValue: SecretValue.unsafePlainText(
-        JSON.stringify({ type: 'service_account', project_id: 'REPLACE_ME' }),
-      ),
+      description:
+        'Firebase service account JSON for FCM HTTP v1: one object, or an array with one per Firebase project',
+      secretStringValue: SecretValue.unsafePlainText(JSON.stringify(fcmPlaceholder)),
       removalPolicy,
     });
 
@@ -237,6 +245,7 @@ export class SenderStack extends Stack {
         APNS_KEY_SECRET_ARN: apnsSecret.secretArn,
         FCM_SERVICE_ACCOUNT_SECRET_ARN: fcmSecret.secretArn,
         ...(props.publicAlertBaseUrl ? { PUBLIC_ALERT_BASE_URL: props.publicAlertBaseUrl } : {}),
+        ...(projectIds.length > 0 ? { FCM_PROJECT_IDS: projectIds.join(',') } : {}),
       },
     });
 

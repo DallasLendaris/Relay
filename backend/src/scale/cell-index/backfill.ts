@@ -36,6 +36,7 @@ interface Row {
   expo_push_token: string | null;
   push_platform: PushPlatform | null;
   push_token: string | null;
+  push_project: string | null;
   /** Comma-separated, sorted, distinct cells of ALL the device's places. */
   device_cells: string | null;
 }
@@ -60,7 +61,7 @@ export async function backfillCellIndex(opts: BackfillOptions): Promise<Backfill
   let after = NIL_UUID;
   for (;;) {
     const rows = await opts.db.query<Row>(
-      `SELECT p.id, p.device_id, p.h3_cell, d.language, d.expo_push_token, d.push_platform, d.push_token,
+      `SELECT p.id, p.device_id, p.h3_cell, d.language, d.expo_push_token, d.push_platform, d.push_token, d.push_project,
               (SELECT string_agg(DISTINCT p2.h3_cell, ',' ORDER BY p2.h3_cell)
                  FROM places p2 WHERE p2.device_id = p.device_id) AS device_cells
          FROM places p JOIN devices d ON d.id = p.device_id
@@ -74,6 +75,7 @@ export async function backfillCellIndex(opts: BackfillOptions): Promise<Backfill
       const target = targetOf({
         pushPlatform: r.push_platform,
         pushToken: r.push_token,
+        pushProject: r.push_project,
         expoPushToken: r.expo_push_token,
       });
       if (target) counts.withTarget++;

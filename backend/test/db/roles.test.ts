@@ -222,6 +222,10 @@ describe('relay_sender: alerts read, push-token clearing, places read', () => {
       expect(await devices.get(DEVICE_ID)).not.toBeNull();
       expect(await new PostgresPlaceStore(db).listForDevice(DEVICE_ID)).toHaveLength(1);
       await devices.clearPushToken('ExponentPushToken[abc]');
+      // The FCM project column (0012) is cleared together with the token.
+      await db.pg.exec(
+        `UPDATE devices SET push_platform = NULL, push_token = NULL, push_project = NULL WHERE id = '${DEVICE_ID}'`,
+      );
     });
     expect(await new PostgresDeviceStore(db).get(DEVICE_ID)).toMatchObject({
       expoPushToken: null,
@@ -232,6 +236,7 @@ describe('relay_sender: alerts read, push-token clearing, places read', () => {
   it('may clear the push target columns and nothing else on devices', async () => {
     expect(await denied('relay_sender', "UPDATE devices SET language = 'es'")).toBe(true);
     expect(await denied('relay_sender', "UPDATE devices SET credential_hash = 'x'")).toBe(true);
+    expect(await denied('relay_sender', 'UPDATE devices SET push_project = NULL')).toBe(false);
     expect(await denied('relay_sender', 'DELETE FROM devices')).toBe(true);
     expect(await denied('relay_sender', 'INSERT INTO devices SELECT * FROM devices')).toBe(true);
   });

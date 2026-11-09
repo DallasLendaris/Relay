@@ -5,7 +5,11 @@
  * Env: URGENT_QUEUE_URL, STANDARD_QUEUE_URL, IDEMPOTENCY_TABLE, CELL_INDEX_TABLE, DB_CLUSTER_ARN,
  * DB_SECRET_ARN, DB_NAME, ALERT_KEYS_SECRET_ARN, KILL_SWITCH_PARAM, APNS_KEY_SECRET_ARN,
  * FCM_SERVICE_ACCOUNT_SECRET_ARN. Optional: SENDER_CONCURRENCY (default 50), PUBLIC_ALERT_BASE_URL
- * (CDN origin; puts data.alertUrl in every push).
+ * (CDN origin; puts data.alertUrl in every push), FCM_PROJECT_IDS
+ * (comma-separated Firebase project ids; must match the secret's service accounts in order) and
+ * FCM_PROJECT_RATE_PER_SEC (sends per second per Firebase project, default 9000).
+ * The FCM secret is a JSON array of service accounts, one per Firebase project (the first is the
+ * default project), or one service account object for a single project.
  */
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { RDSDataClient } from '@aws-sdk/client-rds-data';
@@ -22,7 +26,10 @@ import {
   FcmSender,
   RoutingPushSender,
   validateApnsSecret,
-  validateFcmServiceAccount,
+  validateFcmServiceAccounts,
+  FcmProjectSender,
+  DEFAULT_FCM_PROJECT_RATE,
+  parseFcmProjectIds,
 } from '../../adapters/push/index.js';
 import { ExpoPushSender } from '../../adapters/expo/expo-push-sender.js';
 import { DynamoCellIndex } from '../cell-index/dynamo-cell-index.js';
@@ -84,9 +91,20 @@ async function main(): Promise<void> {
   // Refuse to start with the placeholder secrets CDK creates, or with malformed ones, rather
   // than failing (or, worse, "killing" every token) once pushes start. Errors name fields only.
   const apns = validateApnsSecret(JSON.parse(await loadSecretString(env.APNS_KEY_SECRET_ARN)));
-  const fcm = validateFcmServiceAccount(
+  const fcmAccounts = validateFcmServiceAccounts(
     JSON.parse(await loadSecretString(env.FCM_SERVICE_ACCOUNT_SECRET_ARN)),
   );
+  // The configured project list (also given to the API, which assigns devices to projects) must
+  // match the secret exactly: a device's token only works with its own project.
+  const fcmProjectIds = parseFcmProjectIds(process.env['FCM_PROJECT_IDS']);
+  const secretIds = fcmAccounts.map((a) => a.project_id);
+  if (fcmProjectIds.length > 0 && fcmProjectIds.join(',') !== secretIds.join(',')) {
+    throw new Error('FCM_PROJECT_IDS does not match the project_id list in the FCM secret');
+  }
+  const fcmRate = Number(process.env['FCM_PROJECT_RATE_PER_SEC'] ?? DEFAULT_FCM_PROJECT_RATE);
+  if (!Number.isFinite(fcmRate) || fcmRate <= 0) {
+    throw new Error('FCM_PROJECT_RATE_PER_SEC must be a positive number');
+  }
 
   const alerts = new CachedAlertStore(new PostgresAlertStore(db));
   let verify = createAlertVerifier((await loadKeyring(env.ALERT_KEYS_SECRET_ARN)).all);
@@ -113,7 +131,14 @@ async function main(): Promise<void> {
         bundleId: apns.bundleId,
         sandbox: apns.sandbox,
       }),
-      android: new FcmSender({ serviceAccount: fcm }),
+      android: new FcmProjectSender({
+        projects: fcmAccounts.map((serviceAccount) => ({
+          projectId: serviceAccount.project_id ?? '',
+          sender: new FcmSender({ serviceAccount, logger }),
+        })),
+        ratePerSecond: fcmRate,
+        logger,
+      }),
       // Development builds only (Expo is limited to about 600 pushes per second per project).
       expo: new ExpoNativeAdapter(new ExpoPushSender()),
     }),

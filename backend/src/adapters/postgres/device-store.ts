@@ -14,16 +14,22 @@ interface DeviceRow {
   expo_push_token: string | null;
   push_platform: PushPlatform | null;
   push_token: string | null;
+  push_project: string | null;
   language: 'en' | 'es';
   created_at: string;
 }
 
 /** Native target columns for a device; a device with only the legacy Expo token counts as expo. */
-function targetColumns(device: Device): [PushPlatform | null, string | null] {
+function targetColumns(device: Device): [PushPlatform | null, string | null, string | null] {
   if (device.pushPlatform !== undefined || device.pushToken !== undefined) {
-    return [device.pushPlatform ?? null, device.pushToken ?? null];
+    const platform = device.pushPlatform ?? null;
+    return [
+      platform,
+      device.pushToken ?? null,
+      platform === 'android' ? (device.pushProject ?? null) : null,
+    ];
   }
-  return device.expoPushToken ? ['expo', device.expoPushToken] : [null, null];
+  return device.expoPushToken ? ['expo', device.expoPushToken, null] : [null, null, null];
 }
 
 export class PostgresDeviceStore implements DeviceStore, DeviceErasure {
@@ -35,8 +41,8 @@ export class PostgresDeviceStore implements DeviceStore, DeviceErasure {
 
   async create(device: Device): Promise<void> {
     await this.db.query(
-      `INSERT INTO devices (id, credential_hash, expo_push_token, push_platform, push_token, language, created_at)
-       VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::timestamptz)`,
+      `INSERT INTO devices (id, credential_hash, expo_push_token, push_platform, push_token, push_project, language, created_at)
+       VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::timestamptz)`,
       [
         device.id,
         device.credentialHash,
@@ -50,7 +56,7 @@ export class PostgresDeviceStore implements DeviceStore, DeviceErasure {
 
   async get(id: string): Promise<Device | null> {
     const rows = await this.db.query<DeviceRow>(
-      `SELECT id, credential_hash, expo_push_token, push_platform, push_token, language,
+      `SELECT id, credential_hash, expo_push_token, push_platform, push_token, push_project, language,
               ${isoUtc('created_at')} AS created_at
          FROM devices WHERE id = $1::uuid`,
       [id],
@@ -63,6 +69,7 @@ export class PostgresDeviceStore implements DeviceStore, DeviceErasure {
       expoPushToken: r.expo_push_token,
       pushPlatform: r.push_platform,
       pushToken: r.push_token,
+      pushProject: r.push_project,
       language: r.language,
       createdAt: r.created_at,
     };
@@ -71,7 +78,7 @@ export class PostgresDeviceStore implements DeviceStore, DeviceErasure {
   async update(device: Device): Promise<void> {
     await this.db.query(
       `UPDATE devices SET credential_hash = $2, expo_push_token = $3, push_platform = $4,
-              push_token = $5, language = $6
+              push_token = $5, push_project = $6, language = $7
         WHERE id = $1::uuid`,
       [
         device.id,
@@ -150,7 +157,8 @@ export class PostgresDeviceStore implements DeviceStore, DeviceErasure {
          ) AS allowed
        ),
        cleared AS (
-         UPDATE devices SET push_platform = NULL, push_token = NULL, expo_push_token = NULL
+         UPDATE devices SET push_platform = NULL, push_token = NULL, push_project = NULL,
+                expo_push_token = NULL
           WHERE push_platform = $2::text AND push_token = $3::text AND id <> $1::uuid
             AND EXISTS (SELECT 1 FROM me) AND (SELECT allowed FROM verdict)
          RETURNING id
@@ -167,6 +175,7 @@ export class PostgresDeviceStore implements DeviceStore, DeviceErasure {
        ),
        updated AS (
          UPDATE devices SET push_platform = $2::text, push_token = $3::text,
+                push_project = CASE WHEN $2::text = 'android' THEN $7::text ELSE NULL END,
                 expo_push_token = CASE WHEN $2::text = 'expo' THEN $3::text ELSE NULL END,
                 language = $4,
                 push_target_updated_at = $6::timestamptz,
@@ -189,6 +198,7 @@ export class PostgresDeviceStore implements DeviceStore, DeviceErasure {
         language,
         pushTargetHash(target),
         this.clock.now().toISOString(),
+        target.platform === 'android' ? (target.project ?? null) : null,
       ],
     );
     const row = rows[0];
@@ -219,7 +229,8 @@ export class PostgresDeviceStore implements DeviceStore, DeviceErasure {
          UNION
          SELECT id FROM devices WHERE push_token = $1::text
        )
-       UPDATE devices SET expo_push_token = NULL, push_platform = NULL, push_token = NULL
+       UPDATE devices SET expo_push_token = NULL, push_platform = NULL, push_token = NULL,
+              push_project = NULL
         WHERE id IN (SELECT id FROM hit)`,
       [token],
     );
