@@ -1,0 +1,190 @@
+/**
+ * Statewide-scale contracts. These are the shared shapes between the pieces that let one alert
+ * reach 1,000,000+ phones in about a minute and absorb the check-in burst that follows.
+ * See docs/scale-plan.md for targets and the data flow.
+ *
+ * Pieces (each owned by one module):
+ *   cell index (src/scale/cell-index) → fan-out planner (src/scale/fanout) → send queues →
+ *   sender service on Fargate (src/scale/sender) → APNs / FCM adapters (src/adapters/push) →
+ *   phones → check-in API (src/api) → check-in stream aggregator (src/scale/checkins).
+ *
+ * Changing anything here affects several modules. Keep changes small and update every
+ * implementation in the same pull request.
+ */
+import type { Alert } from '@relay/shared';
+
+// ---------- Push targets ----------
+
+/**
+ * Where a phone receives pushes. Production sends directly to Apple (APNs) and Google (FCM);
+ * Expo stays for development builds only, because its push service is limited to about
+ * 600 notifications per second per project.
+ */
+export type PushPlatform = 'ios' | 'android' | 'expo';
+
+export interface PushTarget {
+  platform: PushPlatform;
+  /** APNs device token (hex), FCM registration token, or ExponentPushToken[...]. */
+  token: string;
+}
+
+// ---------- Cell index ----------
+
+/**
+ * One saved place of one device, indexed by its H3 cell (resolution 7). This is the only
+ * data the hot fan-out path reads, so it carries everything needed to send.
+ * DynamoDB table: pk = h3Cell, sk = `${deviceId}#${placeId}`.
+ */
+export interface CellIndexEntry {
+  h3Cell: string;
+  deviceId: string;
+  placeId: string;
+  /** Null when the device has no working push target yet; such entries are skipped. */
+  target: PushTarget | null;
+  language: 'en' | 'es';
+}
+
+export interface CellIndexPage {
+  entries: CellIndexEntry[];
+  /** Opaque; pass back to get the next page. Absent on the last page. */
+  cursor?: string;
+}
+
+export interface CellIndex {
+  /** Insert or replace entries (write-through from the places API, and backfill). */
+  put(entries: CellIndexEntry[]): Promise<void>;
+  /** Remove one place's entry. */
+  remove(h3Cell: string, deviceId: string, placeId: string): Promise<void>;
+  /**
+   * Update the push target and language on every entry for this device
+   * (the caller passes the device's cells, from its places).
+   */
+  updateDevice(
+    deviceId: string,
+    cells: Array<{ h3Cell: string; placeId: string }>,
+    patch: { target: PushTarget | null; language: 'en' | 'es' },
+  ): Promise<void>;
+  /** All entries in one cell, paged (DynamoDB Query). Default limit 1,000. */
+  listForCell(h3Cell: string, cursor?: string, limit?: number): Promise<CellIndexPage>;
+}
+
+// ---------- Fan-out messages ----------
+
+/**
+ * "This alert is signed, saved and ready to deliver." Published by ingest after planning
+ * succeeds today's checks. Small on purpose: the planner re-reads and re-verifies the alert.
+ */
+export interface AlertReady {
+  alertId: string;
+  /** Alert.sourceId at the time of publishing, so a stale message for an old version is ignored. */
+  sourceId: string;
+  relaySeverity: Alert['relaySeverity'];
+}
+
+/**
+ * One shard of an alert's area: the alert cells that share one coarse H3 parent
+ * (resolution SHARD_RESOLUTION). One shard worker handles one ShardJob.
+ */
+export interface ShardJob {
+  alertId: string;
+  sourceId: string;
+  relaySeverity: Alert['relaySeverity'];
+  shardId: string;
+  cells: string[];
+}
+
+/** Coarse H3 resolution used to shard alert areas (a res-4 cell is about 1,770 km²). */
+export const SHARD_RESOLUTION = 4;
+
+/** Maximum recipients in one SendBatch. APNs and FCM calls are made per message; 500 keeps one batch under a few seconds of sending. */
+export const SEND_BATCH_SIZE = 500;
+
+/**
+ * Number of buckets a single H3 cell's devices are split into when building batches.
+ * A device's bucket is stable (hash of deviceId), so re-planning produces the same batch keys.
+ */
+export const CELL_BUCKETS = 16;
+
+/**
+ * A batch of recipients for one alert. Batches are deterministic: the same alert version,
+ * cell and bucket always produce the same batchKey, so re-planning never double-sends.
+ * The sender claims `batchKey` (lease → markSent) in the IdempotencyStore before sending.
+ */
+export interface SendBatch {
+  alertId: string;
+  sourceId: string;
+  relaySeverity: Alert['relaySeverity'];
+  /** `${alertId}:${relaySeverity}:${h3Cell}:${bucket}` or, for a retry of failed recipients, that plus `:r<attempt>`. */
+  batchKey: string;
+  recipients: Array<{
+    deviceId: string;
+    target: PushTarget;
+    language: 'en' | 'es';
+    /** Signed check-in token for this device and alert, with the h3Cell bound in (token v2). */
+    checkInToken: string;
+  }>;
+  /** 0 for the first attempt; failed recipients are re-queued as a new batch with attempt + 1. */
+  attempt: number;
+}
+
+/** Send queues are split by severity so emergencies never wait behind advisories. */
+export type SendQueueName = 'urgent' | 'standard';
+export const QUEUE_FOR_SEVERITY: Record<Alert['relaySeverity'], SendQueueName | null> = {
+  emergency: 'urgent',
+  warning: 'urgent',
+  watch: 'standard',
+  advisory: 'standard',
+  statement: null, // in-app only, see delivery/policy.ts
+};
+
+export interface SendQueue {
+  enqueue(queue: SendQueueName, batches: SendBatch[]): Promise<void>;
+}
+
+// ---------- Native push ----------
+
+/** A push as sent to APNs or FCM directly. */
+export interface NativePushMessage {
+  target: PushTarget;
+  title: string;
+  body: string;
+  /** Delivered to the app; values are strings. Includes alertId, checkInToken, expiresAt. */
+  data: Record<string, string>;
+  /** 'high' wakes the phone and plays sound; 'normal' is quiet (see delivery/policy.ts). */
+  priority: 'high' | 'normal';
+  sound: boolean;
+  /** Collapse/thread id so updates to the same alert replace each other on the lock screen. */
+  collapseKey: string;
+  /** Seconds after which APNs/FCM stop trying (the alert's end time). */
+  ttlSeconds: number;
+  /** iOS category / Android click action that shows the "I'm okay" button. */
+  category: 'alert-checkin';
+}
+
+export type NativePushResult =
+  | { ok: true }
+  | {
+      ok: false;
+      /** permanent: the token is dead (unregistered / invalid). retryable: anything else. */
+      kind: 'permanent' | 'retryable';
+      error: string;
+    };
+
+export interface NativePushSender {
+  /** One result per message, in order. Never throws for per-message failures. */
+  send(messages: NativePushMessage[]): Promise<NativePushResult[]>;
+}
+
+// ---------- Check-ins at scale ----------
+
+/**
+ * A check-in event as written to the check-ins table (pk = `${alertId}#${deviceId}`).
+ * DynamoDB Streams feed the aggregator, which adds up totals per `${alertId}#${h3Cell}` in
+ * batches, so a million check-ins never hit one hot counter row.
+ */
+export interface CheckInEvent {
+  alertId: string;
+  deviceId: string;
+  h3Cell: string;
+  checkedInAt: string;
+}
