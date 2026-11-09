@@ -1,0 +1,22 @@
+{
+  "name": "@relay/loadtest",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests",
+    "mock:apns": "tsx src/mock-apns.ts",
+    "mock:fcm": "tsx src/mock-fcm.ts",
+    "seed": "tsx src/seed.ts"
+  },
+  "dependencies": {
+    "h3-js": "^4.5.0",
+    "selfsigned": "^5.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15"
+  }
+}
