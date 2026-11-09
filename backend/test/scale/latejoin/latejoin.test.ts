@@ -10,9 +10,10 @@ import {
 } from '../../../src/scale/latejoin/index.js';
 import { buildLateJoinHandler } from '../../../src/scale/latejoin/handler.js';
 import { lateKeyOf } from '../../../src/scale/latejoin/latejoin.js';
-import { createAlertVerifier, signAlert } from '../../../src/signing/index.js';
+import { createAlertVerifier, signAlertSync } from '../../../src/signing/index.js';
 import { verifyCheckInToken } from '../../../src/tokens/index.js';
 import { APNS, SJ_CELL, TOKEN_KEY, harness, makeAlert } from './helpers.js';
+import { ATTACKER_SIGNING, TEST_SIGNING } from '../../signing/test-signing.js';
 
 const keys = new Map([[TOKEN_KEY.id, TOKEN_KEY.secret]]);
 
@@ -190,13 +191,13 @@ describe('the intent is only a hint', () => {
 });
 
 describe('alert signatures', () => {
-  const SIGNING = { id: 'k1', secret: 'alert-secret-not-real' };
-  const verify = createAlertVerifier(new Map([[SIGNING.id, SIGNING.secret]]));
+  const SIGNING = TEST_SIGNING.signer;
+  const verify = createAlertVerifier(TEST_SIGNING.publicKeys);
 
   it('does not late-join an unsigned or forged alert', async () => {
     const h = harness({ verifyAlert: verify });
     const bad = makeAlert(); // signature "v1.k1.sig" does not verify
-    const forged = signAlert(makeAlert(), { id: 'k1', secret: 'attacker-key' });
+    const forged = signAlertSync(makeAlert(), ATTACKER_SIGNING.signer);
     await h.alerts.save(bad);
     await h.alerts.save(forged);
     const { credential } = await h.register();
@@ -217,7 +218,7 @@ describe('alert signatures', () => {
 
   it('sends the properly signed alert and only that one', async () => {
     const h = harness({ verifyAlert: verify });
-    const good = signAlert(makeAlert(), SIGNING);
+    const good = signAlertSync(makeAlert(), SIGNING);
     await h.alerts.save(good);
     await h.alerts.save(makeAlert());
     const { credential } = await h.register();

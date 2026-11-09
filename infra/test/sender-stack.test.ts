@@ -9,6 +9,8 @@ import {
   SenderStack,
 } from '../lib/sender-stack.js';
 
+const ALERT_KEY_ARN = 'arn:aws:kms:us-west-2:111111111111:key/alert-signing';
+
 const queue = (name: string) => ({
   name,
   arn: `arn:aws:sqs:us-west-2:111111111111:${name}`,
@@ -37,7 +39,10 @@ function synth(stage: 'dev' | 'prod', context: Record<string, string> = {}) {
     idempotencyTableArn: 'arn:aws:dynamodb:us-west-2:111111111111:table/idem',
     cellIndexTableName: 'cells',
     cellIndexTableArn: 'arn:aws:dynamodb:us-west-2:111111111111:table/cells',
-    alertKeysSecretArn: 'arn:aws:secretsmanager:us-west-2:111111111111:secret:alert-keys-AbCdEf',
+    alertSigning: {
+      current: { kid: 'x-alert-v1', keyArn: ALERT_KEY_ARN },
+      verify: [{ kid: 'x-alert-v1', keyArn: ALERT_KEY_ARN }],
+    },
     killSwitchParamName: '/relay/x/kill',
     killSwitchParamArn: 'arn:aws:ssm:us-west-2:111111111111:parameter/relay/x/kill',
   });
@@ -122,7 +127,7 @@ describe('SenderStack service', () => {
       'DB_CLUSTER_ARN',
       'DB_SECRET_ARN',
       'DB_NAME',
-      'ALERT_KEYS_SECRET_ARN',
+      'ALERT_VERIFY_KEYS',
       'KILL_SWITCH_PARAM',
       'APNS_KEY_SECRET_ARN',
       'FCM_SERVICE_ACCOUNT_SECRET_ARN',
@@ -323,7 +328,9 @@ describe('SenderStack grants', () => {
     expect(json).toContain('secret:db-sender-AbCdEf');
     expect(json).not.toContain('secret:db-api-');
     expect(json).not.toContain('secret:db-ops-');
-    expect(json).toContain('alert-keys');
+    // No alert key in Secrets Manager: the sender verifies with the KMS public key only.
+    expect(json).not.toContain('alert-keys');
+    expect(grantedOn(dev, ALERT_KEY_ARN)).toEqual(['kms:GetPublicKey']);
     expect(json).toContain('ApnsKey');
     expect(json).toContain('FcmServiceAccount');
     expect(grantedOn(dev, 'parameter/relay/x/kill')).toEqual(['ssm:GetParameter']);

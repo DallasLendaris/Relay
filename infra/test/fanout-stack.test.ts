@@ -25,7 +25,7 @@ function synth(
       databaseName: data.databaseName,
     },
     tokenKeysSecretArn: config.tokenKeysSecretArn,
-    alertKeysSecretArn: config.alertKeysSecretArn,
+    alertSigning: config.alertSigning,
     killSwitchParamName: config.killSwitchParamName,
     killSwitchParamArn: config.killSwitchParamArn,
     ...(shardReservedConcurrency ? { shardReservedConcurrency } : {}),

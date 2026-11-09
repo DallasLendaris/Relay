@@ -47,7 +47,14 @@ import {
   senderMaxTasks,
   senderServiceName,
 } from './fanout-stack.js';
-import { dbEnv, grantDbToRole, type DbRefs } from './grants.js';
+import {
+  alertVerifyEnv,
+  alertVerifyStatement,
+  dbEnv,
+  grantDbToRole,
+  type AlertSigningRefs,
+  type DbRefs,
+} from './grants.js';
 
 /** One SQS queue, passed between stacks as plain strings (like every other prop). */
 export interface QueueRefs {
@@ -67,7 +74,7 @@ export interface SenderStackProps extends StackProps {
   idempotencyTableArn: string;
   cellIndexTableName: string;
   cellIndexTableArn: string;
-  alertKeysSecretArn: string;
+  alertSigning: AlertSigningRefs;
   killSwitchParamName: string;
   killSwitchParamArn: string;
 }
@@ -223,7 +230,7 @@ export class SenderStack extends Stack {
         STANDARD_QUEUE_URL: props.standardQueue.url,
         IDEMPOTENCY_TABLE: props.idempotencyTableName,
         CELL_INDEX_TABLE: props.cellIndexTableName,
-        ALERT_KEYS_SECRET_ARN: props.alertKeysSecretArn,
+        ...alertVerifyEnv(props.alertSigning),
         KILL_SWITCH_PARAM: props.killSwitchParamName,
         APNS_KEY_SECRET_ARN: apnsSecret.secretArn,
         FCM_SERVICE_ACCOUNT_SECRET_ARN: fcmSecret.secretArn,
@@ -255,10 +262,9 @@ export class SenderStack extends Stack {
     // Dead targets are cleared in the cell index.
     allow(['dynamodb:UpdateItem', 'dynamodb:DeleteItem'], [props.cellIndexTableArn]);
     grantDbToRole(taskDef.taskRole, props.db, 'sender');
-    allow(
-      ['secretsmanager:GetSecretValue'],
-      [apnsSecret.secretArn, fcmSecret.secretArn, props.alertKeysSecretArn],
-    );
+    allow(['secretsmanager:GetSecretValue'], [apnsSecret.secretArn, fcmSecret.secretArn]);
+    // Verify only: the sender fetches the alert public key once and never holds kms:Sign.
+    taskDef.taskRole.addToPrincipalPolicy(alertVerifyStatement(props.alertSigning));
     allow(['ssm:GetParameter'], [props.killSwitchParamArn]);
 
     const enabled = isSenderEnabled(this, props.stage);

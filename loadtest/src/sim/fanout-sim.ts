@@ -15,7 +15,11 @@ import { FcmSender } from '../../../backend/src/adapters/push/fcm-sender.js';
 import { RoutingPushSender } from '../../../backend/src/adapters/push/routing-push-sender.js';
 import type { Logger } from '../../../backend/src/delivery/types.js';
 import { cellsForAlertArea } from '../../../backend/src/geo/h3-cells.js';
-import { createAlertVerifier, signAlert } from '../../../backend/src/signing/index.js';
+import {
+  createAlertVerifier,
+  createMemoryAlertSigning,
+  signAlertSync,
+} from '../../../backend/src/signing/index.js';
 import { createCheckInToken } from '../../../backend/src/tokens/checkInToken.js';
 import {
   type CellIndex,
@@ -47,7 +51,8 @@ import {
 } from '../report.js';
 
 export const ALERT_ID = '5f0c2a7e-1b3d-4c8e-9a6f-0d2e4b6a8c10';
-export const ALERT_KEY = { id: 'sim-alert', secret: 'sim-alert-secret' };
+/** In-memory ECDSA P-256 alert key (same algorithm as the KMS key in AWS). */
+export const ALERT_SIGNING = createMemoryAlertSigning('sim-alert');
 export const TOKEN_KEY = { id: 'sim-token', secret: 'sim-token-secret' };
 export const DEVICE_CRED_KEY = { id: 'sim-cred', secret: 'sim-cred-secret' };
 
@@ -505,7 +510,7 @@ export async function runFanoutSim(options: FanoutSimOptions): Promise<FanoutSim
     },
   );
   const now = Date.now();
-  const alert: Alert = signAlert(
+  const alert: Alert = signAlertSync(
     {
       id: ALERT_ID,
       source: 'nws',
@@ -542,12 +547,12 @@ export async function runFanoutSim(options: FanoutSimOptions): Promise<FanoutSim
       summaries: [],
       signature: 'unsigned',
     },
-    ALERT_KEY,
+    ALERT_SIGNING.signer,
   );
   const alerts = new InMemoryAlertStore();
   await alerts.save(alert);
   const cachedAlerts = new CachedAlertStore(alerts);
-  const verify = createAlertVerifier(new Map([[ALERT_KEY.id, ALERT_KEY.secret]]));
+  const verify = createAlertVerifier(ALERT_SIGNING.publicKeys);
 
   // ----- expected recipients (computed independently of the system under test) -----
   const expectedCount = new Map<string, number>(); // push token -> distinct alert cells holding it

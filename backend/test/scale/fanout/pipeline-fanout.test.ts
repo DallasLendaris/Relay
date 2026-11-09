@@ -8,6 +8,7 @@ import { noopLogger } from '../../../src/delivery/index.js';
 import { createIngestPipeline } from '../../../src/ingest/pipeline.js';
 import { DeliveryPausedError } from '../../../src/ingest/poll.js';
 import { MemoryPlanQueue } from '../../../src/scale/fanout/queues.js';
+import { TEST_SIGNING } from '../../signing/test-signing.js';
 
 const feed = JSON.parse(
   readFileSync(new URL('../../fixtures/nws/active-ca-mixed.json', import.meta.url), 'utf8'),
@@ -29,7 +30,7 @@ async function run(opts: {
     places: new MemoryPlaceStore(),
     devices: new MemoryDeviceStore(),
     queue: direct,
-    alertKeys: ring('a1', 'alert-secret'),
+    alertSigning: TEST_SIGNING,
     tokenKeys: ring('t1', 'token-secret'),
     isDeliveryPaused: async () => opts.paused ?? false,
     fetch: (async () => new Response('{}', { status: 404 })) as typeof fetch,
@@ -86,7 +87,7 @@ describe('pipeline FANOUT_MODE=queue', () => {
         places: new MemoryPlaceStore(),
         devices: new MemoryDeviceStore(),
         queue: new MemoryDeliveryQueue(),
-        alertKeys: ring('a1', 'alert-secret'),
+        alertSigning: TEST_SIGNING,
         tokenKeys: ring('t1', 'token-secret'),
         isDeliveryPaused: async () => false,
         fetch,

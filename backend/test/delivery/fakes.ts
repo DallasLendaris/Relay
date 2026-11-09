@@ -1,7 +1,8 @@
 import { latLngToCell, gridDisk } from 'h3-js';
 import type { Alert } from '@relay/shared';
-import { createAlertVerifier, signAlert } from '../../src/signing/index.js';
+import { createAlertVerifier, signAlertSync } from '../../src/signing/index.js';
 import type { Device, DeviceStore, Place, PlaceStore } from '../../src/ports.js';
+import { TEST_SIGNING } from '../signing/test-signing.js';
 
 /** Small local fakes; the real in-memory Place/Device stores belong to another agent. */
 export class FakePlaces implements PlaceStore {
@@ -119,10 +120,10 @@ export function makeAlert(over: Partial<Alert> = {}, cells?: string[]): Alert {
   };
 }
 
-const alertKey = { id: 'a1', secret: 'alert-secret' };
+const alertKey = TEST_SIGNING.signer;
 /** Real signing and verification, so tests prove the check rather than stubbing it. */
-export const verifyAlert = createAlertVerifier(new Map([[alertKey.id, alertKey.secret]]));
+export const verifyAlert = createAlertVerifier(TEST_SIGNING.publicKeys);
 export const signed = (over: Partial<Alert> = {}, cells?: string[]): Alert =>
-  signAlert(makeAlert(over, cells), alertKey);
+  signAlertSync(makeAlert(over, cells), alertKey);
 /** Change a signed alert without re-signing: what a hand-edited database row looks like. */
 export const tampered = (alert: Alert, over: Partial<Alert>): Alert => ({ ...alert, ...over });

@@ -86,7 +86,7 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     stage,
     db,
     expoSecretArn: config.expoSecretArn,
-    alertKeysSecretArn: config.alertKeysSecretArn,
+    alertSigning: config.alertSigning,
     ...killSwitch,
   });
   const fanout = new FanoutStack(app, id('fanout'), {
@@ -94,7 +94,7 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     stage,
     db,
     tokenKeysSecretArn: config.tokenKeysSecretArn,
-    alertKeysSecretArn: config.alertKeysSecretArn,
+    alertSigning: config.alertSigning,
     ...killSwitch,
   });
   const latejoin = new LateJoinStack(app, id('latejoin'), {
@@ -102,7 +102,7 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     stage,
     db,
     tokenKeysSecretArn: config.tokenKeysSecretArn,
-    alertKeysSecretArn: config.alertKeysSecretArn,
+    alertSigning: config.alertSigning,
     ...killSwitch,
     urgentQueue: { arn: fanout.urgentQueueArn, url: fanout.urgentQueueUrl },
     standardQueue: { arn: fanout.standardQueueArn, url: fanout.standardQueueUrl },
@@ -145,7 +145,7 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     planQueueArn: fanout.planQueueArn,
     planQueueUrl: fanout.planQueueUrl,
     tokenKeysSecretArn: config.tokenKeysSecretArn,
-    alertKeysSecretArn: config.alertKeysSecretArn,
+    alertSigning: config.alertSigning,
     ...killSwitch,
     publicAlerts: { bucketName: publicAlertsBucketName(stage), region: edgeEnv.region ?? '' },
     ...(o.fanoutMode ? { fanoutMode: o.fanoutMode } : {}),
@@ -168,7 +168,7 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     idempotencyTableArn: delivery.idempotencyTableArn,
     cellIndexTableName: fanout.cellIndexTableName,
     cellIndexTableArn: fanout.cellIndexTableArn,
-    alertKeysSecretArn: config.alertKeysSecretArn,
+    alertSigning: config.alertSigning,
     ...killSwitch,
   });
   const edge = new EdgeStack(app, id('edge'), {

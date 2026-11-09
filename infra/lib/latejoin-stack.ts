@@ -7,13 +7,22 @@ import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { Queue, QueueEncryption } from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
-import { allow, dbEnv, grantDb, grantSecretRead, type DbRefs } from './grants.js';
+import {
+  alertVerifyEnv,
+  allow,
+  dbEnv,
+  grantAlertVerify,
+  grantDb,
+  grantSecretRead,
+  type AlertSigningRefs,
+  type DbRefs,
+} from './grants.js';
 
 export interface LateJoinStackProps extends StackProps {
   stage: 'dev' | 'prod';
   db: DbRefs;
   tokenKeysSecretArn: string;
-  alertKeysSecretArn: string;
+  alertSigning: AlertSigningRefs;
   killSwitchParamName: string;
   killSwitchParamArn: string;
   /** Send queues (FanoutStack): this stack's Lambda sends single-recipient batches to them. */
@@ -81,7 +90,7 @@ export class LateJoinStack extends Stack {
         URGENT_QUEUE_URL: props.urgentQueue.url,
         STANDARD_QUEUE_URL: props.standardQueue.url,
         IDEMPOTENCY_TABLE: props.idempotencyTableName,
-        ALERT_KEYS_SECRET_ARN: props.alertKeysSecretArn,
+        ...alertVerifyEnv(props.alertSigning),
         TOKEN_KEYS_SECRET_ARN: props.tokenKeysSecretArn,
         KILL_SWITCH_PARAM: props.killSwitchParamName,
       },
@@ -97,7 +106,7 @@ export class LateJoinStack extends Stack {
     allow(fn, ['sqs:SendMessage'], [props.urgentQueue.arn, props.standardQueue.arn]);
     grantDb(fn, props.db, 'latejoin');
     grantSecretRead(fn, props.tokenKeysSecretArn);
-    grantSecretRead(fn, props.alertKeysSecretArn);
+    grantAlertVerify(fn, props.alertSigning);
     allow(fn, ['ssm:GetParameter'], [props.killSwitchParamArn]);
     // DynamoIdempotencyStore: claim (PutItem, GetItem), markSent/extend (UpdateItem), release.
     allow(

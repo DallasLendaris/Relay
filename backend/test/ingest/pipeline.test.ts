@@ -11,12 +11,13 @@ import { createIngestPipeline } from '../../src/ingest/pipeline.js';
 import { DeliveryPausedError } from '../../src/ingest/poll.js';
 import { verifyAlertSignature } from '../../src/signing/index.js';
 import type { PlaceStore } from '../../src/ports.js';
+import { TEST_SIGNING } from '../signing/test-signing.js';
 
 const feed = JSON.parse(
   readFileSync(new URL('../fixtures/nws/active-ca-mixed.json', import.meta.url), 'utf8'),
 ) as { features: unknown[] };
-const key = { id: 'a1', secret: 'alert-secret' };
-const keys = new Map([[key.id, key.secret]]);
+const key = TEST_SIGNING.signer;
+const keys = TEST_SIGNING.publicKeys;
 const ring = (id: string, secret: string) => ({
   current: { id, secret },
   all: new Map([[id, secret]]),
@@ -34,7 +35,7 @@ async function applyFirst(
     places,
     devices: new MemoryDeviceStore(),
     queue: new MemoryDeliveryQueue(),
-    alertKeys: ring('a1', 'alert-secret'),
+    alertSigning: TEST_SIGNING,
     tokenKeys: ring('t1', 'token-secret'),
     isDeliveryPaused: extra.isDeliveryPaused ?? (async () => false),
     fetch: extra.fetch ?? ((async () => new Response('{}', { status: 404 })) as typeof fetch),

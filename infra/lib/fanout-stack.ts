@@ -19,13 +19,22 @@ import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { Queue, QueueEncryption } from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
-import { allow, dbEnv, grantDb, grantSecretRead, type DbRefs } from './grants.js';
+import {
+  alertVerifyEnv,
+  allow,
+  dbEnv,
+  grantAlertVerify,
+  grantDb,
+  grantSecretRead,
+  type AlertSigningRefs,
+  type DbRefs,
+} from './grants.js';
 
 export interface FanoutStackProps extends StackProps {
   stage: 'dev' | 'prod';
   db: DbRefs;
   tokenKeysSecretArn: string;
-  alertKeysSecretArn: string;
+  alertSigning: AlertSigningRefs;
   killSwitchParamName: string;
   killSwitchParamArn: string;
   /**
@@ -228,14 +237,14 @@ export class FanoutStack extends Stack {
         CELL_INDEX_TABLE: cellIndex.tableName,
         URGENT_QUEUE_URL: urgent.queue.queueUrl,
         STANDARD_QUEUE_URL: standard.queue.queueUrl,
-        ALERT_KEYS_SECRET_ARN: props.alertKeysSecretArn,
+        ...alertVerifyEnv(props.alertSigning),
         TOKEN_KEYS_SECRET_ARN: props.tokenKeysSecretArn,
         KILL_SWITCH_PARAM: props.killSwitchParamName,
         PAUSED_QUEUE_URL: paused.queueUrl,
       },
     });
     grantDb(shardFn, props.db, 'fanout');
-    grantSecretRead(shardFn, props.alertKeysSecretArn);
+    grantAlertVerify(shardFn, props.alertSigning);
     grantSecretRead(shardFn, props.tokenKeysSecretArn);
     allow(shardFn, ['ssm:GetParameter'], [props.killSwitchParamArn]);
     allow(shardFn, ['dynamodb:Query'], [cellIndex.tableArn]);
@@ -267,7 +276,7 @@ export class FanoutStack extends Stack {
       environment: {
         ...dbEnv(props.db, 'fanout'),
         SHARD_FUNCTION_NAME: shardFn.functionName,
-        ALERT_KEYS_SECRET_ARN: props.alertKeysSecretArn,
+        ...alertVerifyEnv(props.alertSigning),
         KILL_SWITCH_PARAM: props.killSwitchParamName,
         PAUSED_QUEUE_URL: paused.queueUrl,
         // Pre-scale of the sender fleet. SENDER_MAX_TASKS is 0 (off) until senderEnabled=true,
@@ -284,7 +293,7 @@ export class FanoutStack extends Stack {
       new SqsEventSource(plan.queue, { batchSize: 1, reportBatchItemFailures: true }),
     );
     grantDb(planner, props.db, 'fanout');
-    grantSecretRead(planner, props.alertKeysSecretArn);
+    grantAlertVerify(planner, props.alertSigning);
     allow(planner, ['ssm:GetParameter'], [props.killSwitchParamArn]);
     allow(planner, ['sqs:SendMessage'], [paused.queueArn]);
     // Invoke the shard function only (no wildcard, no other functions).

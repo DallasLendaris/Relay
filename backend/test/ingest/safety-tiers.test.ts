@@ -8,6 +8,7 @@ import { PUSH_POLICY } from '../../src/delivery/policy.js';
 import { normalizeFeature } from '../../src/ingest/normalize.js';
 import { createIngestPipeline } from '../../src/ingest/pipeline.js';
 import { summariesFor } from '../../src/summaries/index.js';
+import { TEST_SIGNING } from '../signing/test-signing.js';
 
 type Loose = Record<string, any>;
 const newId = (): string => '00000000-0000-4000-8000-000000000000';
@@ -118,7 +119,7 @@ describe('SAFE-1: damage threat sets the emergency tier', () => {
         places: new MemoryPlaceStore(),
         devices: new MemoryDeviceStore(),
         queue: new MemoryDeliveryQueue(),
-        alertKeys: { current: { id: 'a1', secret: 's' }, all: new Map([['a1', 's']]) },
+        alertSigning: TEST_SIGNING,
         tokenKeys: { current: { id: 't1', secret: 't' }, all: new Map([['t1', 't']]) },
         isDeliveryPaused: async () => false,
         fetch: (async () => new Response('{}', { status: 404 })) as typeof fetch,

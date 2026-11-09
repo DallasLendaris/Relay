@@ -3,14 +3,13 @@
  * environment, runs the consumer, and shuts down cleanly on SIGTERM.
  *
  * Env: URGENT_QUEUE_URL, STANDARD_QUEUE_URL, IDEMPOTENCY_TABLE, CELL_INDEX_TABLE, DB_CLUSTER_ARN,
- * DB_SECRET_ARN, DB_NAME, ALERT_KEYS_SECRET_ARN, KILL_SWITCH_PARAM, APNS_KEY_SECRET_ARN,
+ * DB_SECRET_ARN, DB_NAME, ALERT_VERIFY_KEYS, KILL_SWITCH_PARAM, APNS_KEY_SECRET_ARN,
  * FCM_SERVICE_ACCOUNT_SECRET_ARN. Optional: SENDER_CONCURRENCY (default 50).
  */
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { RDSDataClient } from '@aws-sdk/client-rds-data';
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import type { Alert } from '@relay/shared';
 import { DynamoIdempotencyStore } from '../../adapters/aws/dynamo-idempotency-store.js';
 import { PostgresAlertStore } from '../../adapters/postgres/alert-store.js';
 import { PostgresDeviceStore } from '../../adapters/postgres/device-store.js';
@@ -26,10 +25,10 @@ import {
 import { ExpoPushSender } from '../../adapters/expo/expo-push-sender.js';
 import { DynamoCellIndex } from '../cell-index/dynamo-cell-index.js';
 import { createKillSwitch } from '../../config/kill-switch.js';
-import { clearKeyringCache, loadKeyring, loadSecretString } from '../../config/secrets.js';
+import { loadSecretString } from '../../config/secrets.js';
 import { DataApiExecutor } from '../../db/sql.js';
 import type { Logger } from '../../delivery/types.js';
-import { createAlertVerifier } from '../../signing/index.js';
+import { alertVerifierFromEnv } from '../../signing/kms.js';
 import { CachedAlertStore } from './cached-alerts.js';
 import { SenderConsumer } from './consumer.js';
 import { createDeadTargetClearer } from './dead-target.js';
@@ -52,7 +51,7 @@ const REQUIRED = [
   'DB_CLUSTER_ARN',
   'DB_SECRET_ARN',
   'DB_NAME',
-  'ALERT_KEYS_SECRET_ARN',
+  'ALERT_VERIFY_KEYS',
   'KILL_SWITCH_PARAM',
   'APNS_KEY_SECRET_ARN',
   'FCM_SERVICE_ACCOUNT_SECRET_ARN',
@@ -88,7 +87,8 @@ async function main(): Promise<void> {
   );
 
   const alerts = new CachedAlertStore(new PostgresAlertStore(db));
-  let verify = createAlertVerifier((await loadKeyring(env.ALERT_KEYS_SECRET_ARN)).all);
+  // Public keys fetched once (kms:GetPublicKey); each alert version is verified once (memo).
+  const verifyAlert = await alertVerifierFromEnv(env);
   const idempotency = new DynamoIdempotencyStore(doc, env.IDEMPOTENCY_TABLE);
   const clearDeadTarget = createDeadTargetClearer({
     devices: new PostgresDeviceStore(db),
@@ -101,8 +101,7 @@ async function main(): Promise<void> {
   const deps: SenderDeps = {
     idempotency,
     alerts,
-    // Evaluated per call so a rotated key (refreshKeys) takes effect.
-    verifyAlert: (alert: Alert) => verify(alert),
+    verifyAlert,
     isDeliveryPaused: isPaused,
     push: new RoutingPushSender({
       ios: new ApnsSender({
@@ -125,10 +124,6 @@ async function main(): Promise<void> {
     clock: { now: () => new Date() },
     logger,
     invalidateAlert: (id) => alerts.invalidate(id),
-    refreshKeys: async () => {
-      clearKeyringCache();
-      verify = createAlertVerifier((await loadKeyring(env.ALERT_KEYS_SECRET_ARN)).all);
-    },
   };
 
   const consumer = new SenderConsumer({

@@ -121,7 +121,7 @@ describe('LateJoinStack', () => {
     expect(set.filter((n) => !read.includes(n))).toEqual([]);
   });
 
-  it('has IAM limited to: intent queue (consume), send queues, rds-data, keyrings, kill switch, idempotency', () => {
+  it('has IAM limited to: intent queue (consume), send queues, rds-data, token keyring, alert public key, kill switch, idempotency', () => {
     const all = statements(t);
     const allActions = [...new Set(all.flatMap(actionsOf))].sort();
     expect(allActions).toEqual(
@@ -134,12 +134,14 @@ describe('LateJoinStack', () => {
         'sqs:GetQueueAttributes',
         // send to the two send queues
         'sqs:SendMessage',
-        // Aurora through the Data API (and its secret) plus the two keyrings
+        // Aurora through the Data API (and its secret) plus the token keyring
         'rds-data:ExecuteStatement',
         'rds-data:BeginTransaction',
         'rds-data:CommitTransaction',
         'rds-data:RollbackTransaction',
         'secretsmanager:GetSecretValue',
+        // the alert public key (verify only, never kms:Sign)
+        'kms:GetPublicKey',
         // the kill switch
         'ssm:GetParameter',
         // idempotency claims
@@ -156,14 +158,14 @@ describe('LateJoinStack', () => {
     expect(resources).toHaveLength(2);
     expect(text(resources)).toMatch(/Urgent/);
     expect(text(resources)).toMatch(/Standard/);
-    // Three secrets: the database credentials and the two keyrings.
+    // Two secrets: the database credentials and the token keyring (no alert key secret).
     const secret = all.find((s) => actionsOf(s).includes('secretsmanager:GetSecretValue'));
     expect(secret).toBeDefined();
     expect(
       all
         .filter((s) => actionsOf(s).includes('secretsmanager:GetSecretValue'))
         .flatMap((s) => [s.Resource].flat()),
-    ).toHaveLength(3);
+    ).toHaveLength(2);
     // No wildcard resources.
     for (const s of all) expect(text(s.Resource)).not.toContain('"*"');
   });

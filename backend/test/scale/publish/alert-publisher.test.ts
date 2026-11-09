@@ -14,8 +14,9 @@ import {
   type PublicObjectWriter,
 } from '../../../src/scale/publish/index.js';
 import { createAlertVerifier } from '../../../src/signing/index.js';
+import { TEST_SIGNING } from '../../signing/test-signing.js';
 
-const KEY = { id: 'k1', secret: 'test-secret-not-real' };
+const KEY = TEST_SIGNING.signer;
 const NOW = new Date('2026-06-01T12:00:00Z');
 
 const LA = latLngToCell(34.05, -118.25, 7);
@@ -114,9 +115,9 @@ describe('AlertPublisher via SigningAlertStore', () => {
     expect(body.area.h3Cells).toEqual([LA, LA2].sort());
     expect(body.official.description).toBe('d');
     expect(body.summaries.length).toBeGreaterThan(0);
-    expect(body.signature).toMatch(/^v1\.k1\./);
+    expect(body.signature).toMatch(/^v2\.a1\./);
     // The published copy verifies: it is exactly what was signed.
-    expect(createAlertVerifier(new Map([[KEY.id, KEY.secret]]))(body)).toBe(true);
+    expect(createAlertVerifier(TEST_SIGNING.publicKeys)(body)).toBe(true);
   });
 
   it('exposes the public path for the app', () => {
@@ -179,7 +180,7 @@ describe('AlertPublisher via SigningAlertStore', () => {
     const inner = new InMemoryAlertStore();
     const store = new SigningAlertStore(inner, KEY);
     await store.save(alert(A, [LA]));
-    expect((await inner.get(A))?.signature).toMatch(/^v1\./);
+    expect((await inner.get(A))?.signature).toMatch(/^v2\./);
     expect(writer.puts).toEqual([]);
   });
 

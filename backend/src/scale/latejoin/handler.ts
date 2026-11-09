@@ -3,7 +3,7 @@
  * sender) one of the few identities allowed to send to the urgent and standard send queues.
  *
  * Env: DB_CLUSTER_ARN, DB_SECRET_ARN, DB_NAME, URGENT_QUEUE_URL, STANDARD_QUEUE_URL,
- * IDEMPOTENCY_TABLE, ALERT_KEYS_SECRET_ARN, TOKEN_KEYS_SECRET_ARN, KILL_SWITCH_PARAM.
+ * IDEMPOTENCY_TABLE, ALERT_VERIFY_KEYS, TOKEN_KEYS_SECRET_ARN, KILL_SWITCH_PARAM.
  */
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { RDSDataClient } from '@aws-sdk/client-rds-data';
@@ -18,7 +18,7 @@ import { createKillSwitch } from '../../config/kill-switch.js';
 import { clearKeyringCache, loadKeyring } from '../../config/secrets.js';
 import { DataApiExecutor } from '../../db/sql.js';
 import type { Logger } from '../../delivery/types.js';
-import { createAlertVerifier } from '../../signing/index.js';
+import { alertVerifierFromEnv } from '../../signing/kms.js';
 import { createCheckInToken } from '../../tokens/index.js';
 import { SqsSendQueue } from '../sender/sqs-send-queue.js';
 import { isLateJoinIntent } from './intent.js';
@@ -78,7 +78,7 @@ const LATEJOIN_ENV = [
   'URGENT_QUEUE_URL',
   'STANDARD_QUEUE_URL',
   'IDEMPOTENCY_TABLE',
-  'ALERT_KEYS_SECRET_ARN',
+  'ALERT_VERIFY_KEYS',
   'TOKEN_KEYS_SECRET_ARN',
   'KILL_SWITCH_PARAM',
 ] as const;
@@ -113,13 +113,13 @@ function build(env: Record<string, string | undefined>) {
     logger,
   };
   const withKeys = async (): Promise<LateJoinDeps> => {
-    const [alertKeys, tokenKeys] = await Promise.all([
-      loadKeyring(e.ALERT_KEYS_SECRET_ARN),
+    const [verifyAlert, tokenKeys] = await Promise.all([
+      alertVerifierFromEnv(env),
       loadKeyring(e.TOKEN_KEYS_SECRET_ARN),
     ]);
     return {
       ...base,
-      verifyAlert: createAlertVerifier(alertKeys.all),
+      verifyAlert,
       makeCheckInToken: (alertId, deviceId, h3Cell, expiresAt) =>
         createCheckInToken({ alertId, deviceId, h3Cell, expiresAt }, tokenKeys.current),
     };

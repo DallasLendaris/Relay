@@ -9,7 +9,16 @@ import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { BlockPublicAccess, Bucket, BucketEncryption, StorageClass } from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
-import { allow, dbEnv, grantDb, grantSecretRead, type DbRefs } from './grants.js';
+import {
+  alertSignEnv,
+  allow,
+  dbEnv,
+  grantAlertSign,
+  grantDb,
+  grantSecretRead,
+  type AlertSigningRefs,
+  type DbRefs,
+} from './grants.js';
 
 export interface IngestStackProps extends StackProps {
   stage: 'dev' | 'prod';
@@ -17,7 +26,7 @@ export interface IngestStackProps extends StackProps {
   deliveryQueueArn: string;
   deliveryQueueUrl: string;
   tokenKeysSecretArn: string;
-  alertKeysSecretArn: string;
+  alertSigning: AlertSigningRefs;
   killSwitchParamName: string;
   killSwitchParamArn: string;
   /** Public alert bucket (edge stack, us-east-1), named deterministically so no cross-region reference is needed. */
@@ -116,7 +125,7 @@ export class IngestStack extends Stack {
         ...dbEnv(props.db, ingestDbRole),
         DELIVERY_QUEUE_URL: props.deliveryQueueUrl,
         TOKEN_KEYS_SECRET_ARN: props.tokenKeysSecretArn,
-        ALERT_KEYS_SECRET_ARN: props.alertKeysSecretArn,
+        ...alertSignEnv(props.alertSigning),
         KILL_SWITCH_PARAM: props.killSwitchParamName,
         FANOUT_MODE: fanoutMode,
         PLAN_QUEUE_URL: props.planQueueUrl,
@@ -134,7 +143,7 @@ export class IngestStack extends Stack {
     allow(ingestFn, ['sqs:SendMessage'], [props.deliveryQueueArn, props.planQueueArn]);
     allow(ingestFn, ['s3:GetObject'], [this.zonePackBucket.arnForObjects('zones/v1/*')]);
     grantSecretRead(ingestFn, props.tokenKeysSecretArn);
-    grantSecretRead(ingestFn, props.alertKeysSecretArn);
+    grantAlertSign(ingestFn, props.alertSigning);
     allow(ingestFn, ['ssm:GetParameter'], [props.killSwitchParamArn]);
     allow(
       ingestFn,
