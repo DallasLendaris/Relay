@@ -4,6 +4,7 @@ import { ConfigStack } from '../lib/config-stack.js';
 import { DataStack } from '../lib/data-stack.js';
 import { DeliveryStack } from '../lib/delivery-stack.js';
 import { EdgeStack, publicAlertsBucketName } from '../lib/edge-stack.js';
+import { FanoutStack } from '../lib/fanout-stack.js';
 import { IngestStack } from '../lib/ingest-stack.js';
 
 const app = new App();
@@ -55,6 +56,18 @@ new IngestStack(app, `relay-${stage}-ingest`, {
   killSwitchParamName: config.killSwitchParamName,
   killSwitchParamArn: config.killSwitchParamArn,
   publicAlerts,
+});
+// Parallel fan-out for statewide alerts. Ingest uses it only when FANOUT_MODE=queue (default off).
+// Its cell-index table and send-queue ARNs/URLs are exposed as properties for the api and
+// sender stacks.
+const fanout = new FanoutStack(app, `relay-${stage}-fanout`, {
+  env,
+  stage,
+  db,
+  tokenKeysSecretArn: config.tokenKeysSecretArn,
+  alertKeysSecretArn: config.alertKeysSecretArn,
+  killSwitchParamName: config.killSwitchParamName,
+  killSwitchParamArn: config.killSwitchParamArn,
 });
 const api = new ApiStack(app, `relay-${stage}-api`, {
   env,
