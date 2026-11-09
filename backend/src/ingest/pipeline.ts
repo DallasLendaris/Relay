@@ -1,10 +1,15 @@
 import { randomUUID } from 'node:crypto';
+import { SQSClient } from '@aws-sdk/client-sqs';
+import type { Alert } from '@relay/shared';
 import { SigningAlertStore } from '../adapters/signing-alert-store.js';
 import type { Keyring } from '../config/secrets.js';
+import { refusalFor } from '../delivery/eligibility.js';
 import { planDelivery } from '../delivery/plan-delivery.js';
 import type { Logger } from '../delivery/types.js';
 import { NwsZoneProvider, cellsForAlertArea } from '../geo/index.js';
 import type { AlertStore, Clock, DeliveryQueue, DeviceStore, PlaceStore } from '../ports.js';
+import { QUEUE_FOR_SEVERITY } from '../scale/contracts.js';
+import { SqsPlanQueue, type PlanQueue } from '../scale/fanout/queues.js';
 import { createAlertVerifier } from '../signing/index.js';
 import { parseFeed } from './feed.js';
 import type { EngineDeps } from './handler.js';
@@ -26,6 +31,14 @@ export interface PipelineDeps {
   userAgent: string;
   clock?: Clock;
   logger?: Logger;
+  /**
+   * Environment to read FANOUT_MODE and PLAN_QUEUE_URL from (default process.env). With
+   * FANOUT_MODE=queue, onApplied publishes AlertReady to the plan queue instead of planning
+   * in-line. Anything else keeps the original in-line planDelivery path.
+   */
+  env?: Record<string, string | undefined>;
+  /** Replaces the SQS plan queue built from PLAN_QUEUE_URL (tests). */
+  planQueue?: PlanQueue;
 }
 
 const jsonLogger: Logger = {
@@ -40,6 +53,13 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
   const logger = deps.logger ?? jsonLogger;
   const store = new SigningAlertStore(deps.alertStore, deps.alertKeys.current);
   const verifyAlert = createAlertVerifier(deps.alertKeys.all);
+  const env = deps.env ?? process.env;
+  const queueMode = env.FANOUT_MODE === 'queue';
+  let planQueue = deps.planQueue;
+  if (queueMode && !planQueue) {
+    if (!env.PLAN_QUEUE_URL) throw new Error('PLAN_QUEUE_URL must be set when FANOUT_MODE=queue');
+    planQueue = new SqsPlanQueue(new SQSClient({}), env.PLAN_QUEUE_URL);
+  }
 
   // Same fetch and User-Agent as the NWS client; NwsZoneProvider caches while warm.
   // The signal (5 s timeout from NwsZoneProvider) must reach fetch, or a hung zone lookup
@@ -50,6 +70,34 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
       signal: init?.signal,
     }),
   );
+
+  /**
+   * Queue mode: same checks and pause semantics as planDelivery, then hand the alert to the
+   * planner. The alert counts as seen only after the publish succeeds (a throw leaves it
+   * unseen, so the next poll publishes again; the planner and batch keys make repeats safe).
+   */
+  async function publishAlertReady(saved: Alert, queue: PlanQueue): Promise<void> {
+    const refusal = refusalFor(saved, clock.now(), verifyAlert);
+    if (refusal) {
+      logger.error('refusing to publish alert', { alertId: saved.id, reason: refusal });
+      logger.warn('plan refused', { alertId: saved.id, refused: refusal });
+      return;
+    }
+    if (QUEUE_FOR_SEVERITY[saved.relaySeverity] === null) {
+      logger.info('not pushing informational alert', { alertId: saved.id });
+      return;
+    }
+    if (await deps.isDeliveryPaused()) {
+      logger.warn('delivery paused', { alertId: saved.id });
+      throw new DeliveryPausedError(saved.id);
+    }
+    await queue.publish({
+      alertId: saved.id,
+      sourceId: saved.sourceId,
+      relaySeverity: saved.relaySeverity,
+    });
+    logger.info('alert ready published', { alertId: saved.id, severity: saved.relaySeverity });
+  }
 
   return {
     normalize: (feature) =>
@@ -64,6 +112,10 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
         const saved = await store.get(result.alert.id);
         if (!saved) {
           throw new Error(`saved alert ${result.alert.id} not found for delivery planning`);
+        }
+        if (queueMode && planQueue) {
+          await publishAlertReady(saved, planQueue);
+          return;
         }
         // Re-planning is safe: dedupe happens in the delivery worker at send time
         // (claim alert:severity:device), so a retried plan never double-notifies.

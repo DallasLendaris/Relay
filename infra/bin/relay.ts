@@ -3,6 +3,7 @@ import { ApiStack } from '../lib/api-stack.js';
 import { ConfigStack } from '../lib/config-stack.js';
 import { DataStack } from '../lib/data-stack.js';
 import { DeliveryStack } from '../lib/delivery-stack.js';
+import { FanoutStack } from '../lib/fanout-stack.js';
 import { IngestStack } from '../lib/ingest-stack.js';
 
 const app = new App();
@@ -38,6 +39,18 @@ new IngestStack(app, `relay-${stage}-ingest`, {
   db,
   deliveryQueueArn: delivery.queueArn,
   deliveryQueueUrl: delivery.queueUrl,
+  tokenKeysSecretArn: config.tokenKeysSecretArn,
+  alertKeysSecretArn: config.alertKeysSecretArn,
+  killSwitchParamName: config.killSwitchParamName,
+  killSwitchParamArn: config.killSwitchParamArn,
+});
+// Parallel fan-out for statewide alerts. Ingest uses it only when FANOUT_MODE=queue (default off).
+// Its cell-index table and send-queue ARNs/URLs are exposed as properties for the api and
+// sender stacks.
+new FanoutStack(app, `relay-${stage}-fanout`, {
+  env,
+  stage,
+  db,
   tokenKeysSecretArn: config.tokenKeysSecretArn,
   alertKeysSecretArn: config.alertKeysSecretArn,
   killSwitchParamName: config.killSwitchParamName,
