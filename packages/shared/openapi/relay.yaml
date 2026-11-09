@@ -1,0 +1,696 @@
+openapi: 3.1.0
+info:
+  title: Relay API (demo)
+  version: 0.1.0
+  description: |
+    Source of truth for the Relay demo API. TypeScript types are generated from
+    this file (`npm run generate`). Format changes need approval from all three teammates.
+servers:
+  - url: https://api.relay.example.com
+    description: Placeholder; replaced by the deployed API Gateway URL
+
+security: []
+
+tags:
+  - name: devices
+  - name: places
+  - name: alerts
+  - name: checkins
+  - name: agency
+
+paths:
+  /devices:
+    post:
+      tags: [devices]
+      operationId: createDevice
+      summary: Register an anonymous device. No auth.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDeviceRequest'
+      responses:
+        '201':
+          description: Device created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateDeviceResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /devices/me/push-token:
+    put:
+      tags: [devices]
+      operationId: setPushToken
+      summary: Store the Expo push token and preferred language for this device.
+      security:
+        - deviceAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PushTokenRequest'
+      responses:
+        '204':
+          description: Saved
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /places:
+    post:
+      tags: [places]
+      operationId: createPlace
+      summary: Save a place by address or by coordinates.
+      description: |
+        California only, at most 5 places per device.
+        Returns 409 when the device already has 5 places and 422 when the
+        location is outside California.
+      security:
+        - deviceAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePlaceRequest'
+      responses:
+        '201':
+          description: Place saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Place'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: The device already has the maximum of 5 places
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: The location is outside California
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      tags: [places]
+      operationId: listPlaces
+      summary: List this device's saved places.
+      security:
+        - deviceAuth: []
+      responses:
+        '200':
+          description: Saved places
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaceList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /places/{placeId}:
+    delete:
+      tags: [places]
+      operationId: deletePlace
+      summary: Delete a saved place.
+      security:
+        - deviceAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PlaceId'
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /alerts:
+    get:
+      tags: [alerts]
+      operationId: listAlerts
+      summary: Active alerts that match this device's saved places.
+      security:
+        - deviceAuth: []
+      responses:
+        '200':
+          description: Active alerts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertSummaryList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /alerts/{alertId}:
+    get:
+      tags: [alerts]
+      operationId: getAlert
+      summary: Full alert.
+      security:
+        - deviceAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      responses:
+        '200':
+          description: The alert
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Alert'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /alerts/{alertId}/checkins:
+    post:
+      tags: [checkins]
+      operationId: createCheckIn
+      summary: Record an "I'm okay" check-in for an alert.
+      description: |
+        `token` is the signed check-in token delivered in the push notification.
+        Repeating a request with the same `idempotencyKey` returns the original result.
+        `need_help` is reserved for the Pilot; the demo API rejects it with 400.
+      security:
+        - deviceAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCheckInRequest'
+      responses:
+        '200':
+          description: Check-in recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateCheckInResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /agency/alerts:
+    get:
+      tags: [agency]
+      operationId: listAgencyAlerts
+      summary: Alerts for the signed-in agency's county.
+      security:
+        - agencyAuth: []
+      responses:
+        '200':
+          description: Alerts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertSummaryList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /agency/alerts/{alertId}/response:
+    get:
+      tags: [agency]
+      operationId: getAgencyAlertResponse
+      summary: Anonymous per-H3-cell check-in totals.
+      description: 'Cells with fewer than minimumCellSize recipients are returned with hidden set to true and zeroed counts.'
+      security:
+        - agencyAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      responses:
+        '200':
+          description: Response totals
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgencyAlertResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    deviceAuth:
+      type: http
+      scheme: bearer
+      description: The device credential returned by POST /devices.
+    agencyAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Cognito-issued JWT for an agency user.
+
+  parameters:
+    AlertId:
+      name: alertId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    PlaceId:
+      name: placeId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable code, e.g. place_limit_reached
+        message:
+          type: string
+
+    CreateDeviceRequest:
+      type: object
+      description: Empty object. Devices are anonymous.
+      additionalProperties: false
+
+    CreateDeviceResponse:
+      type: object
+      required: [deviceId, credential]
+      properties:
+        deviceId:
+          type: string
+          format: uuid
+        credential:
+          type: string
+          description: Secret bearer credential. Store in secure storage; shown only once.
+
+    PushTokenRequest:
+      type: object
+      required: [expoPushToken, language]
+      properties:
+        expoPushToken:
+          type: string
+        language:
+          type: string
+          enum: [en, es]
+
+    CreatePlaceByAddress:
+      type: object
+      required: [label, address]
+      properties:
+        label:
+          type: string
+        address:
+          type: string
+
+    CreatePlaceByCoordinates:
+      type: object
+      required: [label, latitude, longitude]
+      properties:
+        label:
+          type: string
+        latitude:
+          type: number
+        longitude:
+          type: number
+
+    CreatePlaceRequest:
+      description: Either an address or coordinates.
+      oneOf:
+        - $ref: '#/components/schemas/CreatePlaceByAddress'
+        - $ref: '#/components/schemas/CreatePlaceByCoordinates'
+
+    Place:
+      type: object
+      required: [id, label, shortAddress, h3Cell, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        label:
+          type: string
+        shortAddress:
+          type: string
+          description: Street-level address without the house number, for display.
+        h3Cell:
+          type: string
+          description: H3 cell at resolution 7.
+        createdAt:
+          type: string
+          format: date-time
+
+    PlaceList:
+      type: object
+      required: [places]
+      properties:
+        places:
+          type: array
+          items:
+            $ref: '#/components/schemas/Place'
+
+    AlertSummary:
+      type: object
+      required: [id, event, relaySeverity, state, expires, headline, matchedPlaceIds]
+      properties:
+        id:
+          type: string
+          format: uuid
+        event:
+          type: string
+        relaySeverity:
+          $ref: '#/components/schemas/RelaySeverity'
+        state:
+          $ref: '#/components/schemas/AlertState'
+        expires:
+          type: string
+          format: date-time
+        headline:
+          type: [string, 'null']
+        matchedPlaceIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    AlertSummaryList:
+      type: object
+      required: [alerts]
+      properties:
+        alerts:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlertSummary'
+
+    CreateCheckInRequest:
+      type: object
+      required: [status, token, idempotencyKey]
+      properties:
+        status:
+          $ref: '#/components/schemas/CheckInStatus'
+        token:
+          type: string
+        idempotencyKey:
+          type: string
+
+    CreateCheckInResponse:
+      type: object
+      required: [checkedInAt]
+      properties:
+        checkedInAt:
+          type: string
+          format: date-time
+
+    AgencyAlertResponse:
+      type: object
+      required: [alertId, asOf, minimumCellSize, cells]
+      properties:
+        alertId:
+          type: string
+          format: uuid
+        asOf:
+          type: string
+          format: date-time
+        minimumCellSize:
+          type: integer
+          const: 20
+        cells:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgencyCell'
+
+    AgencyCell:
+      type: object
+      required: [h3Cell, recipients, checkedIn, hidden]
+      properties:
+        h3Cell:
+          type: string
+        recipients:
+          type: integer
+          minimum: 0
+        checkedIn:
+          type: integer
+          minimum: 0
+        hidden:
+          type: boolean
+          description: True when the cell has fewer than minimumCellSize recipients.
+
+    RelaySeverity:
+      type: string
+      enum: [emergency, warning, watch, advisory, statement]
+
+    AlertState:
+      type: string
+      enum: [active, updated, cancelled, expired]
+
+    CheckInStatus:
+      type: string
+      enum: [ok, need_help]
+      description: |
+        `need_help` is reserved for the Pilot. The demo API rejects it.
+
+    GeoPolygon:
+      type: object
+      required: [type, coordinates]
+      properties:
+        type:
+          type: string
+          const: Polygon
+        coordinates:
+          type: array
+          items:
+            type: array
+            items:
+              type: array
+              items:
+                type: number
+
+    GeoMultiPolygon:
+      type: object
+      required: [type, coordinates]
+      properties:
+        type:
+          type: string
+          const: MultiPolygon
+        coordinates:
+          type: array
+          items:
+            type: array
+            items:
+              type: array
+              items:
+                type: array
+                items:
+                  type: number
+
+    AlertReference:
+      type: object
+      required: [sourceId, sent]
+      properties:
+        sourceId:
+          type: string
+        sent:
+          type: string
+          format: date-time
+
+    AlertArea:
+      type: object
+      required: [description, geometry, ugcCodes, sameCodes, h3Cells]
+      properties:
+        description:
+          type: string
+        geometry:
+          description: GeoJSON Polygon or MultiPolygon; null when NWS gives only zone codes.
+          oneOf:
+            - $ref: '#/components/schemas/GeoPolygon'
+            - $ref: '#/components/schemas/GeoMultiPolygon'
+            - type: 'null'
+        ugcCodes:
+          type: array
+          items:
+            type: string
+        sameCodes:
+          type: array
+          items:
+            type: string
+        h3Cells:
+          type: array
+          items:
+            type: string
+
+    AlertOfficial:
+      type: object
+      description: Text exactly as published by the source agency.
+      required: [headline, description, instruction, senderName, language]
+      properties:
+        headline:
+          type: [string, 'null']
+        description:
+          type: string
+        instruction:
+          type: [string, 'null']
+        senderName:
+          type: string
+        language:
+          type: string
+
+    AlertSummaryText:
+      type: object
+      description: A plain-language summary written by Relay (not by the agency). Must be labeled as a Relay summary in the UI.
+      required: [language, whatToDo, text]
+      properties:
+        language:
+          type: string
+        whatToDo:
+          type: string
+        text:
+          type: string
+
+    Alert:
+      type: object
+      required:
+        - id
+        - source
+        - sourceId
+        - event
+        - eventCode
+        - relaySeverity
+        - capSeverity
+        - urgency
+        - certainty
+        - status
+        - messageType
+        - state
+        - references
+        - area
+        - sent
+        - effective
+        - onset
+        - expires
+        - ends
+        - official
+        - summaries
+        - signature
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Relay's own id.
+        source:
+          type: string
+          enum: [nws, usgs, ipaws]
+        sourceId:
+          type: string
+          description: NWS id URN.
+        event:
+          type: string
+          description: e.g. Flash Flood Warning
+        eventCode:
+          type: [string, 'null']
+          description: NWS/SAME event code.
+        relaySeverity:
+          $ref: '#/components/schemas/RelaySeverity'
+        capSeverity:
+          type: string
+          enum: [Extreme, Severe, Moderate, Minor, Unknown]
+        urgency:
+          type: string
+          enum: [Immediate, Expected, Future, Past, Unknown]
+        certainty:
+          type: string
+          enum: [Observed, Likely, Possible, Unlikely, Unknown]
+        status:
+          type: string
+          enum: [Actual, Exercise, System, Test, Draft]
+        messageType:
+          type: string
+          enum: [Alert, Update, Cancel, Ack, Error]
+        state:
+          $ref: '#/components/schemas/AlertState'
+        references:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlertReference'
+        area:
+          $ref: '#/components/schemas/AlertArea'
+        sent:
+          type: string
+          format: date-time
+        effective:
+          type: string
+          format: date-time
+        onset:
+          type: [string, 'null']
+          format: date-time
+        expires:
+          type: string
+          format: date-time
+        ends:
+          type: [string, 'null']
+          format: date-time
+        official:
+          $ref: '#/components/schemas/AlertOfficial'
+        summaries:
+          type: array
+          description: Relay summaries; may be empty.
+          items:
+            $ref: '#/components/schemas/AlertSummaryText'
+        signature:
+          type: [string, 'null']
+          description: Set once Relay validates the alert signature.
+
+    CheckIn:
+      type: object
+      required: [alertId, deviceId, status, checkedInAt, token, idempotencyKey, h3Cell]
+      properties:
+        alertId:
+          type: string
+          format: uuid
+        deviceId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/CheckInStatus'
+        checkedInAt:
+          type: string
+          format: date-time
+        token:
+          type: string
+        idempotencyKey:
+          type: string
+        h3Cell:
+          type: string

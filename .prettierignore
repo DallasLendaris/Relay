@@ -3,3 +3,6 @@ dist
 cdk.out
 coverage
 package-lock.json
+**/generated/**
+package-lock.json
+.claude/
