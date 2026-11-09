@@ -25,7 +25,7 @@ import { pollLoop, type PollCounts, type PollDeps } from './poll.js';
 /** The parts of PollDeps that the caller supplies. */
 export type EngineDeps = Pick<
   PollDeps,
-  'normalize' | 'parseFeed' | 'apply' | 'cellsFor' | 'onApplied'
+  'normalize' | 'parseFeed' | 'apply' | 'cellsFor' | 'onApplied' | 'reconcile'
 >;
 
 export interface HandlerEnv {

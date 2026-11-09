@@ -366,6 +366,8 @@ export interface components {
             summaries: components["schemas"]["AlertSummaryText"][];
             /** @description Set once Relay validates the alert signature. */
             signature: string | null;
+            /** @description True for a particularly dangerous situation (NWS damage threat CONSIDERABLE on a Tornado or Flash Flood Warning). The tier stays warning. Omitted when not applicable. */
+            pds?: boolean;
         };
         CheckIn: {
             /** Format: uuid */

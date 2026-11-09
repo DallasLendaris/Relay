@@ -3,7 +3,7 @@
  * The normalizer, lifecycle (apply) and H3 matching are injected so this file stays small
  * and testable.
  */
-import { relaySeverityFor, type Alert } from '@relay/shared';
+import type { Alert } from '@relay/shared';
 import type { RawArchive, SeenStore } from '../ports.js';
 import { TooManyCellsError } from '../geo/index.js';
 import type { NwsClient } from './nws-client.js';
@@ -32,6 +32,124 @@ export interface PollDeps {
    * less than MIN_FEATURE_BUDGET_MS remain. pollLoop fills it in from its own options.
    */
   remainingMs?(): number;
+  /**
+   * Feed reconciliation (SAFE-12). NWS may simply stop listing an alert in /alerts/active when it
+   * ends or is cancelled early, without sending a Cancel message. When set, every successful 200
+   * poll compares the stored active NWS alerts with the feed (see reconcileFeed).
+   */
+  reconcile?: Reconciler;
+}
+
+/** What reconcileFeed needs from the engine: read the stored alerts, and end one. */
+export interface Reconciler {
+  now(): Date;
+  /** Stored NWS alerts with state active or updated whose end is still in the future. */
+  listActive(now: Date): Promise<Alert[]>;
+  /** Mark the alert cancelled (state "cancelled"), save it through the signing store, republish. */
+  cancel(alert: Alert, reason: 'no_longer_in_feed' | 'expired_reference'): Promise<void>;
+}
+
+/** A store that can list its active alerts by source (used to build a Reconciler). */
+export interface ActiveAlertLister {
+  listActiveBySource(source: Alert['source'], now: Date): Promise<Alert[]>;
+}
+
+/** An alert must be missing from this many consecutive successful polls before it is ended. */
+export const RECONCILE_AFTER = 2;
+
+/** Consecutive successful polls in which a stored alert was absent, per Relay alert id (warm). */
+const absentPolls = new Map<string, number>();
+
+/** Clears the reconciliation counters (tests). */
+export function clearReconcileState(): void {
+  absentPolls.clear();
+}
+
+/** Ids from the optional top-level `expiredReferences` of the feed (strings or {identifier}). */
+export function expiredReferencesOf(body: string): Set<string> {
+  const out = new Set<string>();
+  if (!body.includes('expiredReferences')) return out;
+  try {
+    const doc: unknown = JSON.parse(body);
+    const list =
+      typeof doc === 'object' && doc !== null
+        ? (doc as Record<string, unknown>)['expiredReferences']
+        : undefined;
+    if (!Array.isArray(list)) return out;
+    for (const item of list) {
+      const raw =
+        typeof item === 'string'
+          ? item
+          : typeof item === 'object' && item !== null
+            ? ((item as Record<string, unknown>)['identifier'] ??
+              (item as Record<string, unknown>)['@id'])
+            : undefined;
+      if (typeof raw !== 'string' || raw === '') continue;
+      out.add(raw.startsWith(ALERT_URL_PREFIX) ? raw.slice(ALERT_URL_PREFIX.length) : raw);
+    }
+  } catch {
+    // Not JSON: parseFeed already reported that.
+  }
+  return out;
+}
+
+const ALERT_URL_PREFIX = 'https://api.weather.gov/alerts/';
+
+/**
+ * End stored alerts that the feed no longer lists. Runs only after a successful 200 whose
+ * features were all read (never on 304 or an error: those prove nothing about the feed).
+ * - A stored alert is "in the feed" if its sourceId or any id in its chain is listed.
+ * - Absent from RECONCILE_AFTER consecutive polls, with its end still in the future: cancelled
+ *   with reason no_longer_in_feed. One missed poll is only counted, to avoid flapping.
+ * - An id in the feed's expiredReferences ends the alert at once.
+ * Returns how many alerts are absent but still waiting for confirmation, and how many failed.
+ */
+export async function reconcileFeed(
+  reconciler: Reconciler,
+  feedIds: Set<string>,
+  expired: Set<string>,
+  log: (entry: Record<string, unknown>) => void,
+): Promise<{ pending: number; failed: number }> {
+  const now = reconciler.now();
+  const stored = await reconciler.listActive(now);
+  const endOf = (a: Alert): number =>
+    Math.max(Date.parse(a.expires), a.ends ? Date.parse(a.ends) : 0);
+  let pending = 0;
+  let failed = 0;
+  const live = new Set<string>();
+  for (const alert of stored) {
+    if (!(endOf(alert) > now.getTime())) continue; // already over; it expires on its own
+    live.add(alert.id);
+    const ids = [alert.sourceId, ...alert.references.map((r) => r.sourceId)];
+    const explicit = ids.some((id) => expired.has(id));
+    if (!explicit && ids.some((id) => feedIds.has(id))) {
+      absentPolls.delete(alert.id);
+      continue;
+    }
+    const misses = (absentPolls.get(alert.id) ?? 0) + 1;
+    if (!explicit && misses < RECONCILE_AFTER) {
+      absentPolls.set(alert.id, misses);
+      pending += 1;
+      log({ event: 'reconcile.absent', alertId: alert.id, sourceId: alert.sourceId, misses });
+      continue;
+    }
+    try {
+      await reconciler.cancel(alert, explicit ? 'expired_reference' : 'no_longer_in_feed');
+      absentPolls.delete(alert.id);
+      log({
+        event: 'reconcile.cancelled',
+        level: 'warn',
+        alertId: alert.id,
+        sourceId: alert.sourceId,
+        reason: explicit ? 'expired_reference' : 'no_longer_in_feed',
+      });
+    } catch (err) {
+      failed += 1;
+      log({ event: 'reconcile.cancel_failed', alertId: alert.id, message: msg(err) });
+    }
+  }
+  for (const id of [...absentPolls.keys()]) if (!live.has(id)) absentPolls.delete(id);
+  return { pending, failed };
 }
 
 /**
@@ -170,22 +288,31 @@ async function pollInto(deps: PollDeps, counts: PollCounts): Promise<boolean> {
   // Normalize everything first so the most urgent alerts are handled first: a slow low-priority
   // alert must not starve an emergency. Oldest first within a severity keeps updates in order.
   const queue: Alert[] = [];
+  // Every id the feed lists (current ids and the ids they replace), for reconcileFeed. A feature
+  // we could not even read makes the picture incomplete, so reconciliation is skipped then.
+  const feedIds = new Set<string>();
+  let feedReadable = true;
   for (const feature of feed.features) {
     try {
       const norm = deps.normalize(feature);
       if (!norm.ok) {
         counts.rejected += 1;
+        if (norm.sourceId !== null) feedIds.add(norm.sourceId);
+        else feedReadable = false;
         log({ event: 'poll.rejected', sourceId: norm.sourceId, reason: norm.reason });
         continue;
       }
       counts.accepted += 1;
+      feedIds.add(norm.alert.sourceId);
+      for (const ref of norm.alert.references) feedIds.add(ref.sourceId);
       queue.push(norm.alert);
     } catch (err) {
+      feedReadable = false;
       counts.errors += 1;
       log({ event: 'poll.feature_error', message: msg(err) });
     }
   }
-  const rank = (a: Alert): number => SEVERITY_RANK[relaySeverityFor(a.event)];
+  const rank = (a: Alert): number => SEVERITY_RANK[a.relaySeverity];
   queue.sort((a, b) => rank(a) - rank(b) || Date.parse(a.sent) - Date.parse(b.sent));
 
   let complete = true;
@@ -275,6 +402,23 @@ async function pollInto(deps: PollDeps, counts: PollCounts): Promise<boolean> {
       }
       counts.errors += 1;
       log({ event: 'poll.feature_error', message: msg(err) });
+    }
+  }
+  if (deps.reconcile && feedReadable) {
+    try {
+      const { pending, failed } = await reconcileFeed(
+        deps.reconcile,
+        feedIds,
+        expiredReferencesOf(res.body),
+        log,
+      );
+      counts.errors += failed;
+      // Absent alerts waiting for their second poll: keep the ETag uncommitted so the next poll
+      // is a full 200 (a 304 would not count) and can confirm or clear them.
+      if (pending > 0) complete = false;
+    } catch (err) {
+      counts.errors += 1;
+      log({ event: 'reconcile.failed', message: msg(err) });
     }
   }
   return complete;

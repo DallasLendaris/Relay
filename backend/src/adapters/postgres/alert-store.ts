@@ -156,6 +156,22 @@ export class PostgresAlertStore implements AlertStore {
     return [...found.values()];
   }
 
+  /**
+   * Every active or updated alert of one source that has not ended yet, with its cells. Used by
+   * feed reconciliation, which compares them with what NWS currently lists.
+   */
+  async listActiveBySource(source: Alert['source'], now: Date): Promise<Alert[]> {
+    const rows = await this.db.query<RecordRow>(
+      `SELECT a.id, a.record FROM alerts a
+        WHERE a.state IN ('active', 'updated') AND a.record ->> 'source' = $1
+          AND $2::timestamptz < GREATEST(a.expires, (a.record ->> 'ends')::timestamptz)`,
+      [source, now.toISOString()],
+    );
+    const out: Alert[] = [];
+    for (const row of rows) out.push(await this.withCells(this.db, parseJson<Alert>(row.record)));
+    return out;
+  }
+
   /** Put the alert's cells back into the record, reading them in pages (keyset on h3_cell). */
   private async withCells(db: SqlExecutor, alert: Alert): Promise<Alert> {
     const h3Cells: string[] = [];
