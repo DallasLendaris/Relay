@@ -401,6 +401,98 @@ export interface components {
             /** @description True for a particularly dangerous situation (NWS damage threat CONSIDERABLE on a Tornado or Flash Flood Warning). The tier stays warning. Omitted when not applicable. */
             pds?: boolean;
         };
+        /**
+         * @description Cell-free document for one alert version, served by the CDN at
+         *     `{cdnBase}/alerts/v1/doc/{alertId}/{hash}.json` and immutable (cached for a year; the URL
+         *     changes whenever the alert changes). It has everything the app shows and not the H3 cell
+         *     list. `signature` is the alert's own signature over the full alert; `area.cellsSha256` and
+         *     `area.cellCount` bind this document to those cells. A phone cannot verify the signature
+         *     (it is symmetric); it trusts the document because it came from the Relay CDN over TLS.
+         */
+        PublicAlertDocument: {
+            /** @constant */
+            version: 1;
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            source: "nws" | "usgs" | "ipaws";
+            sourceId: string;
+            event: string;
+            eventCode: string | null;
+            relaySeverity: components["schemas"]["RelaySeverity"];
+            /** @enum {string} */
+            capSeverity: "Extreme" | "Severe" | "Moderate" | "Minor" | "Unknown";
+            /** @enum {string} */
+            urgency: "Immediate" | "Expected" | "Future" | "Past" | "Unknown";
+            /** @enum {string} */
+            certainty: "Observed" | "Likely" | "Possible" | "Unlikely" | "Unknown";
+            /** @enum {string} */
+            status: "Actual" | "Exercise" | "System" | "Test" | "Draft";
+            /** @enum {string} */
+            messageType: "Alert" | "Update" | "Cancel" | "Ack" | "Error";
+            state: components["schemas"]["AlertState"];
+            references: components["schemas"]["AlertReference"][];
+            area: {
+                description: string;
+                cellCount: number;
+                cellsSha256: string;
+            };
+            /** Format: date-time */
+            sent: string;
+            /** Format: date-time */
+            effective: string;
+            /** Format: date-time */
+            onset: string | null;
+            /** Format: date-time */
+            expires: string;
+            /** Format: date-time */
+            ends: string | null;
+            official: components["schemas"]["AlertOfficial"];
+            summaries: components["schemas"]["AlertSummaryText"][];
+            signature: string | null;
+            pds?: boolean;
+        };
+        /**
+         * @description Short-TTL pointer served at `{cdnBase}/alerts/v1/latest/{alertId}.json`
+         *     (`Cache-Control: public, max-age=15, stale-while-revalidate=60`). It names the current
+         *     document of an alert. A document is never changed after it is written, so an update or
+         *     cancellation is seen only through this pointer, at most 75 seconds (15 s max-age plus 60 s
+         *     stale-while-revalidate) after it is published. Phones that opened a document from a push
+         *     should re-read the pointer when they show the alert.
+         */
+        AlertPointer: {
+            /** @constant */
+            version: 1;
+            /** Format: uuid */
+            alertId: string;
+            sourceId: string;
+            state: components["schemas"]["AlertState"];
+            /** Format: date-time */
+            expires: string;
+            /** @description Path, relative to the CDN base URL, of the current PublicAlertDocument. */
+            doc: string;
+        };
+        /**
+         * @description The `data` map of an alert push notification (all values are strings). Not an HTTP
+         *     payload; documented here because the app reads it. Required keys survive payload trimming;
+         *     `alertUrl` may be dropped to fit the 4 KB APNs limit.
+         */
+        PushData: {
+            /** Format: uuid */
+            alertId: string;
+            checkInToken: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /**
+             * Format: uri
+             * @description Absolute CDN URL of this alert's PublicAlertDocument. Open it instead of calling the
+             *     API. A 404 means the publish has not landed yet: retry once after a few seconds, then
+             *     fall back to GET /alerts/{alertId}. Absent when the sender has no CDN base configured.
+             */
+            alertUrl?: string;
+        } & {
+            [key: string]: unknown;
+        };
         CheckIn: {
             /** Format: uuid */
             alertId: string;

@@ -45,6 +45,15 @@ One independent review covered the scale branch. Every confirmed finding was fix
 - serial publishing in front of fan-out
 - the WAF bypass
 
+## Alert opens from the CDN (PERF-3, PERF-11)
+
+- The publisher no longer writes the full alert (a statewide one lists about 82,000 H3 cells, 1.5 MB). It writes a cell-free `PublicAlertDocument` (under 10 KB) at the immutable key `alerts/v1/doc/<alertId>/<hash>.json` (`Cache-Control: max-age=31536000, immutable`; hash of sourceId, signature and state) and a pointer `alerts/v1/latest/<alertId>.json` (max-age 15 s, stale-while-revalidate 60 s). Nothing consumed the old `alerts/v1/<id>.json` (agency map and late-join read the database), so it was removed.
+- The sender puts `data.alertUrl` (absolute URL of that document) in every push when `PUBLIC_ALERT_BASE_URL` is set (CDK context `-c publicAlertBaseUrl=https://...`). Without it pushes are unchanged and phones use the API.
+- Stale bound: a document never changes, so updates and cancellations are seen through the pointer and shard index, at most 75 s after publish. The app should re-read the pointer when it shows an alert.
+- Authenticity: the document carries the alert's own signature plus `area.cellCount` and `area.cellsSha256`, so the server can rebuild the document from the verified full alert and compare. The signature is HMAC today (symmetric), so phones cannot verify it and trust the CDN origin over TLS. The summary is not separately signed.
+- The push can arrive before the document lands (publish runs after `AlertReady`). The app retries once, then falls back to `GET /alerts/{alertId}`.
+- PERF-11: the publisher reads the store once for all shards instead of once per shard. Probe (`backend/test/db/publish-reads.test.ts`, 23 shards): 46 queries before, 5 after. Statewide estimate: about 11,900 Data API calls before (1,700 shards, each re-reading the big alert's cells in 6 pages), about 300 after.
+
 ## Before the AWS load test (P-01)
 
 1. Accounts and quotas: S-06, plus the requests in `docs/scale-quotas.md`. The most urgent are the FCM project quota, Fargate vCPUs, Lambda concurrency, the API Gateway RPS and DynamoDB warm throughput.

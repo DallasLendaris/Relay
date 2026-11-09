@@ -11,7 +11,7 @@ import { encodeZonePack } from '../../src/geo/s3-zone-provider.js';
 import { validateScaleEnv } from '../../src/ingest/handler.js';
 import { createIngestPipeline, ZONE_PACK_KEY } from '../../src/ingest/pipeline.js';
 import { MemoryPlanQueue } from '../../src/scale/fanout/queues.js';
-import { activeShardKey, publicAlertKey } from '../../src/scale/publish/paths.js';
+import { activeShardKey } from '../../src/scale/publish/paths.js';
 
 const feed = JSON.parse(
   readFileSync(new URL('../fixtures/nws/active-ca-mixed.json', import.meta.url), 'utf8'),
@@ -143,13 +143,16 @@ describe('ingest publisher wiring', () => {
     const puts = s3Mock.commandCalls(PutObjectCommand).map((c) => c.args[0].input);
     expect(puts.every((p) => p.Bucket === 'public-bucket')).toBe(true);
     const keys = puts.map((p) => p.Key);
-    expect(keys).toContain(publicAlertKey(result.alert.id));
+    expect(keys.some((k) => k?.startsWith(`alerts/v1/doc/${result.alert.id}/`))).toBe(true);
+    expect(keys).toContain(`alerts/v1/latest/${result.alert.id}.json`);
     expect(keys.some((k) => k?.startsWith(activeShardKey('').slice(0, -'.json'.length)))).toBe(
       true,
     );
     // The published alert is the SIGNED one (the publisher runs after signing and AlertReady).
-    const full = puts.find((p) => p.Key === publicAlertKey(result.alert.id));
-    expect((JSON.parse(String(full?.Body)) as { signature: unknown }).signature).not.toBeNull();
+    const full = puts.find((p) => p.Key?.startsWith(`alerts/v1/doc/${result.alert.id}/`));
+    const body = JSON.parse(String(full?.Body)) as { signature: unknown; area: object };
+    expect(body.signature).not.toBeNull();
+    expect(body.area).not.toHaveProperty('h3Cells');
   });
 
   it('a publish failure never fails the save', async () => {
@@ -184,7 +187,7 @@ describe('ingest publisher wiring', () => {
     const result = await built.engine.apply(norm.alert);
     await built.engine.onApplied?.(result);
     expect(built.planQueue.messages).toHaveLength(1);
-    expect(keys[0]).toBe(publicAlertKey(result.alert.id));
+    expect(keys[0]).toMatch(new RegExp(`^alerts/v1/doc/${result.alert.id}/`));
     expect(keys.length).toBeGreaterThan(1);
     expect(seenAtPut.every((n) => n === 1)).toBe(true);
   });
