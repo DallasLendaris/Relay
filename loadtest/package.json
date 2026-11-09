@@ -9,7 +9,8 @@
     "test": "vitest run --passWithNoTests",
     "mock:apns": "tsx src/mock-apns.ts",
     "mock:fcm": "tsx src/mock-fcm.ts",
-    "seed": "tsx src/seed.ts"
+    "seed": "tsx src/seed.ts",
+    "sim:fanout": "node --max-old-space-size=4096 --import tsx src/sim/run-fanout.ts"
   },
   "dependencies": {
     "h3-js": "^4.5.0",

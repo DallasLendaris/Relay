@@ -10,6 +10,7 @@ Mock push services, seed data and report helpers for proving the scale targets i
 | `src/seed.ts`        | Streams 1,000,000 devices as `CellIndexEntry` objects over Santa Clara County           |
 | `src/report.ts`      | Latency percentiles, throughput, and the exactly-once check                             |
 | `src/mock-common.ts` | Seeded RNG, latency model, error mix, token bucket, per-token counters                  |
+| `src/sim/`           | The local 1M-device fan-out simulation and the check-in burst (see below)               |
 
 ## How they are used
 
@@ -72,6 +73,35 @@ The numbers above (FCM 10,000 messages per second from the 600,000 per minute pr
 streams per connection, the latency distribution, the error mix) are assumptions, not measured service limits.
 Check each against `docs/scale-quotas.md` (P-02) and adjust the options when the real values are known; a load
 test passing against a mock that is more generous than the real service proves nothing.
+
+## Local fan-out simulation (`src/sim/`)
+
+`run-fanout.ts` runs one alert's whole fan-out in one Node process: seed, a county-sized signed alert, the real
+`planShards`, `processShard` (in-process dispatcher, 32 at a time), an in-memory send queue (real message packing
+and JSON wire format), N sender workers calling the real `processBatch` with the real `RoutingPushSender`
+(`ApnsSender` over h2c, `FcmSender`), the mock APNs and FCM with the default error mix, and an in-memory
+idempotency store. It then checks exactly-once delivery, re-plans the same alert (expecting zero new pushes), and
+runs a check-in burst through the API's stateless check-in route and the aggregator (batches of 1,000).
+
+```sh
+cd loadtest
+node --max-old-space-size=4096 --import tsx src/sim/run-fanout.ts --devices 1000000 \
+  [--fcm-rate 10000] [--senders 4] [--apns-sessions 4] [--out results/fanout-1m-local.md] [--no-checkins]
+```
+
+It needs about 3 GB of heap at 1,000,000 devices. Results from the last full run, with machine specs and the exact
+command, are in `results/fanout-1m-local.md`. A 20,000-device version runs in CI (`test/fanout-sim.test.ts`).
+
+Things to know when reading the numbers:
+
+- Mocks, senders, shard workers and the check-in code share one JS thread, so the mocks eat CPU the senders would
+  have. The run is a local measurement, not an AWS prediction; a loaded or small machine lowers it.
+- Push latency is per push (one timed `send` per message), so it includes waiting in the sender's in-flight limiter.
+- The cell index is a light Map-backed one (no cloning); the backend `MemoryCellIndex` clones every entry.
+- A device with places in two alert cells gets one push per cell (known gap, see `shard-worker.ts`); it is counted
+  separately from any other duplicate.
+- The mock APNs answers a GOAWAY by refusing every later stream, as the real service does. Before, it kept
+  delivering streams the client had been told were unprocessed, which produced fake duplicate pushes.
 
 ## Tests
 

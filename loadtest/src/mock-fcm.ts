@@ -28,6 +28,8 @@ import {
 } from './mock-common.js';
 
 export interface MockFcmOptions {
+  /** Keep a per-token attempt count (default true). Large runs turn it off to save memory. */
+  trackAttempts?: boolean;
   port?: number;
   host?: string;
   seed?: number;
@@ -77,7 +79,7 @@ export async function startMockFcm(options: MockFcmOptions = {}): Promise<MockFc
     createRng(seed + 1),
   );
 
-  const counters = new TokenCounters();
+  const counters = new TokenCounters(options.trackAttempts !== false);
   let stats = emptyResponseStats();
   let rateLimited = 0;
   let oauthRequests = 0;

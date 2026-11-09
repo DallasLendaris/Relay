@@ -28,6 +28,8 @@ import {
 } from './mock-common.js';
 
 export interface MockApnsOptions {
+  /** Keep a per-token attempt count (default true). Large runs turn it off to save memory. */
+  trackAttempts?: boolean;
   /** 0 picks a free port. */
   port?: number;
   host?: string;
@@ -80,6 +82,8 @@ const PUSH_TYPES = new Set([
 const PATH = /^\/3\/device\/([0-9a-fA-F]{32,200})$/;
 
 interface SessionState {
+  /** Highest stream id this connection has accepted (the GOAWAY last-stream-id). */
+  lastStreamId: number;
   active: number;
   goawaySent: boolean;
 }
@@ -96,7 +100,7 @@ export async function startMockApns(options: MockApnsOptions = {}): Promise<Mock
     createRng(seed + 1),
   );
 
-  const counters = new TokenCounters();
+  const counters = new TokenCounters(options.trackAttempts !== false);
   let stats = emptyResponseStats();
   let connections = 0;
   let goaways = 0;
@@ -118,7 +122,7 @@ export async function startMockApns(options: MockApnsOptions = {}): Promise<Mock
   server.on('session', (session) => {
     connections++;
     sessions.add(session);
-    states.set(session, { active: 0, goawaySent: false });
+    states.set(session, { lastStreamId: 0, active: 0, goawaySent: false });
     session.on('close', () => sessions.delete(session));
     session.on('error', () => session.destroy());
   });
@@ -146,12 +150,20 @@ export async function startMockApns(options: MockApnsOptions = {}): Promise<Mock
       stream.close(http2.constants.NGHTTP2_INTERNAL_ERROR);
       return;
     }
+    stream.on('error', () => {});
+    if (state.goawaySent) {
+      // After GOAWAY the server processes nothing new (the client was told which streams count).
+      refused++;
+      stream.close(http2.constants.NGHTTP2_REFUSED_STREAM);
+      return;
+    }
     if (state.active >= maxStreams) {
       refused++;
       stream.close(http2.constants.NGHTTP2_REFUSED_STREAM);
       return;
     }
     state.active++;
+    state.lastStreamId = Math.max(state.lastStreamId, stream.id ?? 0);
     peak = Math.max(peak, state.active);
     stream.on('close', () => {
       state.active--;
@@ -220,7 +232,9 @@ export async function startMockApns(options: MockApnsOptions = {}): Promise<Mock
       state.goawaySent = true;
       goaways++;
       // Graceful: streams already accepted finish, new streams must use a new connection.
-      session.goaway(http2.constants.NGHTTP2_NO_ERROR);
+      // The last-stream-id must be the highest accepted stream: with the default of 0 the client
+      // is told none were processed, discards answers already sent and resends delivered pushes.
+      session.goaway(http2.constants.NGHTTP2_NO_ERROR, state.lastStreamId);
     }
   }
 
