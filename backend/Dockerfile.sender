@@ -1,0 +1,33 @@
+# Sender service image. Build from the repository root (the CDK stack does this):
+#   docker build --platform linux/arm64 -f backend/Dockerfile.sender .
+# Two stages: install + bundle with esbuild, then copy the single bundle into a slim runtime.
+
+FROM --platform=linux/arm64 node:22-slim AS build
+WORKDIR /app
+
+# Dependency layer: only manifests, so it is cached until a dependency changes.
+COPY package.json package-lock.json ./
+COPY packages/shared/package.json packages/shared/
+COPY backend/package.json backend/
+COPY infra/package.json infra/
+RUN npm ci --ignore-scripts
+
+COPY packages/shared packages/shared
+COPY backend backend
+RUN npm run build:shared
+
+# One ESM file. The banner gives bundled CommonJS dependencies a working require().
+RUN npx esbuild backend/src/scale/sender/main.ts \
+      --bundle --platform=node --target=node22 --format=esm \
+      --minify --sourcemap \
+      --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
+      --outfile=/out/sender.mjs
+
+FROM --platform=linux/arm64 node:22-slim
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=build /out/sender.mjs /out/sender.mjs.map ./
+# The base image ships a non-root "node" user (uid 1000).
+USER node
+# Fargate sends SIGTERM and waits 30 s; node runs as PID 1 and handles it in main.ts.
+CMD ["node", "--enable-source-maps", "--max-old-space-size=1536", "sender.mjs"]

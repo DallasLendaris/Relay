@@ -20,20 +20,31 @@ const SEVERITY_WORD_ES: Record<Alert['relaySeverity'], string> = {
   statement: 'Declaración',
 };
 
-export function buildMessage(job: DeliveryJob, alert: Alert): PushMessage & PolicyPushMessage {
-  // Spanish uses the Relay summary. Without one we fall back to the official English text.
+/**
+ * The title and body for one alert in one language (shared by the Expo worker and the native
+ * sender). Spanish uses the Relay summary; without one we fall back to the official English text.
+ */
+export function alertPushText(
+  alert: Alert,
+  language: 'en' | 'es',
+): { title: string; body: string } {
   const spanish =
-    job.language === 'es'
+    language === 'es'
       ? alert.summaries.find((s) => s.language === 'es' && s.text.trim())
       : undefined;
   const body = spanish
     ? spanish.text.trim()
     : alert.official.headline?.trim() || alert.official.description.trim().slice(0, 140);
-  const policy = PUSH_POLICY[alert.relaySeverity];
   const word = spanish ? SEVERITY_WORD_ES : SEVERITY_WORD;
+  return { title: `${word[alert.relaySeverity]}: ${alert.event}`, body };
+}
+
+export function buildMessage(job: DeliveryJob, alert: Alert): PushMessage & PolicyPushMessage {
+  const { title, body } = alertPushText(alert, job.language);
+  const policy = PUSH_POLICY[alert.relaySeverity];
   return {
     to: job.expoPushToken,
-    title: `${word[alert.relaySeverity]}: ${alert.event}`,
+    title,
     body,
     data: {
       alertId: job.alertId,
