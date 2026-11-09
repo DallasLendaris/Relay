@@ -15,6 +15,9 @@ const counts = (over: Partial<PollCounts>): PollCounts => ({
   errors: 0,
   quarantined: 0,
   fetchFailed: 0,
+  unknownZones: 0,
+  publishFailed: 0,
+  throttled: 0,
   ...over,
 });
 
@@ -43,6 +46,8 @@ describe('buildEmf', () => {
               { Name: 'Errors', Unit: 'Count' },
               { Name: 'FetchFailed', Unit: 'Count' },
               { Name: 'Quarantined', Unit: 'Count' },
+              { Name: 'UnknownZones', Unit: 'Count' },
+              { Name: 'PublishFailed', Unit: 'Count' },
             ],
           },
         ],
@@ -53,6 +58,8 @@ describe('buildEmf', () => {
       Errors: 3,
       FetchFailed: 1,
       Quarantined: 2,
+      UnknownZones: 0,
+      PublishFailed: 0,
     });
   });
 
@@ -98,9 +105,9 @@ describe('buildHandler', () => {
     });
     const out = await handler({}, { getRemainingTimeInMillis: () => 70_000 });
 
-    expect(out.polls).toHaveLength(5); // the default, not 0
+    expect(out.polls).toHaveLength(2); // the default, not 0
     expect(warn).toHaveBeenCalled();
     const emf = lines.map((l) => JSON.parse(l) as Record<string, unknown>).find((l) => '_aws' in l);
-    expect(emf).toMatchObject({ Errors: 5, FetchFailed: 5, Accepted: 0 });
+    expect(emf).toMatchObject({ Errors: 2, FetchFailed: 2, Accepted: 0 });
   });
 });

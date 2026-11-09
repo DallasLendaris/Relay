@@ -129,7 +129,8 @@ describe('ingest publisher wiring', () => {
     if (!norm.ok) throw new Error(norm.reason);
     norm.alert.area.h3Cells = await built.engine.cellsFor(norm.alert.area);
     const result = await built.engine.apply(norm.alert);
-    await built.engine.onApplied?.(result); // planning, then the CDN publish
+    await built.engine.onApplied?.(result); // planning; the CDN publish starts in the background
+    await built.engine.flush?.();
     return { ...built, result };
   }
 
@@ -186,6 +187,7 @@ describe('ingest publisher wiring', () => {
     norm.alert.area.h3Cells = await built.engine.cellsFor(norm.alert.area);
     const result = await built.engine.apply(norm.alert);
     await built.engine.onApplied?.(result);
+    await built.engine.flush?.();
     expect(built.planQueue.messages).toHaveLength(1);
     expect(keys[0]).toMatch(new RegExp(`^alerts/v1/doc/${result.alert.id}/`));
     expect(keys.length).toBeGreaterThan(1);

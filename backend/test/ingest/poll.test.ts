@@ -118,6 +118,9 @@ describe('pollOnce', () => {
       errors: 0,
       quarantined: 0,
       fetchFailed: 0,
+      unknownZones: 0,
+      publishFailed: 0,
+      throttled: 0,
     });
     expect(archive.items).toHaveLength(1);
     expect(seen.ids.size).toBe(4);
@@ -145,6 +148,9 @@ describe('pollOnce', () => {
       errors: 0,
       quarantined: 0,
       fetchFailed: 0,
+      unknownZones: 0,
+      publishFailed: 0,
+      throttled: 0,
     });
   });
 
@@ -463,6 +469,7 @@ describe('pollOnce time budget and priority', () => {
         remaining -= 20_000;
       },
       remainingMs: () => remaining,
+      concurrency: 1, // the budget is spent one feature at a time
       log: (e) => entries.push(e),
     });
     const first = await pollOnce(deps);

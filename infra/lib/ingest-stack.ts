@@ -28,10 +28,28 @@ export interface IngestStackProps extends StackProps {
   planQueueUrl: string;
   /** "queue" hands fan-out to the planner; "inline" fans out inside ingest. Default: prod queue, dev inline. */
   fanoutMode?: FanoutMode;
+  /** NWS User-Agent, including contact info (email or URL). */
+  nwsUserAgent?: string;
 }
 
 /** Ingest Lambda memory (CPU scales with it: JSON signing, zone geometry and the S3 fan-out). */
 export const INGEST_MEMORY_MB = 1024;
+
+/**
+ * The poller must never run twice at once: two pollers would double the request rate against
+ * NWS (which asks for at most one request per 30 s per URL). One named value so every stack that
+ * budgets account concurrency reads the same number.
+ */
+/** One source of truth with the capacity plan (capacity.ts). */
+export const POLLER_RESERVED_CONCURRENCY = INGEST_RESERVED_CONCURRENCY;
+/** Seconds between NWS requests (the NWS minimum; the code raises anything lower). */
+export const NWS_POLL_INTERVAL_SECONDS = 30;
+/** Polls per run: at 0 s and 30 s. A run must end before the next minute's starts. */
+export const NWS_POLLS_PER_INVOCATION = 2;
+/** Under 60 s so a run can never overlap the next one (which reserved concurrency would drop). */
+export const INGEST_TIMEOUT_SECONDS = 58;
+/** NWS requires a User-Agent with contact info; override with the nwsUserAgent prop. */
+export const DEFAULT_NWS_USER_AGENT = 'Relay capstone (https://github.com/DallasLendaris/Relay)';
 
 export type FanoutMode = 'queue' | 'inline';
 
@@ -101,9 +119,9 @@ export class IngestStack extends Stack {
       handler: 'handler',
       runtime: Runtime.NODEJS_22_X,
       architecture: Architecture.ARM_64,
-      timeout: Duration.seconds(70), // 5 polls x 12 s plus headroom
+      timeout: Duration.seconds(INGEST_TIMEOUT_SECONDS), // 2 polls, 30 s apart, must end inside the minute
       memorySize: INGEST_MEMORY_MB, // the post-AlertReady CDN publish runs 16 uploads at once
-      reservedConcurrentExecutions: INGEST_RESERVED_CONCURRENCY, // never two overlapping pollers; also a floor an API flood cannot take
+      reservedConcurrentExecutions: POLLER_RESERVED_CONCURRENCY, // never two overlapping pollers; also a floor an API flood cannot take
       logGroup: new LogGroup(this, 'IngestLogs', {
         retention: RetentionDays.ONE_MONTH,
         removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
@@ -111,9 +129,9 @@ export class IngestStack extends Stack {
       environment: {
         RAW_BUCKET: rawBucket.bucketName,
         STATE_TABLE: stateTable.tableName,
-        NWS_USER_AGENT: 'Relay capstone (contact via GitHub DallasLendaris/Relay)',
-        POLL_INTERVAL_SECONDS: '12',
-        POLLS_PER_INVOCATION: '5',
+        NWS_USER_AGENT: props.nwsUserAgent ?? DEFAULT_NWS_USER_AGENT,
+        POLL_INTERVAL_SECONDS: String(NWS_POLL_INTERVAL_SECONDS),
+        POLLS_PER_INVOCATION: String(NWS_POLLS_PER_INVOCATION),
         ...dbEnv(props.db, ingestDbRole),
         DELIVERY_QUEUE_URL: props.deliveryQueueUrl,
         TOKEN_KEYS_SECRET_ARN: props.tokenKeysSecretArn,
@@ -192,6 +210,18 @@ export class IngestStack extends Stack {
       alarmDescription:
         'An alert was quarantined (permanent data error) and will not be delivered.',
       metric: custom('Quarantined'),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: TreatMissingData.NOT_BREACHING,
+    });
+
+    // Some UGC zones of an alert could not be resolved: the alert went out for the known part
+    // only, so someone should check the zone pack or NWS zone ids.
+    new Alarm(this, 'IngestUnknownZonesAlarm', {
+      alarmDescription:
+        'Alert zones (UGC) could not be resolved: the alert reached only the known part of its area.',
+      metric: custom('UnknownZones'),
       threshold: 1,
       evaluationPeriods: 1,
       comparisonOperator: ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
