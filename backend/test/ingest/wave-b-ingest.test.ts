@@ -31,6 +31,7 @@ import {
 } from '../../src/ingest/poll.js';
 import { MemoryPlanQueue } from '../../src/scale/fanout/queues.js';
 import type { SeenStore } from '../../src/ports.js';
+import { TEST_SIGNING } from '../signing/test-signing.js';
 
 const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -544,7 +545,7 @@ describe('public publish does not gate fan-out (PERF-6)', () => {
       places: new MemoryPlaceStore(),
       devices: new MemoryDeviceStore(),
       queue: new MemoryDeliveryQueue(),
-      alertKeys: ring('a1', 'alert-secret'),
+      alertSigning: TEST_SIGNING,
       tokenKeys: ring('t1', 'token-secret'),
       isDeliveryPaused: async () => false,
       fetch: (async () => new Response('{}', { status: 404 })) as typeof fetch,
@@ -598,7 +599,7 @@ describe('public publish does not gate fan-out (PERF-6)', () => {
       places: new MemoryPlaceStore(),
       devices: new MemoryDeviceStore(),
       queue: new MemoryDeliveryQueue(),
-      alertKeys: ring('a1', 'alert-secret'),
+      alertSigning: TEST_SIGNING,
       tokenKeys: ring('t1', 'token-secret'),
       isDeliveryPaused: async () => false,
       fetch: (async () => new Response('{}', { status: 404 })) as typeof fetch,
