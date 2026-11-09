@@ -73,8 +73,6 @@ export const place = (id: string, deviceId: string, lat: number, lng: number): P
   deviceId,
   label: id,
   shortAddress: id,
-  latitude: lat,
-  longitude: lng,
   h3Cell: latLngToCell(lat, lng, 7),
   createdAt: '2026-11-01T00:00:00Z',
 });

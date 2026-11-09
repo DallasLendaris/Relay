@@ -47,7 +47,11 @@ describe('shard worker check-in tokens (the real factory used by shardHandler)',
             { alertId: alert.id, deviceId: r.deviceId, now: NOW },
             keys,
           ),
-        ).toEqual({ ok: true, h3Cell: cell });
+        ).toEqual({
+          ok: true,
+          h3Cell: cell,
+          expiresAt: expect.any(Date),
+        });
         checked++;
       }
     }

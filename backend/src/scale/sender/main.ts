@@ -35,6 +35,7 @@ import { SenderConsumer } from './consumer.js';
 import { createDeadTargetClearer } from './dead-target.js';
 import { DeadTargetQueue } from './dead-target-queue.js';
 import { SENDER_LEASE_MS, processBatch, type SenderDeps } from './sender.js';
+import { errorFields } from '../../delivery/redact.js';
 import { SqsSendQueue } from './sqs-send-queue.js';
 
 const logger: Logger = {
@@ -165,7 +166,7 @@ async function main(): Promise<void> {
 main().then(
   () => process.exit(0),
   (err: unknown) => {
-    logger.error('sender.fatal', { error: err instanceof Error ? err.message : String(err) });
+    logger.error('sender.fatal', errorFields(err));
     process.exit(1);
   },
 );

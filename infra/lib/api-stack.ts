@@ -62,6 +62,7 @@ export const DEFAULT_THROTTLE = {
 export const API_ROUTES: ReadonlyArray<{ method: HttpMethod; path: string }> = [
   { method: HttpMethod.POST, path: '/devices' },
   { method: HttpMethod.PUT, path: '/devices/me/push-token' },
+  { method: HttpMethod.DELETE, path: '/devices/me' },
   { method: HttpMethod.POST, path: '/places' },
   { method: HttpMethod.GET, path: '/places' },
   { method: HttpMethod.DELETE, path: '/places/{placeId}' },
@@ -122,10 +123,20 @@ export class ApiStack extends Stack {
       ...tableDefaults,
       partitionKey: { name: 'pk', type: AttributeType.STRING },
       stream: StreamViewType.NEW_IMAGE,
+      // Check-ins are not kept forever: every row carries `ttl` (the alert's end plus the
+      // retention period, 30 days until counsel decides) and DynamoDB deletes it after that.
+      timeToLiveAttribute: 'ttl',
       // A new on-demand table only serves what its previous peak allowed (4,000 writes/s to
       // start, doubling gradually), so a statewide check-in burst would be throttled. Warm
       // throughput provisions the capacity up front (CloudFormation: WarmThroughput).
       ...(warmWrites > 0 ? { warmThroughput: { writeUnitsPerSecond: warmWrites } } : {}),
+    });
+    // Lists one device's check-ins, so DELETE /devices/me can erase them without a table scan.
+    // Keys only: the erasure needs nothing but the primary key to delete the row.
+    checkins.addGlobalSecondaryIndex({
+      indexName: 'byDevice',
+      partitionKey: { name: 'deviceId', type: AttributeType.STRING },
+      projectionType: ProjectionType.KEYS_ONLY,
     });
     // Running count per alert and H3 cell (written only by the aggregator). This is what
     // agencies see, never the rows above. The byAlert index lists an alert's cells; ttl expires
@@ -223,6 +234,9 @@ export class ApiStack extends Stack {
     grantSecretRead(apiFn, props.deviceCredentialKeysSecretArn);
     // Check-in rows: written with PutItem, read back with GetItem.
     allow(apiFn, ['dynamodb:PutItem', 'dynamodb:GetItem'], [checkins.tableArn]);
+    // Erasing a device: list its rows through the byDevice index, then batch-delete them.
+    allow(apiFn, ['dynamodb:Query'], [`${checkins.tableArn}/index/byDevice`]);
+    allow(apiFn, ['dynamodb:BatchWriteItem'], [checkins.tableArn]);
     // Cell index: replace/clear a device's places (BatchWriteItem, DeleteItem), re-point tokens
     // (UpdateItem), read them back (Query, GetItem) and upsert (PutItem).
     allow(

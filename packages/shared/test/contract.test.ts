@@ -44,6 +44,7 @@ describe('OpenAPI spec', () => {
         '/alerts/{alertId}',
         '/alerts/{alertId}/checkins',
         '/devices',
+        '/devices/me',
         '/devices/me/push-token',
         '/places',
         '/places/{placeId}',

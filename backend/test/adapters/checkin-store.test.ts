@@ -88,6 +88,8 @@ describe('DynamoCheckInStore', () => {
         h3Cell: c.h3Cell,
         checkedInAt: c.checkedInAt,
         idempotencyKey: c.idempotencyKey,
+        // No retainUntil passed: the default retention after the check-in itself.
+        ttl: Date.parse(c.checkedInAt) / 1000 + 30 * 24 * 3600,
       },
       ConditionExpression: 'attribute_not_exists(pk)',
     });

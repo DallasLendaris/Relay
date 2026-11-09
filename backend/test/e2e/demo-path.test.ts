@@ -155,8 +155,6 @@ function setup(opts: { queue?: MemoryDeliveryQueue; feed?: string } = {}) {
       deviceId: id,
       label: 'Home',
       shortAddress: '1 Main St',
-      latitude: lat,
-      longitude: lng,
       h3Cell: cellForPoint(lat, lng),
       createdAt: '2026-11-01T00:00:00Z',
     });
@@ -205,7 +203,11 @@ describe('demo path', () => {
         { alertId, deviceId: 'inside', now: clock.now() },
         tokenKeys.all,
       ),
-    ).toEqual({ ok: true, h3Cell: cellForPoint(INSIDE.lat, INSIDE.lng) }); // v2: the matched cell is bound in
+    ).toEqual({
+      ok: true,
+      h3Cell: cellForPoint(INSIDE.lat, INSIDE.lng),
+      expiresAt: expect.any(Date),
+    }); // v2: the matched cell is bound in
 
     // The stored alert is signed, verifies, and has both summaries.
     const stored = await s.alertStore.get(alertId);

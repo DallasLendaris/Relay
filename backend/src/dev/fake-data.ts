@@ -369,8 +369,6 @@ export function fakePlaces(options: FakePlaceOptions): Place[] {
       deviceId: pick(rng, deviceIds),
       label: pick(rng, PLACE_LABELS),
       shortAddress: `${wholeBetween(rng, 100, 9999)} ${pick(rng, STREETS)}, ${pick(rng, CITIES)}`,
-      latitude,
-      longitude,
       h3Cell: cellForPoint(latitude, longitude),
       createdAt: new Date(baseMs - wholeBetween(rng, 0, 365) * DAY_MS).toISOString(),
     });

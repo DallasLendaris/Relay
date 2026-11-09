@@ -63,13 +63,21 @@ export interface Device {
   createdAt: string;
 }
 
+/**
+ * A saved place. Data minimization: the exact coordinates of a place are NEVER stored. The API
+ * computes the H3 cell (resolution 7, about 5 km2) and discards the point; the cell is all that
+ * alert matching uses. Stores may keep the cell's CENTER (never the original point).
+ */
 export interface Place {
   id: string;
   deviceId: string;
+  /**
+   * What the person calls it. At most MAX_LABEL_LENGTH characters. Labels should be generic
+   * (the app suggests Home, Work or School): they are stored, so never an address or a name.
+   */
   label: string;
-  shortAddress: string;
-  latitude: number;
-  longitude: number;
+  /** Only when the place was added by address (the geocoder's short street text). Never for a pin. */
+  shortAddress?: string;
   h3Cell: string;
   createdAt: string;
 }
@@ -97,6 +105,24 @@ export interface DeviceStore {
   clearPushToken(token: string): Promise<void>;
 }
 
+/** Erasure of a device (DELETE /devices/me). Implemented by the real and in-memory stores. */
+export interface DeviceErasure {
+  /**
+   * Erase the device row (its places go with it where the store cascades) and record a
+   * tombstone, in one atomic step, so its credential stops working even when it is stateless.
+   * Idempotent. Returns true when a device row was deleted.
+   */
+  deleteDevice(deviceId: string, deletedAt: Date): Promise<boolean>;
+  /** Ids of every erased device (the tombstones). Small: one row per erasure request. */
+  listDeletedDevices(): Promise<string[]>;
+}
+
+/** Erasure of a device's places (DELETE /devices/me). */
+export interface PlaceErasure {
+  /** Permanent delete of every place of a device. Returns how many were removed. */
+  removeAllForDevice(deviceId: string): Promise<number>;
+}
+
 export interface PlaceStore {
   add(place: Place): Promise<void>;
   listForDevice(deviceId: string): Promise<Place[]>;
@@ -113,6 +139,9 @@ export interface PlaceStore {
     cells: string[],
   ): Promise<Array<{ placeId: string; deviceId: string; h3Cell: string }>>;
 }
+
+/** Longest label a place may have (see Place.label). */
+export const MAX_LABEL_LENGTH = 60;
 
 /** Address to coordinates (Amazon Location Service in AWS). */
 export interface Geocoder {
@@ -183,6 +212,10 @@ export interface PushSender {
 // ---------- Check-ins ----------
 
 export interface CheckInStore {
-  /** Saves the check-in unless the idempotency key was seen. Returns false for a repeat. */
-  save(checkIn: CheckIn): Promise<boolean>;
+  /**
+   * Saves the check-in unless the idempotency key was seen. Returns false for a repeat.
+   * `retainUntil` is when the row may be deleted (the alert's end plus the retention period);
+   * the store writes it as the table's TTL so check-ins are not kept forever.
+   */
+  save(checkIn: CheckIn, retainUntil?: Date): Promise<boolean>;
 }

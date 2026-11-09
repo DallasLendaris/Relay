@@ -343,7 +343,11 @@ describe('late joiners', () => {
       { alertId: alert.id, deviceId, now: NOW },
       new Map([[KEY.id, KEY.secret]]),
     );
-    expect(verified).toEqual({ ok: true, h3Cell: SJ_CELL });
+    expect(verified).toEqual({
+      ok: true,
+      h3Cell: SJ_CELL,
+      expiresAt: expect.any(Date),
+    });
   });
 
   it('watch and advisory alerts go to the standard queue', async () => {
@@ -529,7 +533,7 @@ describe('multi-place devices: deviceCells and the primary cell', () => {
         { alertId: alert.id, deviceId, now: NOW },
         new Map([[KEY.id, KEY.secret]]),
       ),
-    ).toEqual({ ok: true, h3Cell: LO });
+    ).toEqual({ ok: true, h3Cell: LO, expiresAt: expect.any(Date) });
   });
 
   it('an alert that covers only the non-primary cell still gets its late push', async () => {

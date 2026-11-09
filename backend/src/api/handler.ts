@@ -23,7 +23,14 @@ import { routeOf } from './router.js';
 /** The stores the API needs that come from AWS (Aurora, Amazon Location). */
 export type StoreDeps = Pick<
   ApiDeps,
-  'devices' | 'places' | 'alerts' | 'geocoder' | 'checkins' | 'cellIndex' | 'repairQueue'
+  | 'devices'
+  | 'places'
+  | 'alerts'
+  | 'geocoder'
+  | 'checkins'
+  | 'cellIndex'
+  | 'repairQueue'
+  | 'checkInRetentionDays'
 > & {
   /** When set, requests without CloudFront's secret header are refused (REQUIRE_ORIGIN_HEADER). */
   originGuard?: OriginGuard;
@@ -176,6 +183,12 @@ export const awsStores: StoreFactory = () => {
   const repairQueueUrl = env['INDEX_REPAIR_QUEUE_URL'];
   const urgentUrl = env['URGENT_QUEUE_URL'];
   const standardUrl = env['STANDARD_QUEUE_URL'];
+  // Check-in retention after the alert ends (counsel decides; default 30 days).
+  const retentionRaw = Number(env['CHECKIN_RETENTION_DAYS']);
+  const retentionDays =
+    env['CHECKIN_RETENTION_DAYS'] && Number.isFinite(retentionRaw) && retentionRaw > 0
+      ? retentionRaw
+      : undefined;
   const requireOrigin = env['REQUIRE_ORIGIN_HEADER'] === 'true';
   const originSecretArn = env['ORIGIN_VERIFY_SECRET_ARN'];
   if (requireOrigin && !originSecretArn) {
@@ -201,7 +214,9 @@ export const awsStores: StoreFactory = () => {
     checkins: new DynamoCheckInStore(
       DynamoDBDocumentClient.from(new DynamoDBClient({})),
       checkinsTable,
+      retentionDays,
     ),
+    ...(retentionDays !== undefined ? { checkInRetentionDays: retentionDays } : {}),
     cellIndex: new DynamoCellIndex(
       DynamoDBDocumentClient.from(new DynamoDBClient({})),
       cellIndexTable,

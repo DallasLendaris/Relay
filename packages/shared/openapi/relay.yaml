@@ -64,6 +64,24 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /devices/me:
+    delete:
+      tags: [devices]
+      operationId: deleteDevice
+      summary: Permanently erase this device and all of its data.
+      description: |
+        Deletes the device's places, its alert-matching index entries and every check-in it
+        made, and records that the device is gone so its credential is rejected afterwards
+        (a deleted device can no longer check in). This cannot be undone. Calling it again
+        with the same credential after a partial failure finishes the erasure.
+      security:
+        - deviceAuth: []
+      responses:
+        '204':
+          description: Erased
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /places:
     post:
       tags: [places]
@@ -371,15 +389,25 @@ components:
       properties:
         label:
           type: string
+          minLength: 1
+          maxLength: 60
+          description: |
+            A short, generic name such as Home, Work or School. Do not put an address or a
+            person's name in it.
         address:
           type: string
 
     CreatePlaceByCoordinates:
       type: object
       required: [label, latitude, longitude]
+      description: |
+        The coordinates are used once to find the H3 cell and are not stored.
       properties:
         label:
           type: string
+          minLength: 1
+          maxLength: 60
+          description: A short, generic name such as Home, Work or School.
         latitude:
           type: number
         longitude:
@@ -393,16 +421,19 @@ components:
 
     Place:
       type: object
-      required: [id, label, shortAddress, h3Cell, createdAt]
+      required: [id, label, h3Cell, createdAt]
       properties:
         id:
           type: string
           format: uuid
         label:
           type: string
+          maxLength: 60
         shortAddress:
           type: string
-          description: Street-level address without the house number, for display.
+          description: |
+            Street-level address without the house number, for display. Absent for a place
+            saved by coordinates (nothing but the H3 cell is kept for those).
         h3Cell:
           type: string
           description: H3 cell at resolution 7.

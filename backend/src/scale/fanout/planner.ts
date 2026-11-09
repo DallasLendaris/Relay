@@ -1,4 +1,5 @@
 import { cellToParent } from 'h3-js';
+import { errorFields } from '../../delivery/redact.js';
 import { SHARD_RESOLUTION, type AlertReady, type ShardJob } from '../contracts.js';
 import { checkEligibility, type EligibilityDeps, type FanoutRefusal } from './common.js';
 import type { FleetScaler } from './fleet-scaler.js';
@@ -82,7 +83,7 @@ export async function planShards(ready: AlertReady, deps: PlannerDeps): Promise<
     try {
       await deps.fleetScaler.preScale(jobs.length);
     } catch (err) {
-      deps.logger.warn('fanout.prescale_failed', { alertId: alert.id, error: String(err) });
+      deps.logger.warn('fanout.prescale_failed', { alertId: alert.id, ...errorFields(err) });
     }
   }
   await deps.shardDispatcher.dispatch(jobs);

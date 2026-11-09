@@ -42,6 +42,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/devices/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Permanently erase this device and all of its data.
+         * @description Deletes the device's places, its alert-matching index entries and every check-in it
+         *     made, and records that the device is gone so its credential is rejected afterwards
+         *     (a deleted device can no longer check in). This cannot be undone. Calling it again
+         *     with the same credential after a partial failure finishes the erasure.
+         */
+        delete: operations["deleteDevice"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/places": {
         parameters: {
             query?: never;
@@ -214,10 +237,16 @@ export interface components {
             language: "en" | "es";
         };
         CreatePlaceByAddress: {
+            /**
+             * @description A short, generic name such as Home, Work or School. Do not put an address or a
+             *     person's name in it.
+             */
             label: string;
             address: string;
         };
+        /** @description The coordinates are used once to find the H3 cell and are not stored. */
         CreatePlaceByCoordinates: {
+            /** @description A short, generic name such as Home, Work or School. */
             label: string;
             latitude: number;
             longitude: number;
@@ -228,8 +257,11 @@ export interface components {
             /** Format: uuid */
             id: string;
             label: string;
-            /** @description Street-level address without the house number, for display. */
-            shortAddress: string;
+            /**
+             * @description Street-level address without the house number, for display. Absent for a place
+             *     saved by coordinates (nothing but the H3 cell is kept for those).
+             */
+            shortAddress?: string;
             /** @description H3 cell at resolution 7. */
             h3Cell: string;
             /** Format: date-time */
@@ -465,6 +497,25 @@ export interface operations {
                 content?: never;
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    deleteDevice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Erased */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             401: components["responses"]["Unauthorized"];
         };
     };

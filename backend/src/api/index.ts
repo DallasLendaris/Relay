@@ -25,18 +25,25 @@ import {
   verifyDeviceCredential,
   type TokenKey,
 } from '../tokens/index.js';
-import type { StoredCheckIn } from '../scale/checkins/types.js';
+import {
+  checkInTtlSeconds,
+  DEFAULT_CHECKIN_RETENTION_DAYS,
+  type StoredCheckIn,
+} from '../scale/checkins/types.js';
 import { effectiveState } from '../ingest/lifecycle.js';
 import type {
   AlertStore,
   CheckInStore,
   Clock,
   Device,
+  DeviceErasure,
   DeviceStore,
   Geocoder,
   Place,
+  PlaceErasure,
   PlaceStore,
 } from '../ports.js';
+import { MAX_LABEL_LENGTH } from '../ports.js';
 import { isInCalifornia } from './california.js';
 import { HttpError, Router, json, noContent, type ApiEvent, type ApiResult } from './router.js';
 import type { Request } from './router.js';
@@ -48,13 +55,28 @@ export interface CheckInLookup {
   get(alertId: string, deviceId: string): Promise<StoredCheckIn | null>;
 }
 
+export interface CheckInEraser {
+  /** Permanently deletes every check-in row of one device. Idempotent. Returns the count. */
+  deleteForDevice(deviceId: string): Promise<number>;
+}
+
 export interface ApiDeps {
-  devices: DeviceStore;
-  places: PlaceStore;
+  devices: DeviceStore & DeviceErasure;
+  places: PlaceStore & PlaceErasure;
   alerts: AlertStore;
   geocoder: Geocoder;
   /** The port plus a lookup by device (adapter classes have it; the port does not). */
-  checkins: CheckInStore & CheckInLookup;
+  checkins: CheckInStore & CheckInLookup & CheckInEraser;
+  /**
+   * How long after an alert ends its check-in rows are kept (their TTL). Default 30 days;
+   * COUNSEL decides the real period (CHECKIN_RETENTION_DAYS in handler.ts).
+   */
+  checkInRetentionDays?: number;
+  /**
+   * How long the set of erased devices is cached between reads (default 60 s). See
+   * `isDeleted` in createApi for the trade-off.
+   */
+  tombstoneCacheMs?: number;
   /** Check-in token keys by key id (kid -> secret). */
   tokenKeys: Map<string, string>;
   /** DynamoDB cell index, written through from here. Aurora stays the record. */
@@ -116,7 +138,7 @@ function toPlaceBody(p: Place): PlaceBody {
   return {
     id: p.id,
     label: p.label,
-    shortAddress: p.shortAddress,
+    ...(p.shortAddress !== undefined ? { shortAddress: p.shortAddress } : {}),
     h3Cell: p.h3Cell,
     createdAt: p.createdAt,
   };
@@ -324,10 +346,76 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     const credential = header ? /^Bearer (\S+)$/.exec(header)?.[1] : undefined;
     if (credential?.split('.').length === 3) {
       const deviceId = verifyDeviceCredential(credential, deps.deviceCredentialKeys ?? new Map());
-      if (deviceId) return deviceId;
+      if (deviceId && !(await isDeleted(deviceId))) return deviceId;
       throw new HttpError(401, 'unauthorized', 'Missing or invalid credentials');
     }
     return (await authenticate(req)).id;
+  }
+
+  /**
+   * Has this device been erased? Only the check-in route asks, and only for a stateless
+   * credential (which would otherwise verify forever with no database read).
+   *
+   * Trade-off: the whole tombstone set (a few UUIDs per erasure request) is read at most once per
+   * `tombstoneCacheMs` per container, never once per check-in, so the million-phone burst adds a
+   * handful of reads instead of a million. In exchange an erased device's credential can still
+   * check in for up to that long in a container that has not refreshed yet (default 60 s); that
+   * costs one check-in row, which its TTL removes. If a refresh fails, the last known set is
+   * used (fail open: an outage of the tombstone table must not stop people from answering
+   * "I'm okay"); with no set yet, nothing is denied and the failure is logged.
+   */
+  const tombstoneTtlMs = deps.tombstoneCacheMs ?? 60_000;
+  let tombstones: Set<string> | undefined;
+  let tombstonesLoadedAt = 0;
+  let tombstoneRefresh: Promise<void> | undefined;
+  async function isDeleted(deviceId: string): Promise<boolean> {
+    const nowMs = deps.clock.now().getTime();
+    if (!tombstones || nowMs - tombstonesLoadedAt >= tombstoneTtlMs) {
+      tombstoneRefresh ??= (async () => {
+        try {
+          tombstones = new Set(await deps.devices.listDeletedDevices());
+          tombstonesLoadedAt = nowMs;
+        } catch (err) {
+          // Do not retry on every request while it is down: back off for one cache period.
+          tombstonesLoadedAt = nowMs;
+          console.warn(
+            JSON.stringify({
+              level: 'warn',
+              msg: 'tombstones.refresh_failed',
+              error: err instanceof Error ? err.name : 'UnknownError',
+              code: 'tombstone_refresh_failed',
+            }),
+          );
+        } finally {
+          tombstoneRefresh = undefined;
+        }
+      })();
+      await tombstoneRefresh;
+    }
+    return tombstones?.has(deviceId) ?? false;
+  }
+
+  /**
+   * Authentication for DELETE /devices/me. Normally the device exists and this is `authenticate`.
+   * If an earlier erasure deleted the device row but could not finish (check-ins), the retry
+   * arrives with a stateless credential whose device is already tombstoned: that is accepted so
+   * the erasure can be finished. Anything else is the usual 401.
+   */
+  async function authenticateForErase(req: Request): Promise<{ deviceId: string; known: boolean }> {
+    try {
+      return { deviceId: (await authenticate(req)).id, known: true };
+    } catch (err) {
+      const header = req.headers['authorization'];
+      const credential = header ? /^Bearer (\S+)$/.exec(header)?.[1] : undefined;
+      if (err instanceof HttpError && credential?.split('.').length === 3) {
+        const id = verifyDeviceCredential(credential, deps.deviceCredentialKeys ?? new Map());
+        // Read the tombstones directly (not the cache): this is a rare, deliberate request.
+        if (id && (await deps.devices.listDeletedDevices()).includes(id)) {
+          return { deviceId: id, known: false };
+        }
+      }
+      throw err;
+    }
   }
 
   // ---------- Devices ----------
@@ -389,12 +477,62 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     return noContent();
   });
 
+  /**
+   * Permanent erasure of this device (Gov. Code 11015.5(c): discard personal information on
+   * request). Order matters: the cell-index entries go FIRST, so no entry ever points at a
+   * device that is gone (an index failure fails the request with the device untouched, and the
+   * client retries). Then the places and the device row (with the tombstone, atomically), then
+   * the check-in rows. A check-in failure after the device row is gone is retried inline; if it
+   * persists the request fails with 500 and the retry (same credential) finishes the job, see
+   * authenticateForErase. The rows' TTL is the last backstop.
+   */
+  router.add('DELETE', '/devices/me', async (req) => {
+    const { deviceId, known } = await authenticateForErase(req);
+    if (known) {
+      const places = await deps.places.listForDevice(deviceId);
+      for (const place of places) {
+        await deps.cellIndex.remove(place.h3Cell, deviceId, place.id);
+      }
+      await deps.places.removeAllForDevice(deviceId);
+      await deps.devices.deleteDevice(deviceId, deps.clock.now());
+      tombstones?.add(deviceId); // this container refuses it at once
+    }
+    const attempts = 3;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await deps.checkins.deleteForDevice(deviceId);
+        break;
+      } catch (err) {
+        if (attempt >= attempts) {
+          console.error(
+            JSON.stringify({
+              level: 'error',
+              msg: 'device_delete.checkins_incomplete',
+              error: err instanceof Error ? err.name : 'UnknownError',
+              code: 'checkins_incomplete',
+            }),
+          );
+          throw new Error('check-in erasure incomplete');
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
+      }
+    }
+    return noContent();
+  });
+
   // ---------- Places ----------
 
   router.add('POST', '/places', async (req) => {
     const device = await authenticate(req);
     const body = requireObject(req.body);
     const label = nonEmptyString(body['label'], 'label');
+    if (label.length > MAX_LABEL_LENGTH) {
+      throw new HttpError(
+        400,
+        'invalid_request',
+        `label must be at most ${MAX_LABEL_LENGTH} characters`,
+      );
+    }
     const hasAddress = body['address'] !== undefined;
     const hasCoords = body['latitude'] !== undefined || body['longitude'] !== undefined;
     if (hasAddress === hasCoords) {
@@ -413,16 +551,18 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       );
     }
 
-    let latitude: number;
-    let longitude: number;
-    let shortAddress: string;
+    // The exact point only lives in this function: it is used to find the cell (and to check
+    // California BEFORE it is thrown away) and is never stored, logged or returned.
+    let h3Cell: string;
+    let shortAddress: string | undefined;
     if (hasAddress) {
       const found = await deps.geocoder.geocode(nonEmptyString(body['address'], 'address'));
       if (!found) throw new HttpError(400, 'address_not_found', 'Could not find that address');
       if (found.state !== 'CA') {
         throw new HttpError(422, 'outside_california', 'Relay supports California addresses only');
       }
-      ({ latitude, longitude, shortAddress } = found);
+      h3Cell = cellForPoint(found.latitude, found.longitude);
+      shortAddress = found.shortAddress;
     } else {
       const lat = body['latitude'];
       const lng = body['longitude'];
@@ -439,19 +579,16 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       if (!isInCalifornia(lat, lng)) {
         throw new HttpError(422, 'outside_california', 'Relay supports California locations only');
       }
-      latitude = lat;
-      longitude = lng;
-      shortAddress = 'Dropped pin'; // no street address when saved by coordinates
+      h3Cell = cellForPoint(lat, lng);
+      // No street text for a pin: nothing but the cell is kept.
     }
 
     const place: Place = {
       id: deps.newId(),
       deviceId: device.id,
       label,
-      shortAddress,
-      latitude,
-      longitude,
-      h3Cell: cellForPoint(latitude, longitude),
+      ...(shortAddress ? { shortAddress } : {}),
+      h3Cell,
       createdAt: deps.clock.now().toISOString(),
     };
     await deps.places.add(place);
@@ -625,7 +762,15 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       idempotencyKey,
       h3Cell,
     };
-    if (await deps.checkins.save(checkIn)) return json(200, { checkedInAt: checkIn.checkedInAt });
+    // The row is deleted (DynamoDB TTL) after the alert's end plus the retention period.
+    const retainUntil = new Date(
+      checkInTtlSeconds(
+        verified.expiresAt,
+        deps.checkInRetentionDays ?? DEFAULT_CHECKIN_RETENTION_DAYS,
+      ) * 1000,
+    );
+    if (await deps.checkins.save(checkIn, retainUntil))
+      return json(200, { checkedInAt: checkIn.checkedInAt });
 
     // This device already checked in for this alert (a retry, or a new idempotencyKey).
     // Only the first check-in counts; answer with its original time.
