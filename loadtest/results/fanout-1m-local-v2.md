@@ -12,27 +12,27 @@ Machine: 2 CPUs (Intel(R) Xeon(R) Processor @ 2.30GHz), 8,023 MB RAM (4,133 MB f
 
 ## Result
 
-| Measure | Value |
-| --- | --- |
-| Devices seeded / entries / cells used | 1,000,000 / 1,149,982 / 1,130 |
-| Alert cells (shards) | 1,136 (75 shards) |
-| Devices in the alert area / with a push target | 1,000,000 / 1,000,000 |
-| Batches planned (recipients) | 69,431 (1,000,000) |
-| Time to plan (`planShards` returns) | 8 ms |
-| Time to first successful push | 2.3 s |
-| Time to last successful push | 217.0 s |
-| Sends per second, mean (first to last push) | 4,636 |
-| Sends per second, best 5 s window | 6,631 |
-| Push latency p50 / p99 / max (per push, includes in-sender queueing) | 384.3 ms / 2501.5 ms / 7076.9 ms over 1,009,355 attempts |
-| Batches processed (of which retries) | 73,417 (3,986) |
-| Recipients retried after a retryable failure | 9,355 |
-| Permanent failures (dead token, cleared) | 4,914 |
-| Gave up (still failing after 5 attempts) | 0 |
-| Message redeliveries (batch not acked) | 0 |
-| Retry messages delayed (longest delay) | 3,986 (4.0 s) |
-| Permanent-failure breaker opened | YES (sender log events: {"delivery.permanent_breaker_open":6}; first events: [{"reason":"batch_rate","permanent":6,"total":156,"batchRate":0.0385,"rollingRate":0.01,"errors":{"Apns410:Unregistered":3,"Fcm404:UNREGISTERED":3}},{"reason":"batch_rate","permanent":5,"total":121,"batchRate":0.0413,"rollingRate":0.011,"errors":{"Apns410:Unregistered":3,"Fcm404:UNREGISTERED":2}},{"reason":"batch_rate","permanent":5,"total":238,"batchRate":0.021,"rollingRate":0.009,"errors":{"Apns410:Unregistered":3,"Fcm404:UNREGISTERED":2}},{"reason":"batch_rate","permanent":5,"total":206,"batchRate":0.0243,"rollingRate":0.007,"errors":{"Apns410:Unregistered":3,"Fcm404:UNREGISTERED":2,"Apns500:InternalServerError":1}},{"reason":"batch_rate","permanent":5,"total":222,"batchRate":0.0225,"rollingRate":0.007,"errors":{"ApnsConnectionError: ERR_HTTP2_STREAM_ERROR":15,"Apns410:Unregistered":3,"Fcm404:UNREGISTERED":2}}]) |
-| FCM requests rate-limited by the quota bucket (429) | 0 |
-| Peak heap / peak RSS | 2027.7 MB / 2791 MB |
+| Measure                                                              | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Devices seeded / entries / cells used                                | 1,000,000 / 1,149,982 / 1,130                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Alert cells (shards)                                                 | 1,136 (75 shards)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Devices in the alert area / with a push target                       | 1,000,000 / 1,000,000                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Batches planned (recipients)                                         | 69,431 (1,000,000)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Time to plan (`planShards` returns)                                  | 8 ms                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Time to first successful push                                        | 2.3 s                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Time to last successful push                                         | 217.0 s                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Sends per second, mean (first to last push)                          | 4,636                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Sends per second, best 5 s window                                    | 6,631                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Push latency p50 / p99 / max (per push, includes in-sender queueing) | 384.3 ms / 2501.5 ms / 7076.9 ms over 1,009,355 attempts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Batches processed (of which retries)                                 | 73,417 (3,986)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Recipients retried after a retryable failure                         | 9,355                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Permanent failures (dead token, cleared)                             | 4,914                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Gave up (still failing after 5 attempts)                             | 0                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Message redeliveries (batch not acked)                               | 0                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Retry messages delayed (longest delay)                               | 3,986 (4.0 s)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Permanent-failure breaker opened                                     | YES (sender log events: {"delivery.permanent_breaker_open":6}; first events: [{"reason":"batch_rate","permanent":6,"total":156,"batchRate":0.0385,"rollingRate":0.01,"errors":{"Apns410:Unregistered":3,"Fcm404:UNREGISTERED":3}},{"reason":"batch_rate","permanent":5,"total":121,"batchRate":0.0413,"rollingRate":0.011,"errors":{"Apns410:Unregistered":3,"Fcm404:UNREGISTERED":2}},{"reason":"batch_rate","permanent":5,"total":238,"batchRate":0.021,"rollingRate":0.009,"errors":{"Apns410:Unregistered":3,"Fcm404:UNREGISTERED":2}},{"reason":"batch_rate","permanent":5,"total":206,"batchRate":0.0243,"rollingRate":0.007,"errors":{"Apns410:Unregistered":3,"Fcm404:UNREGISTERED":2,"Apns500:InternalServerError":1}},{"reason":"batch_rate","permanent":5,"total":222,"batchRate":0.0225,"rollingRate":0.007,"errors":{"ApnsConnectionError: ERR_HTTP2_STREAM_ERROR":15,"Apns410:Unregistered":3,"Fcm404:UNREGISTERED":2}}]) |
+| FCM requests rate-limited by the quota bucket (429)                  | 0                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Peak heap / peak RSS                                                 | 2027.7 MB / 2791 MB                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ## Reading these numbers
 
@@ -61,67 +61,67 @@ Planner and shard workers ran again on the same signed alert: 75 shards in 8 ms,
 ## Sends per second, per 5 s window (successful pushes)
 
 | Window start | Successful pushes | per second | Retryable failures | Permanent failures |
-| ---: | ---: | ---: | ---: | ---: |
-| 0 s | 13,801 | 2,760 | 76 | 62 |
-| 5 s | 22,951 | 4,590 | 201 | 121 |
-| 10 s | 24,873 | 4,975 | 245 | 132 |
-| 15 s | 24,495 | 4,899 | 167 | 110 |
-| 20 s | 21,175 | 4,235 | 84 | 66 |
-| 25 s | 28,115 | 5,623 | 247 | 122 |
-| 30 s | 20,786 | 4,157 | 191 | 86 |
-| 35 s | 25,928 | 5,186 | 224 | 130 |
-| 40 s | 10,735 | 2,147 | 98 | 53 |
-| 45 s | 0 | 0 | 0 | 0 |
-| 50 s | 19,012 | 3,802 | 247 | 97 |
-| 55 s | 32,096 | 6,419 | 278 | 154 |
-| 60 s | 19,925 | 3,985 | 92 | 98 |
-| 65 s | 29,382 | 5,876 | 324 | 152 |
-| 70 s | 17,746 | 3,549 | 94 | 91 |
-| 75 s | 30,801 | 6,160 | 252 | 150 |
-| 80 s | 18,789 | 3,758 | 152 | 99 |
-| 85 s | 28,701 | 5,740 | 225 | 151 |
-| 90 s | 22,481 | 4,496 | 283 | 109 |
-| 95 s | 24,455 | 4,891 | 177 | 124 |
-| 100 s | 17,433 | 3,487 | 114 | 100 |
-| 105 s | 28,626 | 5,725 | 332 | 155 |
-| 110 s | 16,428 | 3,286 | 152 | 82 |
-| 115 s | 26,291 | 5,258 | 299 | 128 |
-| 120 s | 24,065 | 4,813 | 197 | 130 |
-| 125 s | 21,755 | 4,351 | 289 | 121 |
-| 130 s | 25,668 | 5,134 | 305 | 141 |
-| 135 s | 21,679 | 4,336 | 156 | 114 |
-| 140 s | 28,801 | 5,760 | 301 | 142 |
-| 145 s | 19,226 | 3,845 | 207 | 106 |
-| 150 s | 29,113 | 5,823 | 327 | 162 |
-| 155 s | 22,652 | 4,530 | 136 | 119 |
-| 160 s | 30,035 | 6,007 | 246 | 151 |
-| 165 s | 21,116 | 4,223 | 214 | 103 |
-| 170 s | 23,969 | 4,794 | 146 | 127 |
-| 175 s | 19,630 | 3,926 | 177 | 91 |
-| 180 s | 24,914 | 4,983 | 214 | 128 |
-| 185 s | 26,224 | 5,245 | 180 | 106 |
-| 190 s | 24,198 | 4,840 | 222 | 110 |
-| 195 s | 33,153 | 6,631 | 321 | 155 |
-| 200 s | 21,412 | 4,282 | 226 | 104 |
-| 205 s | 28,030 | 5,606 | 394 | 148 |
-| 210 s | 24,080 | 4,816 | 511 | 116 |
-| 215 s | 341 | 68 | 0 | 0 |
+| -----------: | ----------------: | ---------: | -----------------: | -----------------: |
+|          0 s |            13,801 |      2,760 |                 76 |                 62 |
+|          5 s |            22,951 |      4,590 |                201 |                121 |
+|         10 s |            24,873 |      4,975 |                245 |                132 |
+|         15 s |            24,495 |      4,899 |                167 |                110 |
+|         20 s |            21,175 |      4,235 |                 84 |                 66 |
+|         25 s |            28,115 |      5,623 |                247 |                122 |
+|         30 s |            20,786 |      4,157 |                191 |                 86 |
+|         35 s |            25,928 |      5,186 |                224 |                130 |
+|         40 s |            10,735 |      2,147 |                 98 |                 53 |
+|         45 s |                 0 |          0 |                  0 |                  0 |
+|         50 s |            19,012 |      3,802 |                247 |                 97 |
+|         55 s |            32,096 |      6,419 |                278 |                154 |
+|         60 s |            19,925 |      3,985 |                 92 |                 98 |
+|         65 s |            29,382 |      5,876 |                324 |                152 |
+|         70 s |            17,746 |      3,549 |                 94 |                 91 |
+|         75 s |            30,801 |      6,160 |                252 |                150 |
+|         80 s |            18,789 |      3,758 |                152 |                 99 |
+|         85 s |            28,701 |      5,740 |                225 |                151 |
+|         90 s |            22,481 |      4,496 |                283 |                109 |
+|         95 s |            24,455 |      4,891 |                177 |                124 |
+|        100 s |            17,433 |      3,487 |                114 |                100 |
+|        105 s |            28,626 |      5,725 |                332 |                155 |
+|        110 s |            16,428 |      3,286 |                152 |                 82 |
+|        115 s |            26,291 |      5,258 |                299 |                128 |
+|        120 s |            24,065 |      4,813 |                197 |                130 |
+|        125 s |            21,755 |      4,351 |                289 |                121 |
+|        130 s |            25,668 |      5,134 |                305 |                141 |
+|        135 s |            21,679 |      4,336 |                156 |                114 |
+|        140 s |            28,801 |      5,760 |                301 |                142 |
+|        145 s |            19,226 |      3,845 |                207 |                106 |
+|        150 s |            29,113 |      5,823 |                327 |                162 |
+|        155 s |            22,652 |      4,530 |                136 |                119 |
+|        160 s |            30,035 |      6,007 |                246 |                151 |
+|        165 s |            21,116 |      4,223 |                214 |                103 |
+|        170 s |            23,969 |      4,794 |                146 |                127 |
+|        175 s |            19,630 |      3,926 |                177 |                 91 |
+|        180 s |            24,914 |      4,983 |                214 |                128 |
+|        185 s |            26,224 |      5,245 |                180 |                106 |
+|        190 s |            24,198 |      4,840 |                222 |                110 |
+|        195 s |            33,153 |      6,631 |                321 |                155 |
+|        200 s |            21,412 |      4,282 |                226 |                104 |
+|        205 s |            28,030 |      5,606 |                394 |                148 |
+|        210 s |            24,080 |      4,816 |                511 |                116 |
+|        215 s |               341 |         68 |                  0 |                  0 |
 
 ## Check-in burst
 
 One v2 check-in per delivered device (995,086), tokens taken from this run's sends, through the API's stateless `POST /alerts/{id}/checkins` route with an in-memory check-in store (the device, place, alert and cell-index stores are traps that fail the run if touched), then every stored check-in as a stream INSERT through the real aggregator in batches of 1,000 against an in-memory totals table. Single JS thread, no network, so this is a code-path throughput, not an API Gateway figure.
 
-| Measure | Value |
-| --- | --- |
-| API check-ins | 995,086 in 23.2 s = **42,826/s** (200 OK: 995,086, errors: 0) |
-| API handler time p50 / p99 (200 in flight) | 3.19 ms / 15.96 ms |
-| Aggregator | 996 batches of 1,000 in 2.1 s = **473,340/s** (failed items: 0) |
-| Counter rows / marker rows written | 1,130 / 995,086 |
-| Per-cell totals sum | 995,086 |
-| Expected (devices in area - permanent failures - delivered without an ack) | 995,086 = 1,000,000 - 4,914 - 0 |
-| Check-in store total | 995,086 |
-| Per-cell mismatches (1,130 cells) | 0 |
-| Verdict | **PASS** |
+| Measure                                                                    | Value                                                           |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| API check-ins                                                              | 995,086 in 23.2 s = **42,826/s** (200 OK: 995,086, errors: 0)   |
+| API handler time p50 / p99 (200 in flight)                                 | 3.19 ms / 15.96 ms                                              |
+| Aggregator                                                                 | 996 batches of 1,000 in 2.1 s = **473,340/s** (failed items: 0) |
+| Counter rows / marker rows written                                         | 1,130 / 995,086                                                 |
+| Per-cell totals sum                                                        | 995,086                                                         |
+| Expected (devices in area - permanent failures - delivered without an ack) | 995,086 = 1,000,000 - 4,914 - 0                                 |
+| Check-in store total                                                       | 995,086                                                         |
+| Per-cell mismatches (1,130 cells)                                          | 0                                                               |
+| Verdict                                                                    | **PASS**                                                        |
 
 ## Results JSON
 
