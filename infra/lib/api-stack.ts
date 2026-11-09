@@ -17,6 +17,7 @@ import { CfnPlaceIndex } from 'aws-cdk-lib/aws-location';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { Queue, QueueEncryption } from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
+import { fcmProjectIds } from './fcm-projects.js';
 import { allow, dbEnv, grantDb, grantSecretRead, type DbRefs } from './grants.js';
 
 export interface ApiStackProps extends StackProps {
@@ -83,6 +84,7 @@ export class ApiStack extends Stack {
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
     const isProd = props.stage === 'prod';
+    const fcmProjects = fcmProjectIds(this);
 
     // Address search for saved places. SingleUse means results are not stored.
     const placeIndexName = `relay-${props.stage}-places`;
@@ -179,6 +181,7 @@ export class ApiStack extends Stack {
         LATEJOIN_QUEUE_URL: props.lateJoinQueue.url,
         ORIGIN_VERIFY_SECRET_ARN: props.originVerifySecretArn,
         REQUIRE_ORIGIN_HEADER: requireOrigin ? 'true' : 'false',
+        ...(fcmProjects.length > 0 ? { FCM_PROJECT_IDS: fcmProjects.join(',') } : {}),
       },
       ...concurrency(reserved.api),
     });

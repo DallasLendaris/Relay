@@ -102,3 +102,27 @@ export function validateFcmServiceAccount(raw: unknown): ServiceAccount {
     ...(typeof tokenUri === 'string' ? { token_uri: tokenUri } : {}),
   };
 }
+
+/**
+ * Validates the FCM secret: a JSON array of service accounts (one per Firebase project, in
+ * configuration order) or, for backward compatibility, a single service account object (one
+ * project). Every project_id must be unique. Problems name the position, never a value.
+ */
+export function validateFcmServiceAccounts(raw: unknown): ServiceAccount[] {
+  if (!Array.isArray(raw)) return [validateFcmServiceAccount(raw)];
+  if (raw.length === 0) throw new Error('FCM service account secret is an empty array');
+  const accounts = raw.map((item: unknown, i) => {
+    try {
+      return validateFcmServiceAccount(item);
+    } catch (err) {
+      throw new Error(
+        `FCM service account #${i}: ${err instanceof Error ? err.message : 'invalid'}`,
+      );
+    }
+  });
+  const ids = accounts.map((a) => a.project_id);
+  if (new Set(ids).size !== ids.length) {
+    throw new Error('FCM service account secret is invalid: duplicate project_id');
+  }
+  return accounts;
+}

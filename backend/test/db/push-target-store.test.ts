@@ -77,6 +77,33 @@ function suite(name: string, make: () => Promise<{ store: DeviceStore; db?: Pgli
       expect(await store.get(OTHER)).toMatchObject({ expoPushToken: null, pushToken: null });
     });
 
+    it('keeps the Android Firebase project, drops it for other targets, and clears it with the token', async () => {
+      const token = 'x'.repeat(120);
+      await store.assignPushTarget(
+        DEVICE_ID,
+        { platform: 'android', token, project: 'relay-b' },
+        'en',
+      );
+      expect(await store.get(DEVICE_ID)).toMatchObject({ pushProject: 'relay-b' });
+      // A move takes the token AND its project to the new device; the old one loses both.
+      await store.assignPushTarget(OTHER, { platform: 'android', token, project: 'relay-b' }, 'en');
+      expect(await store.get(DEVICE_ID)).toMatchObject({ pushToken: null, pushProject: null });
+      expect(await store.get(OTHER)).toMatchObject({ pushProject: 'relay-b' });
+      // No project means the default project: nothing stored.
+      await store.assignPushTarget(OTHER, { platform: 'android', token }, 'en');
+      expect((await store.get(OTHER))?.pushProject ?? null).toBeNull();
+      await store.assignPushTarget(OTHER, { platform: 'android', token, project: 'relay-c' }, 'en');
+      await store.assignPushTarget(
+        OTHER,
+        { platform: 'ios', token: APNS, project: 'relay-c' },
+        'en',
+      );
+      expect((await store.get(OTHER))?.pushProject ?? null).toBeNull();
+      await store.assignPushTarget(OTHER, { platform: 'android', token, project: 'relay-c' }, 'en');
+      await store.clearPushToken(token);
+      expect(await store.get(OTHER)).toMatchObject({ pushToken: null, pushProject: null });
+    });
+
     it('rejects an unknown device', async () => {
       await expect(
         store.assignPushTarget(

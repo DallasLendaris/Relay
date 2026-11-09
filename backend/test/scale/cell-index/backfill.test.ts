@@ -112,6 +112,20 @@ describe('backfillCellIndex on PGlite', () => {
     expect(after.filter((e) => e.target?.platform === 'android')).toHaveLength(2);
   });
 
+  it('carries the Android Firebase project from the device row into the index', async () => {
+    await seed();
+    await devices.assignPushTarget(
+      id('3', 3),
+      { platform: 'android', token: 'f'.repeat(120), project: 'relay-b' },
+      'en',
+    );
+    const index = new MemoryCellIndex();
+    await backfillCellIndex({ db, index });
+    const android = (await dump(index)).filter((e) => e.target?.platform === 'android');
+    expect(android.length).toBeGreaterThan(0);
+    expect(android.every((e) => e.target?.project === 'relay-b')).toBe(true);
+  });
+
   it('writes nothing in a dry run but reports the same counts', async () => {
     await seed();
     const index = new MemoryCellIndex();

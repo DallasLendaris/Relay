@@ -20,6 +20,7 @@ describe('runMigrations', () => {
       '0009_cell_index_outbox.sql',
       '0010_minimize_places_tombstones.sql',
       '0011_roles.sql',
+      '0012_push_project.sql',
     ]);
     const rows = await exec.query<{ name: string }>(
       'SELECT name FROM schema_migrations ORDER BY name',

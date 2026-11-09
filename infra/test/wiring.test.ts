@@ -278,7 +278,8 @@ describe('ApiStack', () => {
 
   checkEnvContract('api', envOf(t, 'PLACE_INDEX_NAME'), envNamesRead('api/handler.ts'), {
     // Optional: unset means the default (30 days); counsel decides the real period.
-    optional: ['CHECKIN_RETENTION_DAYS'],
+    // FCM_PROJECT_IDS: set only when the fcmProjectIds context names more than the default project.
+    optional: ['CHECKIN_RETENTION_DAYS', 'FCM_PROJECT_IDS'],
     contract: [
       'DB_CLUSTER_ARN',
       'DB_SECRET_ARN',
@@ -802,7 +803,7 @@ describe('fan-out and sender env contracts', () => {
     senderEnv(all.sender),
     envNamesRead('scale/sender/main.ts'),
     {
-      optional: ['SENDER_CONCURRENCY'],
+      optional: ['SENDER_CONCURRENCY', 'FCM_PROJECT_IDS', 'FCM_PROJECT_RATE_PER_SEC'],
     },
   );
 });

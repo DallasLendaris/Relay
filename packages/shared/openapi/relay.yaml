@@ -350,6 +350,13 @@ components:
         credential:
           type: string
           description: Secret bearer credential. Store in secure storage; shown only once.
+        fcmProject:
+          type: string
+          description: |
+            Android only. The Firebase project this device's app must register its FCM token
+            with (initialize a secondary FirebaseApp for it when it is not the default project).
+            Send it back as fcmProject with the token in PUT /devices/me/push-token. Absent when
+            the server uses a single Firebase project.
 
     PushTokenRequest:
       oneOf:
@@ -379,6 +386,12 @@ components:
             ios: APNs device token, 64 to 200 hex characters.
             android: FCM registration token, 100 to 4096 characters of A-Z a-z 0-9 _ : -.
             expo: ExponentPushToken[...].
+        fcmProject:
+          type: string
+          description: |
+            Android only. The Firebase project the FCM token was registered with, as returned
+            by POST /devices. Must be one of the server's configured projects, otherwise 400.
+            Omit it when the app registered with the default (first) project.
         language:
           type: string
           enum: [en, es]

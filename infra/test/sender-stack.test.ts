@@ -132,6 +132,26 @@ describe('SenderStack service', () => {
     expect(env['URGENT_QUEUE_URL']).toContain('send-urgent');
   });
 
+  it('spreads Android over the Firebase projects named by the fcmProjectIds context (PERF-1)', () => {
+    const envOf = (t: Template) => {
+      const [td] = Object.values(t.findResources('AWS::ECS::TaskDefinition')) as any[];
+      return Object.fromEntries(
+        td.Properties.ContainerDefinitions[0].Environment.map((e: any) => [e.Name, e.Value]),
+      );
+    };
+    // Default: one project, nothing to configure, the secret stays one placeholder object.
+    expect(envOf(dev)).not.toHaveProperty('FCM_PROJECT_IDS');
+    const three = synth('dev', { fcmProjectIds: 'relay-a, relay-b,relay-c' });
+    expect(envOf(three)['FCM_PROJECT_IDS']).toBe('relay-a,relay-b,relay-c');
+    const secret = Object.values(three.findResources('AWS::SecretsManager::Secret')).find(
+      (r: any) => JSON.stringify(r).includes('fcm-service-account'),
+    ) as any;
+    const placeholder = JSON.parse(secret.Properties.SecretString);
+    expect(placeholder.map((a: any) => a.project_id)).toEqual(['relay-a', 'relay-b', 'relay-c']);
+    expect(() => synth('dev', { fcmProjectIds: 'relay-a,relay-a' })).toThrow(/duplicate/);
+    expect(() => synth('dev', { fcmProjectIds: 'Bad_Id' })).toThrow(/invalid project id/);
+  });
+
   it('keeps logs for one month', () => {
     dev.hasResourceProperties('AWS::Logs::LogGroup', { RetentionInDays: 30 });
   });

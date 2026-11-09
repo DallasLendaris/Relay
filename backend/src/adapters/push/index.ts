@@ -10,5 +10,14 @@ export { parseRetryAfter } from './retry-after.js';
 export {
   validateApnsSecret,
   validateFcmServiceAccount,
+  validateFcmServiceAccounts,
   type ApnsSecret,
 } from './validate-secrets.js';
+export {
+  FcmProjectSender,
+  DEFAULT_FCM_PROJECT_RATE,
+  assignFcmProject,
+  parseFcmProjectIds,
+  type FcmProjectSenderOptions,
+} from './fcm-projects.js';
+export { TokenBucket } from './token-bucket.js';

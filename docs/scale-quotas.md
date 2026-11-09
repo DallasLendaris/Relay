@@ -151,19 +151,33 @@ Source: https://developer.apple.com/library/archive/documentation/NetworkingInte
 
 ## Firebase Cloud Messaging (HTTP v1)
 
-| Limit                                       | Default                                                         | Adjustable                             | Request                                                  | Why                                                                         |
-| ------------------------------------------- | --------------------------------------------------------------- | -------------------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------- |
-| Downstream messages per minute, per project | 600,000 (about 10,000/s)                                        | Yes, +25% standard; larger via support | Multiple projects, or a support request for about 500k/s | 1M in 60 s needs 16.7k/s; 10M in 120 s needs 83k/s (about 8.3x the default) |
-| Android per device                          | 240 messages per minute; 5,000 per hour                         | No                                     | n/a                                                      | Avoid repeat sends                                                          |
-| Collapsible messages per device             | Burst 20, then 1 per 3 min                                      | No                                     | n/a                                                      | Use a collapse key sparingly                                                |
-| Payload                                     | Unverified (commonly cited 4 KB)                                | Unverified                             | n/a                                                      | Confirm                                                                     |
-| Ramp guidance                               | Ramp from 0 to max over 60 s; avoid :00, :15, :30, :45 +/-2 min | n/a                                    | Follow it                                                | Spreads sends                                                               |
+| Limit                                       | Default                                                         | Adjustable                             | Request                                                                     | Why                                                                         |
+| ------------------------------------------- | --------------------------------------------------------------- | -------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Downstream messages per minute, per project | 600,000 (about 10,000/s)                                        | Yes, +25% standard; larger via support | Multiple projects (built, see below), or a support request for about 500k/s | 1M in 60 s needs 16.7k/s; 10M in 120 s needs 83k/s (about 8.3x the default) |
+| Android per device                          | 240 messages per minute; 5,000 per hour                         | No                                     | n/a                                                                         | Avoid repeat sends                                                          |
+| Collapsible messages per device             | Burst 20, then 1 per 3 min                                      | No                                     | n/a                                                                         | Use a collapse key sparingly                                                |
+| Payload                                     | Unverified (commonly cited 4 KB)                                | Unverified                             | n/a                                                                         | Confirm                                                                     |
+| Ramp guidance                               | Ramp from 0 to max over 60 s; avoid :00, :15, :30, :45 +/-2 min | n/a                                    | Follow it                                                                   | Spreads sends                                                               |
 
 Sources: https://firebase.google.com/docs/cloud-messaging/throttling-and-quotas ; https://firebase.google.com/docs/cloud-messaging/scale-fcm
 
+### Spreading Android over several Firebase projects (PERF-1)
+
+A single project sends at most about 600,000 per minute, so 10M statewide takes 7 to 8 minutes. Relay spreads Android devices over N Firebase projects (`-c fcmProjectIds=...`, `FCM_PROJECT_IDS`) and limits each project with its own token bucket (`FCM_PROJECT_RATE_PER_SEC`, default 9,000 per second, 540,000 per minute, under the 600,000 default). A project that is at its rate makes only its own messages wait.
+
+| Android recipients | Projects at the default quota and rate | Time to last Android push |
+| ------------------ | -------------------------------------- | ------------------------- |
+| 1M                 | 1                                      | about 1.9 min             |
+| 1M                 | 2                                      | about 56 s                |
+| 10M                | 1                                      | about 18.5 min            |
+| 10M                | 8                                      | about 2.3 min             |
+| 10M                | 16                                     | about 69 s                |
+
+(Rows are recipients divided by N x 9,000 per second, with an even split; the hash split is within a few percent of even. iOS goes through APNs in parallel and is not limited by this.) A token only works with the Firebase project the app registered with, so the server assigns the project (stable hash of the device id), returns it as `fcmProject` from `POST /devices`, and the app must register with it; see `infra/README.md` (Sender stack) for the app's secondary `FirebaseApp` requirement. Only append project ids. Each project's quota can still be raised (support request) and the bucket rate raised with it.
+
 ## Top risks
 
-1. **FCM project quota.** Default 600k messages per minute per project (about 10k/s) is below the 16.7k/s needed for 1M in 60 s, and statewide needs about 83k/s. Start the increase early, or split sends across projects.
+1. **FCM project quota.** Default 600k messages per minute per project (about 10k/s) is below the 16.7k/s needed for 1M in 60 s, and statewide needs about 83k/s. Split Android sends across Firebase projects (built: see "Spreading Android over several Firebase projects") and start the quota increases early.
 2. **Fargate vCPU and launch rate.** Default 6 vCPUs and 500 tasks per minute per service. Pre-scale senders with enough vCPUs before the send.
 3. **API Gateway and Lambda concurrency.** API Gateway defaults to 10k RPS with a fixed 5k burst. Lambda defaults to 1,000 concurrent executions and ramps 1,000 environments per function per 10 s.
 4. **DynamoDB on-demand table limit and warm-up.** 40k WRU per table by default. New tables start at 4k WRU, and the previous-peak rule throttles fast growth. Pre-warm and request about 120k.

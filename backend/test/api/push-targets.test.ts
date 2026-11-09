@@ -327,3 +327,91 @@ describe('cell index write-through', () => {
     expect((await devices.get((await register()).deviceId))?.language).toBe('en');
   });
 });
+
+describe('FCM projects (PERF-1)', () => {
+  const PROJECTS = ['relay-a', 'relay-b', 'relay-c'];
+
+  function buildWithProjects(ids: string[] | undefined) {
+    index = new MemoryCellIndex();
+    route = createApi({
+      devices,
+      places,
+      alerts: { get: async () => null } as unknown as AlertStore,
+      geocoder: { geocode: async () => null },
+      checkins: new MemoryCheckInStore(),
+      cellIndex: index,
+      tokenKeys: new Map(),
+      clock: { now: () => new Date('2026-11-09T12:00:00Z') },
+      newId: randomUUID,
+      ...(ids ? { fcmProjectIds: ids } : {}),
+    });
+  }
+
+  const put = (credential: string, body: object) =>
+    call('PUT', '/devices/me/push-token', { language: 'en', ...body }, credential);
+
+  it('POST /devices returns an assigned project from the configured list', async () => {
+    buildWithProjects(PROJECTS);
+    const seen = new Set<string>();
+    for (let i = 0; i < 40; i++) {
+      const body = (await call('POST', '/devices', {})).body as {
+        deviceId: string;
+        fcmProject?: string;
+      };
+      expect(PROJECTS).toContain(body.fcmProject);
+      seen.add(body.fcmProject ?? '');
+    }
+    expect(seen.size).toBeGreaterThan(1);
+  });
+
+  it('omits fcmProject when no projects are configured (single project)', async () => {
+    buildWithProjects(undefined);
+    expect((await call('POST', '/devices', {})).body).not.toHaveProperty('fcmProject');
+  });
+
+  it('stores a configured fcmProject with the android token and puts it in the cell index', async () => {
+    buildWithProjects(PROJECTS);
+    const { deviceId, credential } = await register();
+    const place = await addPlace(credential);
+    const res = await put(credential, { platform: 'android', token: FCM, fcmProject: 'relay-b' });
+    expect(res.status).toBe(204);
+    expect(await devices.get(deviceId)).toMatchObject({
+      pushPlatform: 'android',
+      pushToken: FCM,
+      pushProject: 'relay-b',
+    });
+    expect((await cell(place.h3Cell))[0]?.target).toEqual({
+      platform: 'android',
+      token: FCM,
+      project: 'relay-b',
+    });
+  });
+
+  it('rejects an fcmProject that is not configured, or is sent for another platform, with 400', async () => {
+    buildWithProjects(PROJECTS);
+    const { credential } = await register();
+    const bad = await put(credential, { platform: 'android', token: FCM, fcmProject: 'other' });
+    expect(bad.status).toBe(400);
+    expect(bad.body?.['code']).toBe('invalid_fcm_project');
+    expect((await put(credential, { platform: 'android', token: FCM, fcmProject: 7 })).status).toBe(
+      400,
+    );
+    expect(
+      (await put(credential, { platform: 'ios', token: APNS, fcmProject: 'relay-a' })).status,
+    ).toBe(400);
+    // With no projects configured any value is invalid.
+    buildWithProjects(undefined);
+    expect(
+      (await put(credential, { platform: 'android', token: FCM, fcmProject: 'relay-a' })).status,
+    ).toBe(400);
+  });
+
+  it('is backward compatible: no fcmProject stores no project', async () => {
+    buildWithProjects(PROJECTS);
+    const { deviceId, credential } = await register();
+    const place = await addPlace(credential);
+    expect((await put(credential, { platform: 'android', token: FCM })).status).toBe(204);
+    expect((await devices.get(deviceId))?.pushProject ?? null).toBeNull();
+    expect((await cell(place.h3Cell))[0]?.target).toEqual({ platform: 'android', token: FCM });
+  });
+});

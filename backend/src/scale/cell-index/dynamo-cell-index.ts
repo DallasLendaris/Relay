@@ -8,7 +8,14 @@ import {
   type DynamoDBDocumentClient,
 } from '@aws-sdk/lib-dynamodb';
 import type { CellIndex, CellIndexEntry, CellIndexPage, PushTarget } from '../contracts.js';
-import { DEFAULT_PAGE_LIMIT, decodeCursor, encodeCursor, mapLimit, sortKey } from './util.js';
+import {
+  DEFAULT_PAGE_LIMIT,
+  decodeCursor,
+  encodeCursor,
+  mapLimit,
+  plainTarget,
+  sortKey,
+} from './util.js';
 
 /** DynamoDB BatchWriteItem accepts at most 25 requests. */
 const BATCH_SIZE = 25;
@@ -38,7 +45,7 @@ const realSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r
 
 /**
  * CellIndex on DynamoDB. Table: partition key `h3Cell` (S), sort key `sk` (S) =
- * `${deviceId}#${placeId}`. Attributes: deviceId, placeId, target ({platform, token} or null),
+ * `${deviceId}#${placeId}`. Attributes: deviceId, placeId, target ({platform, token, project?} or null),
  * language, deviceCells (list of strings, optional on old entries), updatedAt (ISO).
  */
 export class DynamoCellIndex implements CellIndex {
@@ -65,7 +72,7 @@ export class DynamoCellIndex implements CellIndex {
         sk,
         deviceId: e.deviceId,
         placeId: e.placeId,
-        target: e.target ? { platform: e.target.platform, token: e.target.token } : null,
+        target: e.target ? plainTarget(e.target) : null,
         language: e.language,
         ...(e.deviceCells ? { deviceCells: [...e.deviceCells] } : {}),
         updatedAt,
@@ -110,9 +117,7 @@ export class DynamoCellIndex implements CellIndex {
     patch: { target: PushTarget | null; language: 'en' | 'es' },
   ): Promise<void> {
     const updatedAt = this.now().toISOString();
-    const target = patch.target
-      ? { platform: patch.target.platform, token: patch.target.token }
-      : null;
+    const target = patch.target ? plainTarget(patch.target) : null;
     await mapLimit(cells, UPDATE_CONCURRENCY, async ({ h3Cell, placeId }) => {
       try {
         await this.doc.send(
@@ -173,7 +178,7 @@ export class DynamoCellIndex implements CellIndex {
         h3Cell: String(item['h3Cell']),
         deviceId: String(item['deviceId']),
         placeId: String(item['placeId']),
-        target: target ? { platform: target.platform, token: target.token } : null,
+        target: target ? plainTarget(target) : null,
         language: item['language'] === 'es' ? 'es' : 'en',
         ...deviceCellsOf(item['deviceCells']),
       };

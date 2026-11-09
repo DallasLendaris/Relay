@@ -8,6 +8,7 @@ import { PushTokenInUseError } from '../scale/latejoin/push-target-rules.js';
 import type { IndexRepairMessage, IndexRepairQueue } from '../scale/cell-index/repair-queue.js';
 import { syncDeviceCells, type DeviceTruth } from '../scale/cell-index/sync-device-cells.js';
 import { targetOf } from '../scale/cell-index/util.js';
+import { assignFcmProject } from '../adapters/push/fcm-projects.js';
 import {
   createDeviceCredential,
   verifyCheckInToken,
@@ -50,6 +51,12 @@ export interface CheckInEraser {
 }
 
 export interface ApiDeps {
+  /**
+   * The Firebase projects Android devices are spread over (FCM_PROJECT_IDS, in order; only ever
+   * append). POST /devices returns each device's assigned project, and PUT /devices/me/push-token
+   * accepts only these as `fcmProject`. Empty or absent: a single project, no assignment.
+   */
+  fcmProjectIds?: string[];
   devices: DeviceStore & DeviceErasure;
   places: PlaceStore & PlaceErasure;
   alerts: AlertStore;
@@ -150,7 +157,10 @@ function toPlaceBody(p: Place): PlaceBody {
 }
 
 /** Reads the old {expoPushToken} or the new {platform, token} body. Throws 400 when invalid. */
-function parsePushTarget(body: Record<string, unknown>): PushTarget {
+function parsePushTarget(
+  body: Record<string, unknown>,
+  fcmProjectIds: readonly string[],
+): PushTarget {
   const legacy = body['expoPushToken'] !== undefined;
   const native = body['platform'] !== undefined || body['token'] !== undefined;
   if (legacy === native) {
@@ -170,6 +180,16 @@ function parsePushTarget(body: Record<string, unknown>): PushTarget {
   }
   const platform = body['platform'];
   const token = body['token'];
+  // The Firebase project the app registered this FCM token with (see adapters/push/fcm-projects.ts).
+  const project = body['fcmProject'];
+  if (project !== undefined) {
+    if (platform !== 'android') {
+      throw new HttpError(400, 'invalid_request', 'fcmProject is only for platform "android"');
+    }
+    if (typeof project !== 'string' || !fcmProjectIds.includes(project)) {
+      throw new HttpError(400, 'invalid_fcm_project', 'fcmProject is not a configured project');
+    }
+  }
   if (platform !== 'ios' && platform !== 'android' && platform !== 'expo') {
     throw new HttpError(400, 'invalid_request', 'platform must be "ios", "android" or "expo"');
   }
@@ -180,7 +200,7 @@ function parsePushTarget(body: Record<string, unknown>): PushTarget {
   }
   if (platform === 'android') {
     if (!FCM_TOKEN.test(token)) throw bad('android token must be 100 to 4096 token characters');
-    return { platform, token };
+    return { platform, token, ...(project !== undefined ? { project } : {}) };
   }
   if (!PUSH_TOKEN.test(token)) throw bad('expo token must look like ExponentPushToken[...]');
   return { platform, token };
@@ -402,7 +422,10 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       language: 'en',
       createdAt: deps.clock.now().toISOString(),
     });
-    return json(201, { deviceId: id, credential });
+    // The Firebase project this device's app must register its FCM token with (Android). Omitted
+    // when the server runs a single project.
+    const fcmProject = assignFcmProject(id, deps.fcmProjectIds ?? []);
+    return json(201, { deviceId: id, credential, ...(fcmProject ? { fcmProject } : {}) });
   });
 
   router.add('PUT', '/devices/me/push-token', async (req) => {
@@ -412,7 +435,7 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     if (language !== 'en' && language !== 'es') {
       throw new HttpError(400, 'invalid_request', 'language must be "en" or "es"');
     }
-    const target = parsePushTarget(body);
+    const target = parsePushTarget(body, deps.fcmProjectIds ?? []);
     // Moves the target here if another (reinstalled) device still holds it, within the move rules
     // (scale/latejoin/push-target-rules.ts): otherwise one phone could mint unlimited identities.
     let displaced: string[];

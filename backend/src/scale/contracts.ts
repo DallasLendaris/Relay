@@ -26,6 +26,12 @@ export interface PushTarget {
   platform: PushPlatform;
   /** APNs device token (hex), FCM registration token, or ExponentPushToken[...]. */
   token: string;
+  /**
+   * Android only: id of the Firebase project the FCM token was registered with (see
+   * adapters/push/fcm-projects.ts). A token only works with its own project, so the sender
+   * routes by it. Absent means the first (default) configured project.
+   */
+  project?: string;
 }
 
 // ---------- Cell index ----------

@@ -9,6 +9,7 @@ import { LocationGeocoder } from '../adapters/aws/location-geocoder.js';
 import { PostgresAlertStore } from '../adapters/postgres/alert-store.js';
 import { PostgresDeviceStore } from '../adapters/postgres/device-store.js';
 import { PostgresPlaceStore } from '../adapters/postgres/place-store.js';
+import { parseFcmProjectIds } from '../adapters/push/fcm-projects.js';
 import { DynamoCellIndex } from '../scale/cell-index/dynamo-cell-index.js';
 import { SqsIndexRepairQueue } from '../scale/cell-index/repair-queue.js';
 import { SqsLateJoinQueue, type LateJoinQueue } from '../scale/latejoin/intent.js';
@@ -31,6 +32,7 @@ export type StoreDeps = Pick<
   | 'repairQueue'
   | 'outbox'
   | 'checkInRetentionDays'
+  | 'fcmProjectIds'
 > & {
   /** When set, requests without CloudFront's secret header are refused (REQUIRE_ORIGIN_HEADER). */
   originGuard?: OriginGuard;
@@ -203,6 +205,7 @@ export const awsStores: StoreFactory = () => {
       retentionDays,
     ),
     ...(retentionDays !== undefined ? { checkInRetentionDays: retentionDays } : {}),
+    fcmProjectIds: parseFcmProjectIds(env['FCM_PROJECT_IDS']),
     cellIndex: new DynamoCellIndex(
       DynamoDBDocumentClient.from(new DynamoDBClient({})),
       cellIndexTable,

@@ -281,7 +281,7 @@ describe('scripts/db-roles.ts', () => {
 
   it('splits dollar-quoted blocks whole (the migration relies on it)', () => {
     const parts = splitSql(readFileSync(MIGRATIONS + '0011_roles.sql', 'utf8'));
-    expect(parts.filter((s) => s.startsWith('DO $$'))).toHaveLength(2);
+    expect(parts.filter((s) => s.startsWith('DO $$'))).toHaveLength(3);
     expect(parts.every((s) => !s.endsWith(';'))).toBe(true);
   });
 });
