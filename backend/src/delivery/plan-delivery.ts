@@ -1,7 +1,8 @@
 import type { Alert } from '@relay/shared';
 import type { Clock, DeliveryJob, DeliveryQueue, DeviceStore, PlaceStore } from '../ports.js';
 import { createCheckInToken, type TokenKey } from '../tokens/index.js';
-import { refusalFor, type Refusal } from './eligibility.js';
+import { alertEndTime, refusalFor, type Refusal } from './eligibility.js';
+import { PUSH_POLICY } from './policy.js';
 import type { Logger } from './types.js';
 
 export interface PlanDeps {
@@ -19,7 +20,7 @@ export interface PlanDeps {
 }
 
 export interface PlanResult {
-  refused?: Refusal | 'paused';
+  refused?: Refusal | 'paused' | 'informational';
   /** Jobs put on the queue. */
   sent: number;
   matchedPlaces: number;
@@ -51,6 +52,11 @@ export async function planDelivery(alert: Alert, deps: PlanDeps): Promise<PlanRe
     deps.logger.error('refusing to plan alert', { alertId: alert.id, reason: refusal });
     return { ...result, refused: refusal };
   }
+  // Statements are informational: no push. The alert still shows in the app.
+  if (!PUSH_POLICY[alert.relaySeverity].push) {
+    deps.logger.info('not pushing informational alert', { alertId: alert.id });
+    return { ...result, refused: 'informational' };
+  }
   if (await deps.isDeliveryPaused()) {
     deps.logger.warn('delivery paused', { alertId: alert.id });
     return { ...result, refused: 'paused' };
@@ -70,7 +76,8 @@ export async function planDelivery(alert: Alert, deps: PlanDeps): Promise<PlanRe
   result.matchedPlaces = placeIds.size;
   result.devices = deviceIds.size;
 
-  const expires = new Date(alert.expires);
+  // The check-in token lives as long as the alert does (later of expires and ends).
+  const tokenExpiry = alertEndTime(alert);
   const jobs: DeliveryJob[] = [];
   const ids = [...deviceIds];
   for (let i = 0; i < ids.length; i += DEVICE_CONCURRENCY) {
@@ -87,7 +94,7 @@ export async function planDelivery(alert: Alert, deps: PlanDeps): Promise<PlanRe
         expoPushToken: device.expoPushToken,
         language: device.language,
         checkInToken: createCheckInToken(
-          { alertId: alert.id, deviceId: device.id, expiresAt: expires },
+          { alertId: alert.id, deviceId: device.id, expiresAt: tokenExpiry },
           deps.tokenKey,
         ),
         expiresAt: alert.expires,

@@ -58,20 +58,33 @@ export class PostgresAlertStore implements AlertStore {
   constructor(private readonly db: SqlExecutor) {}
 
   async get(id: string): Promise<Alert | null> {
-    const rows = await this.db.query<RecordRow>('SELECT record FROM alerts WHERE id = $1::uuid', [
-      id,
-    ]);
-    return rows[0] ? this.withCells(parseJson<Alert>(rows[0].record)) : null;
+    return this.readConsistently('SELECT record FROM alerts WHERE id = $1::uuid', [id]);
   }
 
   async findBySourceId(sourceId: string): Promise<Alert | null> {
-    const rows = await this.db.query<RecordRow>(
+    return this.readConsistently(
       `SELECT a.record FROM alert_source_ids s
          JOIN alerts a ON a.id = s.alert_id
         WHERE s.source_id = $1`,
       [sourceId],
     );
-    return rows[0] ? this.withCells(parseJson<Alert>(rows[0].record)) : null;
+  }
+
+  /**
+   * Reads one alert's record and its cells inside one transaction. Without it, an update
+   * landing between the two reads would mix the old record with new cells (or the reverse),
+   * and the alert signature would not match. REPEATABLE READ gives every statement in the
+   * transaction the same snapshot of the database, so both reads see the same version.
+   * (One SQL statement would also work, but a big alert's cells can exceed the Data API's
+   * 1 MB response limit, so the cells are still read in pages.)
+   */
+  private async readConsistently(recordSql: string, params: unknown[]): Promise<Alert | null> {
+    return this.db.transaction(async (tx) => {
+      // Must be the first statement of the transaction.
+      await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ', []);
+      const rows = await tx.query<RecordRow>(recordSql, params);
+      return rows[0] ? this.withCells(tx, parseJson<Alert>(rows[0].record)) : null;
+    });
   }
 
   async save(alert: Alert): Promise<void> {
@@ -137,18 +150,18 @@ export class PostgresAlertStore implements AlertStore {
       );
       for (const row of rows) {
         const alert = parseJson<Alert>(row.record);
-        if (!found.has(alert.id)) found.set(alert.id, await this.withCells(alert));
+        if (!found.has(alert.id)) found.set(alert.id, await this.withCells(this.db, alert));
       }
     }
     return [...found.values()];
   }
 
   /** Put the alert's cells back into the record, reading them in pages (keyset on h3_cell). */
-  private async withCells(alert: Alert): Promise<Alert> {
+  private async withCells(db: SqlExecutor, alert: Alert): Promise<Alert> {
     const h3Cells: string[] = [];
     let after = '';
     for (;;) {
-      const rows = await this.db.query<{ h3_cell: string }>(
+      const rows = await db.query<{ h3_cell: string }>(
         `SELECT h3_cell FROM alert_cells
           WHERE alert_id = $1::uuid AND h3_cell > $2 ORDER BY h3_cell LIMIT $3::int`,
         [alert.id, after, READ_CELL_PAGE],

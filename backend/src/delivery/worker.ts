@@ -2,11 +2,22 @@ import type { Alert } from '@relay/shared';
 import type { SQSBatchResponse, SQSEvent } from 'aws-lambda';
 import type { AlertStore, Clock, DeliveryJob, IdempotencyStore, PushSender } from '../ports.js';
 import { claimExpiry, deliveryKey, refusalFor } from './eligibility.js';
+import { PUSH_POLICY } from './policy.js';
+import { redactPushTokens } from './redact.js';
 import { sendJobs } from './send-jobs.js';
 import type { Logger } from './types.js';
 
 /** Errors that will never succeed on retry. Keep the claim and don't make SQS retry these. */
 const PERMANENT = new Set(['DeviceNotRegistered', 'InvalidCredentials', 'MessageTooBig']);
+
+/**
+ * How long a claim holds before another attempt may take over. Well above the Lambda
+ * timeout plus the Expo timeout, so a live attempt is never doubled, yet short enough that
+ * a crashed one is retried promptly.
+ */
+export const LEASE_MS = 2 * 60 * 1000;
+/** Wait before re-reading an alert whose signature failed (an update may have just committed). */
+const REREAD_DELAY_MS = 200;
 
 export interface WorkerDeps {
   sender: PushSender;
@@ -20,17 +31,24 @@ export interface WorkerDeps {
   onDeadToken(token: string): Promise<void>;
   clock: Clock;
   logger: Logger;
+  /** Injectable so tests don't wait. */
+  sleep?: (ms: number) => Promise<void>;
 }
+
+type Loaded = Alert | 'missing' | 'refused' | 'error';
 
 /**
  * Lambda core for the delivery queue. Returns batchItemFailures so SQS retries
  * only the records that failed (enable ReportBatchItemFailures on the event source).
  *
- * Per job: claim the dedupe key, send, and on a retryable failure release the claim and
- * fail the record, so the retry can send. Dedupe lives here (not in the planner) so a
- * failed enqueue or a timeout can never silently suppress a push.
+ * Per job: claim the dedupe key with a lease, send, then mark it sent. A retryable failure
+ * releases the claim and fails the record. If the Lambda dies after claiming, the lease
+ * runs out and the SQS redelivery claims again, so a push is never silently dropped.
+ * Dedupe lives here (not in the planner) so a failed enqueue or a timeout can never
+ * suppress a push.
  */
 export async function deliveryWorker(event: SQSEvent, deps: WorkerDeps): Promise<SQSBatchResponse> {
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const failAll = (): SQSBatchResponse => ({
     batchItemFailures: event.Records.map((r) => ({ itemIdentifier: r.messageId })),
   });
@@ -53,29 +71,64 @@ export async function deliveryWorker(event: SQSEvent, deps: WorkerDeps): Promise
 
   // Re-read each alert from the store and re-check it: a row edited after planning is never pushed.
   const now = deps.clock.now();
-  const loaded = new Map<string, Alert | 'missing' | 'refused'>();
+  const loaded = new Map<string, Loaded>();
   for (const id of new Set(parsed.map((p) => p.job.alertId))) {
-    const alert = await deps.alerts.get(id);
-    const refusal = alert ? refusalFor(alert, now, deps.verifyAlert) : null;
-    if (refusal) deps.logger.error('refusing to send alert', { alertId: id, reason: refusal });
-    loaded.set(id, !alert ? 'missing' : refusal ? 'refused' : alert);
+    loaded.set(id, await loadAlert(id));
   }
-  const verified = new Map<string, Alert>();
-  for (const [id, a] of loaded) if (typeof a !== 'string') verified.set(id, a);
 
-  const toSend: Array<{ messageId: string; job: DeliveryJob; key: string }> = [];
+  async function loadAlert(id: string): Promise<Loaded> {
+    try {
+      let alert = await deps.alerts.get(id);
+      let refusal = alert ? refusalFor(alert, now, deps.verifyAlert) : null;
+      if (alert && refusal === 'unsigned') {
+        // Torn read: an update may have committed between our reads. Look once more.
+        await sleep(REREAD_DELAY_MS);
+        alert = await deps.alerts.get(id);
+        refusal = alert ? refusalFor(alert, now, deps.verifyAlert) : null;
+      }
+      if (refusal) deps.logger.error('refusing to send alert', { alertId: id, reason: refusal });
+      return !alert ? 'missing' : refusal ? 'refused' : alert;
+    } catch (err) {
+      // A DB error fails only this alert's records, not the whole batch.
+      deps.logger.error('reading alert failed', {
+        alertId: id,
+        error: redactPushTokens(String(err)),
+      });
+      return 'error';
+    }
+  }
+
+  const toSend: Array<{ messageId: string; job: DeliveryJob; key: string; alert: Alert }> = [];
   for (const { messageId, job } of parsed) {
-    const alert = verified.get(job.alertId);
-    if (!alert) {
-      // A refused alert is dropped for good (acknowledged). A missing one may be read lag: retry.
-      if (loaded.get(job.alertId) === 'missing') failures.push(messageId);
+    const alert = loaded.get(job.alertId);
+    if (!alert || typeof alert === 'string') {
+      // A refused alert is dropped for good (acknowledged). A missing one may be read lag, and a
+      // read error may be temporary: retry both.
+      if (alert !== 'refused') failures.push(messageId);
       continue;
     }
+    if (!PUSH_POLICY[alert.relaySeverity].push) {
+      deps.logger.info('informational alert, not pushing', { alertId: alert.id });
+      continue; // acknowledged
+    }
     const key = deliveryKey(alert, job.deviceId);
+    // The same key twice in one batch (a re-planned alert): the first copy handles it.
+    // If that one fails, its own retry sends, so this copy can be acknowledged.
+    if (toSend.some((t) => t.key === key)) {
+      deps.logger.info('duplicate in batch skipped', { alertId: alert.id });
+      continue;
+    }
     try {
-      if (await deps.idempotency.claim(key, claimExpiry(alert)))
-        toSend.push({ messageId, job, key });
-      else deps.logger.info('duplicate skipped', { alertId: alert.id, deviceId: job.deviceId });
+      const leaseUntil = new Date(deps.clock.now().getTime() + LEASE_MS);
+      const claim = await deps.idempotency.claim(key, leaseUntil);
+      if (claim === 'claimed') toSend.push({ messageId, job, key, alert });
+      else if (claim === 'sent') {
+        deps.logger.info('duplicate skipped', { alertId: alert.id, deviceId: job.deviceId });
+      } else {
+        // Another attempt is in flight. Never ack: if it dies, the retry after its lease sends.
+        deps.logger.info('claim leased by another attempt', { alertId: alert.id });
+        failures.push(messageId);
+      }
     } catch (err) {
       deps.logger.error('claim failed', { key, error: String(err) });
       failures.push(messageId);
@@ -83,6 +136,7 @@ export async function deliveryWorker(event: SQSEvent, deps: WorkerDeps): Promise
   }
 
   if (toSend.length) {
+    const verified = new Map(toSend.map((t) => [t.alert.id, t.alert]));
     // sendJobs reads alerts from this map, so the text sent is the text we just verified.
     const results = await sendJobs(
       toSend.map((t) => t.job),
@@ -92,20 +146,28 @@ export async function deliveryWorker(event: SQSEvent, deps: WorkerDeps): Promise
         logger: deps.logger,
       },
     ).catch((err: unknown) => {
-      deps.logger.error('send threw', { error: String(err) });
+      deps.logger.error('send threw', { error: redactPushTokens(String(err)) });
       return null;
     });
 
     for (const [i, entry] of toSend.entries()) {
       const r = results?.[i] ?? { ok: false as const, error: 'SendFailed' };
-      if (r.ok) continue;
-      if (PERMANENT.has(r.error)) {
-        // Keep the claim: this push must never be retried.
-        if (r.error === 'DeviceNotRegistered') {
+      if (r.ok || PERMANENT.has(r.error)) {
+        // Sent, or never going to succeed: either way this push must not be repeated.
+        if (!r.ok && r.error === 'DeviceNotRegistered') {
           await deps.onDeadToken(entry.job.expoPushToken).catch((err: unknown) => {
-            deps.logger.error('clearing dead token failed', { error: String(err) });
+            deps.logger.error('clearing dead token failed', {
+              error: redactPushTokens(String(err)),
+            });
           });
         }
+        // If this fails the push already went out. Ack anyway: failing the record would
+        // re-send once the lease expires. The lease simply runs out.
+        await deps.idempotency
+          .markSent(entry.key, claimExpiry(entry.alert))
+          .catch((err: unknown) => {
+            deps.logger.error('marking sent failed', { key: entry.key, error: String(err) });
+          });
         continue;
       }
       // Retryable: give the claim back so the retry can send, and fail the record.

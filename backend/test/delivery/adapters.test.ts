@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { SQSClient, SendMessageBatchCommand } from '@aws-sdk/client-sqs';
 import { ConditionalCheckFailedException, DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DeleteCommand, DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  DeleteCommand,
+  DynamoDBDocumentClient,
+  GetCommand,
+  PutCommand,
+  UpdateCommand,
+} from '@aws-sdk/lib-dynamodb';
 import { SqsDeliveryQueue } from '../../src/adapters/aws/sqs-delivery-queue.js';
 import { DynamoIdempotencyStore } from '../../src/adapters/aws/dynamo-idempotency-store.js';
 import { ExpoPushSender } from '../../src/adapters/expo/expo-push-sender.js';
@@ -58,39 +64,59 @@ describe('SqsDeliveryQueue', () => {
 
 describe('DynamoIdempotencyStore', () => {
   const doc = () => DynamoDBDocumentClient.from(new DynamoDBClient({ region: 'us-west-2' }));
+  const NOW = new Date('2026-11-10T10:00:00Z');
+  const lost = () => new ConditionalCheckFailedException({ message: 'x', $metadata: {} });
 
-  it('puts with attribute_not_exists(pk) and a TTL', async () => {
+  it('claims with a conditional put that also wins over an expired, unsent lease', async () => {
     const d = doc();
     const mock = mockClient(d);
     mock.on(PutCommand).resolves({});
-    const ok = await new DynamoIdempotencyStore(d, 'tbl').claim(
-      'k',
-      new Date('2026-11-10T14:00:00Z'),
-    );
-    expect(ok).toBe(true);
+    const lease = new Date('2026-11-10T10:02:00Z');
+    const store = new DynamoIdempotencyStore(d, 'tbl', { now: () => NOW });
+    expect(await store.claim('k', lease)).toBe('claimed');
     expect(mock.commandCalls(PutCommand)[0]?.args[0].input).toMatchObject({
       TableName: 'tbl',
-      Item: { pk: 'k', ttl: Date.parse('2026-11-10T14:00:00Z') / 1000 },
-      ConditionExpression: 'attribute_not_exists(pk)',
+      Item: { pk: 'k', state: 'leased', leaseUntil: lease.getTime() },
+      ConditionExpression: 'attribute_not_exists(pk) OR (#state = :leased AND leaseUntil < :now)',
+      ExpressionAttributeNames: { '#state': 'state' },
+      ExpressionAttributeValues: { ':leased': 'leased', ':now': NOW.getTime() },
     });
   });
 
-  it('returns false when the key already exists, and rethrows other errors', async () => {
+  it("reports 'sent' or 'leased' when the condition fails, and rethrows other errors", async () => {
     const d = doc();
     const mock = mockClient(d);
-    const store = new DynamoIdempotencyStore(d, 'tbl');
-    mock
-      .on(PutCommand)
-      .rejects(new ConditionalCheckFailedException({ message: 'x', $metadata: {} }));
-    expect(await store.claim('k', new Date())).toBe(false);
+    const store = new DynamoIdempotencyStore(d, 'tbl', { now: () => NOW });
+    mock.on(PutCommand).rejects(lost());
+    mock.on(GetCommand).resolves({ Item: { pk: 'k', state: 'sent' } });
+    expect(await store.claim('k', NOW)).toBe('sent');
+    mock.on(GetCommand).resolves({ Item: { pk: 'k', state: 'leased' } });
+    expect(await store.claim('k', NOW)).toBe('leased');
+    mock.on(GetCommand).resolves({ Item: { pk: 'k' } }); // written before leases existed
+    expect(await store.claim('k', NOW)).toBe('sent');
+    mock.on(GetCommand).resolves({}); // released in between
+    expect(await store.claim('k', NOW)).toBe('leased');
     mock.on(PutCommand).rejects(new Error('boom'));
-    await expect(store.claim('k', new Date())).rejects.toThrow('boom');
+    await expect(store.claim('k', NOW)).rejects.toThrow('boom');
   });
-});
 
-describe('DynamoIdempotencyStore.release', () => {
-  it('deletes the key', async () => {
-    const d = DynamoDBDocumentClient.from(new DynamoDBClient({ region: 'us-west-2' }));
+  it('markSent sets state sent with the long ttl', async () => {
+    const d = doc();
+    const mock = mockClient(d);
+    mock.on(UpdateCommand).resolves({});
+    await new DynamoIdempotencyStore(d, 'tbl').markSent('k', new Date('2026-11-11T14:00:00Z'));
+    expect(mock.commandCalls(UpdateCommand)[0]?.args[0].input).toMatchObject({
+      TableName: 'tbl',
+      Key: { pk: 'k' },
+      ExpressionAttributeValues: {
+        ':sent': 'sent',
+        ':ttl': Date.parse('2026-11-11T14:00:00Z') / 1000,
+      },
+    });
+  });
+
+  it('release deletes the key', async () => {
+    const d = doc();
     const mock = mockClient(d);
     mock.on(DeleteCommand).resolves({});
     await new DynamoIdempotencyStore(d, 'tbl').release('k');
@@ -102,14 +128,27 @@ describe('DynamoIdempotencyStore.release', () => {
 });
 
 describe('MemoryIdempotencyStore', () => {
-  it('claims once, and again after expiry', async () => {
+  it('leases: claimed, leased while live, claimable after the lease, sent is final', async () => {
     let now = new Date('2026-11-10T10:00:00Z');
     const s = new MemoryIdempotencyStore({ now: () => now });
-    const exp = new Date('2026-11-10T11:00:00Z');
-    expect(await s.claim('k', exp)).toBe(true);
-    expect(await s.claim('k', exp)).toBe(false);
-    now = new Date('2026-11-10T12:00:00Z');
-    expect(await s.claim('k', exp)).toBe(true);
+    const lease = new Date('2026-11-10T10:02:00Z');
+    expect(await s.claim('k', lease)).toBe('claimed');
+    expect(await s.claim('k', lease)).toBe('leased');
+    now = new Date('2026-11-10T10:03:00Z');
+    expect(await s.claim('k', new Date('2026-11-10T10:05:00Z'))).toBe('claimed');
+    await s.markSent('k', new Date('2026-11-11T10:00:00Z'));
+    now = new Date('2026-11-10T11:00:00Z'); // far past any lease
+    expect(await s.claim('k', lease)).toBe('sent');
+    now = new Date('2026-11-12T00:00:00Z'); // past the sent expiry
+    expect(await s.claim('k', lease)).toBe('claimed');
+  });
+
+  it('release makes the key claimable again', async () => {
+    const s = new MemoryIdempotencyStore();
+    const far = new Date(Date.now() + 60_000);
+    await s.claim('k', far);
+    await s.release('k');
+    expect(await s.claim('k', far)).toBe('claimed');
   });
 });
 

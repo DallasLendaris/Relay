@@ -37,6 +37,22 @@ export function toDataApiParam(name: string, value: unknown): SqlParameter {
   return { name, value: field };
 }
 
+/** Waits this many milliseconds. Injectable so tests do not really wait. */
+export type Sleep = (ms: number) => Promise<void>;
+
+const realSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Retries after an Aurora auto-pause resume: 0.5 s, 1, 2, 4, 5, 5 (about 17 s in total). */
+export const RESUME_MAX_RETRIES = 6;
+const RESUME_FIRST_DELAY_MS = 500;
+const RESUME_MAX_DELAY_MS = 5000;
+
+/** True while Aurora Serverless v2 is resuming from auto-pause (the first call after idle). */
+function isResuming(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.name === 'DatabaseResumingException' || /resuming/i.test(err.message);
+}
+
 /** Executes SQL through the RDS Data API (HTTPS), so Lambdas need no VPC. */
 export class DataApiExecutor implements SqlExecutor {
   constructor(
@@ -44,7 +60,22 @@ export class DataApiExecutor implements SqlExecutor {
     private readonly clusterArn: string,
     private readonly secretArn: string,
     private readonly database: string,
+    private readonly sleep: Sleep = realSleep,
   ) {}
+
+  /** Runs one Data API call, waiting and retrying while the database resumes. */
+  private async withResumeRetry<R>(call: () => Promise<R>): Promise<R> {
+    let delay = RESUME_FIRST_DELAY_MS;
+    for (let retry = 0; ; retry++) {
+      try {
+        return await call();
+      } catch (err) {
+        if (!isResuming(err) || retry >= RESUME_MAX_RETRIES) throw err;
+        await this.sleep(delay);
+        delay = Math.min(delay * 2, RESUME_MAX_DELAY_MS);
+      }
+    }
+  }
 
   query<T>(sql: string, params: unknown[] = []): Promise<T[]> {
     return this.run<T>(sql, params);
@@ -56,7 +87,9 @@ export class DataApiExecutor implements SqlExecutor {
       secretArn: this.secretArn,
       database: this.database,
     };
-    const { transactionId } = await this.client.send(new BeginTransactionCommand(target));
+    const { transactionId } = await this.withResumeRetry(() =>
+      this.client.send(new BeginTransactionCommand(target)),
+    );
     if (!transactionId) throw new Error('Data API returned no transaction id');
     // Statements inside carry the transaction id; nesting is not supported.
     const tx: SqlExecutor = {
@@ -84,18 +117,17 @@ export class DataApiExecutor implements SqlExecutor {
   }
 
   private async run<T>(sql: string, params: unknown[], transactionId?: string): Promise<T[]> {
-    const out = await this.client.send(
-      new ExecuteStatementCommand({
-        resourceArn: this.clusterArn,
-        secretArn: this.secretArn,
-        database: this.database,
-        ...(transactionId ? { transactionId } : {}),
-        // Data API uses :name placeholders instead of $n.
-        sql: sql.replace(/\$(\d+)/g, ':p$1'),
-        parameters: params.map((v, i) => toDataApiParam(`p${i + 1}`, v)),
-        formatRecordsAs: 'JSON',
-      }),
-    );
+    const command = new ExecuteStatementCommand({
+      resourceArn: this.clusterArn,
+      secretArn: this.secretArn,
+      database: this.database,
+      ...(transactionId ? { transactionId } : {}),
+      // Data API uses :name placeholders instead of $n.
+      sql: sql.replace(/\$(\d+)/g, ':p$1'),
+      parameters: params.map((v, i) => toDataApiParam(`p${i + 1}`, v)),
+      formatRecordsAs: 'JSON',
+    });
+    const out = await this.withResumeRetry(() => this.client.send(command));
     // formattedRecords is a JSON array of row objects; absent when the statement returns no rows.
     return out.formattedRecords ? (JSON.parse(out.formattedRecords) as T[]) : [];
   }

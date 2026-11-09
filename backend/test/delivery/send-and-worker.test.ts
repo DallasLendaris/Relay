@@ -67,6 +67,8 @@ describe('sendJobs', () => {
         groupingKey: alert.id,
       },
       categoryId: 'alert-checkin',
+      priority: 'high',
+      sound: 'default',
     });
   });
 

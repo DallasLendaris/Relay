@@ -202,8 +202,22 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            The token is not valid for this device and alert (`invalid_token`), or none of the
+            device's saved places is in the alert area (`not_in_area`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: The idempotencyKey was already used by a different device (`idempotency_conflict`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /agency/alerts:
     get:

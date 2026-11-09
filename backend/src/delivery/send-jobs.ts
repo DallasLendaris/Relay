@@ -1,6 +1,8 @@
 import type { Alert } from '@relay/shared';
 import type { AlertStore, DeliveryJob, PushMessage, PushSender } from '../ports.js';
-import type { Logger, SendResult } from './types.js';
+import { PUSH_POLICY } from './policy.js';
+import { redactPushTokens } from './redact.js';
+import type { Logger, PolicyPushMessage, SendResult } from './types.js';
 
 const SEVERITY_WORD: Record<Alert['relaySeverity'], string> = {
   emergency: 'Emergency',
@@ -18,7 +20,7 @@ const SEVERITY_WORD_ES: Record<Alert['relaySeverity'], string> = {
   statement: 'Declaración',
 };
 
-export function buildMessage(job: DeliveryJob, alert: Alert): PushMessage {
+export function buildMessage(job: DeliveryJob, alert: Alert): PushMessage & PolicyPushMessage {
   // Spanish uses the Relay summary. Without one we fall back to the official English text.
   const spanish =
     job.language === 'es'
@@ -27,6 +29,7 @@ export function buildMessage(job: DeliveryJob, alert: Alert): PushMessage {
   const body = spanish
     ? spanish.text.trim()
     : alert.official.headline?.trim() || alert.official.description.trim().slice(0, 140);
+  const policy = PUSH_POLICY[alert.relaySeverity];
   const word = spanish ? SEVERITY_WORD_ES : SEVERITY_WORD;
   return {
     to: job.expoPushToken,
@@ -39,6 +42,8 @@ export function buildMessage(job: DeliveryJob, alert: Alert): PushMessage {
       groupingKey: job.groupingKey,
     },
     categoryId: 'alert-checkin',
+    priority: policy.priority,
+    ...(policy.sound ? { sound: policy.sound } : {}),
   };
 }
 
@@ -72,7 +77,11 @@ export async function sendJobs(
     results[jobIdx] = sent[k] ?? { ok: false, error: 'NoResult' };
   });
   results.forEach((r, i) => {
-    if (!r.ok) deps.logger.warn('push failed', { deviceId: jobs[i]?.deviceId, error: r.error });
+    if (!r.ok)
+      deps.logger.warn('push failed', {
+        deviceId: jobs[i]?.deviceId,
+        error: redactPushTokens(r.error),
+      });
   });
   return results;
 }

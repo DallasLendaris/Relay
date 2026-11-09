@@ -122,10 +122,20 @@ export interface DeliveryQueue {
   enqueue(jobs: DeliveryJob[]): Promise<void>;
 }
 
-/** Ensures nobody is notified twice for the same alert (DynamoDB conditional put in AWS). */
+/**
+ * Ensures nobody is notified twice for the same alert (DynamoDB conditional put in AWS).
+ * A claim is a lease: if the worker dies before sending, the lease runs out and a retry can
+ * claim again. Only markSent makes the key permanent (until its expiry).
+ */
 export interface IdempotencyStore {
-  /** Atomically claim a key. Returns false if it was already claimed. */
-  claim(key: string, expiresAt: Date): Promise<boolean>;
+  /**
+   * Atomically claim a key until `leaseUntil`. Succeeds if the key is absent, or its lease
+   * has expired and it was never marked sent. 'sent' = already delivered; 'leased' = another
+   * attempt holds a live lease.
+   */
+  claim(key: string, leaseUntil: Date): Promise<'claimed' | 'sent' | 'leased'>;
+  /** Record that the push went out. The key is remembered until `expiresAt`. */
+  markSent(key: string, expiresAt: Date): Promise<void>;
   /** Give a claim back after a retryable failure, so the next attempt can send. */
   release(key: string): Promise<void>;
 }

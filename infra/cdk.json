@@ -1,4 +1,4 @@
 {
-  "app": "npx tsx bin/relay.ts",
+  "app": "npm run build -w @relay/shared --silent && npx tsx bin/relay.ts",
   "context": { "stage": "dev" }
 }

@@ -131,16 +131,17 @@ describe('deliveryWorker', () => {
   });
 
   it('claims until a day after the alert ends', async () => {
-    const claims: Date[] = [];
+    const marks: Date[] = [];
     const t = setup();
     t.workerDeps.idempotency = {
-      claim: async (_k: string, at: Date) => (claims.push(at), true),
+      claim: async () => 'claimed',
+      markSent: async (_k: string, at: Date) => void marks.push(at),
       release: async () => {},
     };
     const alert = signed({ ends: '2026-11-10T16:00:00Z' });
     await t.alerts.save(alert);
     await deliveryWorker(event([job(alert, 0)]), t.workerDeps);
-    expect(claims).toEqual([new Date('2026-11-11T16:00:00Z')]);
+    expect(marks).toEqual([new Date('2026-11-11T16:00:00Z')]);
   });
 
   describe('refuses to send', () => {
@@ -161,7 +162,7 @@ describe('deliveryWorker', () => {
         expect(failed(await t.run([job(alert, 0)]))).toEqual([]);
         expect(t.sender.sent).toHaveLength(0);
         const key = `${alert.id}:${alert.relaySeverity}:d0`;
-        expect(await t.idempotency.claim(key, new Date('2030-01-01'))).toBe(true);
+        expect(await t.idempotency.claim(key, new Date('2030-01-01'))).toBe('claimed');
       });
     }
   });
@@ -197,6 +198,7 @@ describe('deliveryWorker', () => {
       claim: async () => {
         throw new Error('dynamo down');
       },
+      markSent: async () => {},
       release: async () => {},
     };
     expect(failed(await deliveryWorker(event([job(alert, 0)]), t.workerDeps))).toEqual(['m0']);

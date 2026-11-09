@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApiEvent } from '../../src/api/index.js';
 import { awsStores, createHandler } from '../../src/api/handler.js';
+import { MemoryCheckInStore } from '../../src/adapters/memory/checkin-store.js';
 import { MemoryDeviceStore } from '../../src/adapters/memory/device-store.js';
 import { MemoryPlaceStore } from '../../src/adapters/memory/place-store.js';
 import type { AlertStore, Geocoder } from '../../src/ports.js';
@@ -21,6 +22,8 @@ const factory = () => ({
   places: new MemoryPlaceStore(),
   alerts,
   geocoder,
+  checkins: new MemoryCheckInStore(),
+  loadTokenKeys: async () => new Map<string, string>(),
 });
 
 const event = (
@@ -104,5 +107,54 @@ describe('API Lambda handler', () => {
     for (const bad of [secret, 'super-secret', String(LAT), String(LNG), 'Bearer']) {
       expect(all).not.toContain(bad);
     }
+  });
+
+  it('never logs err.message from database errors (it can quote coordinates)', async () => {
+    const dbError = Object.assign(
+      new Error(
+        `null value in column "x" violates not-null constraint. Failing row contains (${LAT}, ${LNG}, Home)`,
+      ),
+      { name: 'BadRequestException' },
+    );
+    const credential = '11111111-1111-4111-8111-111111111111.secret';
+    // Failure inside a request (the router catches it) ...
+    const inRequest = createHandler(() => ({
+      ...factory(),
+      devices: {
+        get: async () => {
+          throw dbError;
+        },
+      } as unknown as MemoryDeviceStore,
+    }));
+    const a = await inRequest(
+      event('GET', '/places', undefined, { authorization: `Bearer ${credential}` }),
+    );
+    // ... and while building the stores (the handler catches it).
+    const atStartup = createHandler(() => {
+      throw dbError;
+    });
+    const b = await atStartup(event('GET', '/alerts/11111111-1111-4111-8111-111111111111'));
+    for (const res of [a, b]) {
+      expect(res.statusCode).toBe(500);
+      expect(JSON.parse(res.body)).toMatchObject({ code: 'internal_error' });
+    }
+    const all = logs.join('\n');
+    for (const bad of [String(LAT), String(LNG), 'Failing row', 'violates', 'Home']) {
+      expect(all).not.toContain(bad);
+    }
+    const errors = logs
+      .filter((l) => l.includes('"level":"error"'))
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(errors).toHaveLength(2);
+    expect(errors[0]).toMatchObject({
+      error: 'BadRequestException',
+      code: 'internal_error',
+      route: '/places',
+    });
+    expect(errors[1]).toMatchObject({
+      error: 'BadRequestException',
+      code: 'internal_error',
+      route: '/alerts/{id}',
+    });
   });
 });

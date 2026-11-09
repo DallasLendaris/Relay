@@ -94,7 +94,6 @@ describe('IngestStack', () => {
     const prod = synth('prod');
     prod.hasResource('AWS::S3::Bucket', { DeletionPolicy: 'Retain' });
     prod.hasResourceProperties('AWS::DynamoDB::Table', {
-      TableName: 'alerts-state',
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
     });
     t.hasResource('AWS::S3::Bucket', { DeletionPolicy: 'Delete' });

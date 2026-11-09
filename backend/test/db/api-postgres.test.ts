@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { MemoryCheckInStore } from '../../src/adapters/memory/checkin-store.js';
 import { PostgresAlertStore } from '../../src/adapters/postgres/alert-store.js';
 import { PostgresDeviceStore } from '../../src/adapters/postgres/device-store.js';
 import { PostgresPlaceStore } from '../../src/adapters/postgres/place-store.js';
@@ -15,6 +16,8 @@ beforeEach(async () => {
     places: new PostgresPlaceStore(db),
     alerts: new PostgresAlertStore(db),
     geocoder: { geocode: async () => null },
+    checkins: new MemoryCheckInStore(),
+    tokenKeys: new Map(),
     clock: { now: () => new Date('2026-11-09T12:00:00Z') },
     newId: randomUUID,
   });

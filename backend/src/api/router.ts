@@ -35,6 +35,10 @@ export class HttpError extends Error {
   }
 }
 
+/** Replaces UUID path segments so logs group by route and carry no identifiers. */
+export const routeOf = (path: string): string =>
+  path.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '{id}');
+
 export function json(statusCode: number, body: unknown): ApiResult {
   return {
     statusCode,
@@ -84,7 +88,17 @@ export class Router {
         : errorResult(404, 'not_found', 'Route not found');
     } catch (err) {
       if (err instanceof HttpError) return errorResult(err.status, err.code, err.message);
-      console.error(err);
+      // Never log err.message or the error object: database errors can quote row contents,
+      // including coordinates. Name, a stable code and the route are enough to find the bug.
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          msg: 'request failed',
+          error: err instanceof Error ? err.name : 'UnknownError',
+          code: 'internal_error',
+          route: routeOf(event.rawPath),
+        }),
+      );
       return errorResult(500, 'internal_error', 'Internal error');
     }
   }

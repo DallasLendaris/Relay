@@ -37,7 +37,12 @@ export function synthAll(stage: 'dev' | 'prod' = 'dev') {
     killSwitchParamName: config.killSwitchParamName,
     killSwitchParamArn: config.killSwitchParamArn,
   });
-  const api = new ApiStack(app, `api-${stage}`, { env, stage, db });
+  const api = new ApiStack(app, `api-${stage}`, {
+    env,
+    stage,
+    db,
+    tokenKeysSecretArn: config.tokenKeysSecretArn,
+  });
   return {
     data: Template.fromStack(data),
     config: Template.fromStack(config),

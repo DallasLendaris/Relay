@@ -1,12 +1,13 @@
 import {
   BeginTransactionCommand,
   CommitTransactionCommand,
+  DatabaseResumingException,
   ExecuteStatementCommand,
   RDSDataClient,
   RollbackTransactionCommand,
 } from '@aws-sdk/client-rds-data';
 import { mockClient } from 'aws-sdk-client-mock';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DataApiExecutor, toDataApiParam } from '../../src/db/sql.js';
 
 const rds = mockClient(RDSDataClient);
@@ -99,5 +100,70 @@ describe('DataApiExecutor', () => {
       'tx-2',
     );
     expect(rds.commandCalls(CommitTransactionCommand)).toHaveLength(0);
+  });
+});
+
+describe('DataApiExecutor auto-pause retry', () => {
+  const resuming = () =>
+    new DatabaseResumingException({
+      message: 'The Aurora DB instance is resuming after being auto-paused',
+      $metadata: {},
+    });
+  const make = () => {
+    const sleep = vi.fn(async (_ms: number) => {});
+    const exec = new DataApiExecutor(
+      new RDSDataClient({ region: 'us-west-2' }),
+      'arn:cluster',
+      'arn:secret',
+      'relay',
+      sleep,
+    );
+    return { exec, sleep };
+  };
+
+  it('waits and retries while the database resumes, then succeeds', async () => {
+    rds
+      .on(ExecuteStatementCommand)
+      .rejectsOnce(resuming())
+      .rejectsOnce(resuming())
+      .resolves({ formattedRecords: '[{"n":1}]' });
+    const { exec, sleep } = make();
+    expect(await exec.query('SELECT 1 AS n', [])).toEqual([{ n: 1 }]);
+    expect(rds.commandCalls(ExecuteStatementCommand)).toHaveLength(3);
+    expect(sleep.mock.calls.map((c) => c[0])).toEqual([500, 1000]);
+  });
+
+  it('backs off 0.5 s doubling, capped at 5 s, and gives up after 6 retries', async () => {
+    rds.on(ExecuteStatementCommand).rejects(resuming());
+    const { exec, sleep } = make();
+    await expect(exec.query('SELECT 1', [])).rejects.toBeInstanceOf(DatabaseResumingException);
+    expect(rds.commandCalls(ExecuteStatementCommand)).toHaveLength(7);
+    expect(sleep.mock.calls.map((c) => c[0])).toEqual([500, 1000, 2000, 4000, 5000, 5000]);
+  });
+
+  it('also retries errors whose message says "resuming"', async () => {
+    rds
+      .on(ExecuteStatementCommand)
+      .rejectsOnce(new Error('Communications link failure: cluster is Resuming'))
+      .resolves({});
+    const { exec, sleep } = make();
+    await exec.query('SELECT 1', []);
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry other errors', async () => {
+    rds.on(ExecuteStatementCommand).rejects(new Error('syntax error'));
+    const { exec, sleep } = make();
+    await expect(exec.query('SELECT', [])).rejects.toThrow('syntax error');
+    expect(rds.commandCalls(ExecuteStatementCommand)).toHaveLength(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('retries starting a transaction too', async () => {
+    rds.on(BeginTransactionCommand).rejectsOnce(resuming()).resolves({ transactionId: 'tx-9' });
+    rds.on(CommitTransactionCommand).resolves({});
+    const { exec, sleep } = make();
+    expect(await exec.transaction(async () => 'ok')).toBe('ok');
+    expect(sleep).toHaveBeenCalledTimes(1);
   });
 });

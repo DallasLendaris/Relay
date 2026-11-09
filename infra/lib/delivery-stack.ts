@@ -19,7 +19,8 @@ export interface DeliveryStackProps extends StackProps {
   killSwitchParamArn: string;
 }
 
-const WORKER_TIMEOUT = Duration.seconds(30);
+// The worker uses 2-minute leases and an 8 s Expo timeout, so 20 s is plenty.
+const WORKER_TIMEOUT = Duration.seconds(20);
 
 /** Delivery queue, its dead-letter queue, the idempotency table and the push worker. */
 export class DeliveryStack extends Stack {

@@ -46,7 +46,6 @@ export class IngestStack extends Stack {
     // Dedupe state only: what ingest has already seen. The full alert record
     // goes to Aurora later (ticket S-07).
     const stateTable = new Table(this, 'StateTable', {
-      tableName: 'alerts-state',
       partitionKey: { name: 'sourceId', type: AttributeType.STRING },
       billingMode: BillingMode.PAY_PER_REQUEST,
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: isProd },

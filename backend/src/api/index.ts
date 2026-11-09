@@ -1,9 +1,11 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import type { Alert, components } from '@relay/shared';
+import type { Alert, CheckIn, components } from '@relay/shared';
 import { cellForPoint } from '../geo/index.js';
+import { verifyCheckInToken } from '../tokens/index.js';
 import { effectiveState } from '../ingest/lifecycle.js';
 import type {
   AlertStore,
+  CheckInStore,
   Clock,
   Device,
   DeviceStore,
@@ -17,17 +19,27 @@ import type { Request } from './router.js';
 
 export type { ApiEvent, ApiResult } from './router.js';
 
+export interface CheckInLookup {
+  /** The stored check-in for this alert and idempotency key, or null. */
+  get(alertId: string, idempotencyKey: string): Promise<CheckIn | null>;
+}
+
 export interface ApiDeps {
   devices: DeviceStore;
   places: PlaceStore;
   alerts: AlertStore;
   geocoder: Geocoder;
+  /** The port plus a lookup by idempotency key (adapter classes have it; the port does not). */
+  checkins: CheckInStore & CheckInLookup;
+  /** Check-in token keys by key id (kid -> secret). */
+  tokenKeys: Map<string, string>;
   clock: Clock;
   /** Returns a new UUID. Injected so tests are deterministic. */
   newId: () => string;
 }
 
 export const MAX_PLACES_PER_DEVICE = 5;
+const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
 
 type PlaceBody = components['schemas']['Place'];
 type AlertSummary = components['schemas']['AlertSummary'];
@@ -242,6 +254,63 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     if (!alert) throw new HttpError(404, 'not_found', 'Alert not found');
     // Stored state only reflects the last NWS message; show "expired" once time has passed.
     return json(200, { ...alert, state: effectiveState(alert, deps.clock.now()) });
+  });
+
+  // ---------- Check-ins ----------
+
+  router.add('POST', '/alerts/{alertId}/checkins', async (req) => {
+    const device = await authenticate(req);
+    const body = requireObject(req.body);
+    const status = body['status'];
+    if (status !== 'ok' && status !== 'need_help') {
+      throw new HttpError(400, 'invalid_request', 'status must be "ok"');
+    }
+    // Reserved for the Pilot. The format allows it, the demo does not.
+    if (status === 'need_help') {
+      throw new HttpError(400, 'unsupported_status', 'status "need_help" is not supported yet');
+    }
+    const token = nonEmptyString(body['token'], 'token');
+    const idempotencyKey = nonEmptyString(body['idempotencyKey'], 'idempotencyKey');
+    if (idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
+      throw new HttpError(400, 'invalid_request', 'idempotencyKey is too long');
+    }
+
+    const alertId = req.params['alertId'] ?? '';
+    const alert: Alert | null = UUID.test(alertId) ? await deps.alerts.get(alertId) : null;
+    if (!alert) throw new HttpError(404, 'not_found', 'Alert not found');
+
+    // One answer for every token problem (malformed, forged, wrong alert/device, expired),
+    // so a caller learns nothing about which check failed.
+    const verified = verifyCheckInToken(
+      token,
+      { alertId: alert.id, deviceId: device.id, now: deps.clock.now() },
+      deps.tokenKeys,
+    );
+    if (!verified.ok) throw new HttpError(403, 'invalid_token', 'Invalid check-in token');
+
+    // The check-in counts toward the cell of the first saved place that this alert covers.
+    const areaCells = new Set(alert.area.h3Cells);
+    const place = (await deps.places.listForDevice(device.id)).find((p) => areaCells.has(p.h3Cell));
+    if (!place) throw new HttpError(403, 'not_in_area', 'This alert does not cover your places');
+
+    const checkIn: CheckIn = {
+      alertId: alert.id,
+      deviceId: device.id,
+      status,
+      checkedInAt: deps.clock.now().toISOString(),
+      token,
+      idempotencyKey,
+      h3Cell: place.h3Cell,
+    };
+    if (await deps.checkins.save(checkIn)) return json(200, { checkedInAt: checkIn.checkedInAt });
+
+    // Repeat key: answer with the original time, so retries after a lost response are harmless.
+    const original = await deps.checkins.get(alert.id, idempotencyKey);
+    if (!original) throw new Error('Repeated check-in could not be read back');
+    if (original.deviceId !== device.id) {
+      throw new HttpError(409, 'idempotency_conflict', 'idempotencyKey is already in use');
+    }
+    return json(200, { checkedInAt: original.checkedInAt });
   });
 
   return (event) => router.route(event);

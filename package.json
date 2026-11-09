@@ -12,6 +12,7 @@
   ],
   "scripts": {
     "build:shared": "npm run build -w @relay/shared",
+    "prelint": "npm run build:shared",
     "lint": "eslint . && npm run lint --workspaces --if-present",
     "pretypecheck": "npm run build:shared",
     "typecheck": "npm run typecheck --workspaces --if-present",

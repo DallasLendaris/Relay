@@ -1,5 +1,6 @@
 import { Match, type Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
+import { envNamesRead } from './handler-env.js';
 import { synthAll } from './helpers.js';
 
 const all = synthAll('dev');
@@ -19,13 +20,47 @@ function allActions(t: Template): string[] {
     .flatMap((s) => (Array.isArray(s.Action) ? s.Action : [s.Action]));
 }
 
+/**
+ * Env contract, derived from the handler source (see handler-env.ts) so it cannot drift:
+ *  - every name the handler reads must be set by the stack, or the Lambda fails at runtime;
+ *  - every name the stack sets must be read by the handler, or it is dead config.
+ * `setButUnread` lists names the stack sets that the handler does not read (yet).
+ * `reverse: false` skips the second check for a handler that is being rewritten.
+ */
+function checkEnvContract(
+  label: string,
+  t: Template,
+  marker: string,
+  handlerPath: string,
+  options: { setButUnread?: string[]; reverse?: boolean } = {},
+) {
+  const { setButUnread = [], reverse = true } = options;
+  const read = envNamesRead(handlerPath);
+  const set = envOf(t, marker);
+  describe(`${label} env contract`, () => {
+    it('handler source yields env names', () => {
+      expect(read).toContain('DB_CLUSTER_ARN');
+    });
+    it('stack sets every name the handler reads', () => {
+      expect(set).toEqual(expect.arrayContaining(read));
+    });
+    if (reverse) {
+      it('handler reads every name the stack sets', () => {
+        expect(set.filter((n) => !setButUnread.includes(n))).toEqual(read);
+      });
+    } else {
+      it.todo(`${label}: handler reads every name the stack sets (check-in handler not merged)`);
+    }
+  });
+}
+
 describe('DeliveryStack', () => {
   const t = all.delivery;
 
   it('wires the queue to a DLQ after 50 receives, with SSE and a 6x visibility timeout', () => {
     t.resourceCountIs('AWS::SQS::Queue', 2);
     t.hasResourceProperties('AWS::SQS::Queue', {
-      VisibilityTimeout: 180, // 6 x 30 s worker timeout
+      VisibilityTimeout: 120, // 6 x 20 s worker timeout
       SqsManagedSseEnabled: true,
       RedrivePolicy: { maxReceiveCount: 50, deadLetterTargetArn: Match.anyValue() },
     });
@@ -47,11 +82,11 @@ describe('DeliveryStack', () => {
     });
   });
 
-  it('configures the worker: Node 22, ARM64, 30 s, reserved concurrency 10', () => {
+  it('configures the worker: Node 22, ARM64, 20 s, reserved concurrency 10', () => {
     t.hasResourceProperties('AWS::Lambda::Function', {
       Runtime: 'nodejs22.x',
       Architectures: ['arm64'],
-      Timeout: 30,
+      Timeout: 20,
       ReservedConcurrentExecutions: 10,
     });
   });
@@ -64,19 +99,7 @@ describe('DeliveryStack', () => {
     });
   });
 
-  it('worker env has exactly the contract names', () => {
-    expect(envOf(t, 'EXPO_ACCESS_TOKEN_SECRET_ARN')).toEqual(
-      [
-        'DB_CLUSTER_ARN',
-        'DB_NAME',
-        'DB_SECRET_ARN',
-        'EXPO_ACCESS_TOKEN_SECRET_ARN',
-        'IDEMPOTENCY_TABLE',
-        'ALERT_KEYS_SECRET_ARN',
-        'KILL_SWITCH_PARAM',
-      ].sort(),
-    );
-  });
+  checkEnvContract('worker', t, 'EXPO_ACCESS_TOKEN_SECRET_ARN', 'delivery/handler.ts');
 
   it('worker can use the idempotency table, alert keys and kill switch (and nothing wider)', () => {
     const actions = allActions(t);
@@ -99,7 +122,6 @@ describe('IngestStack wiring', () => {
 
   it('state table has TTL on expiresAt', () => {
     t.hasResourceProperties('AWS::DynamoDB::Table', {
-      TableName: 'alerts-state',
       KeySchema: [{ AttributeName: 'sourceId', KeyType: 'HASH' }],
       TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true },
     });
@@ -109,24 +131,7 @@ describe('IngestStack wiring', () => {
     t.hasResourceProperties('AWS::Lambda::Function', { ReservedConcurrentExecutions: 1 });
   });
 
-  it('env has exactly the contract names', () => {
-    expect(envOf(t, 'RAW_BUCKET')).toEqual(
-      [
-        'RAW_BUCKET',
-        'STATE_TABLE',
-        'NWS_USER_AGENT',
-        'POLL_INTERVAL_SECONDS',
-        'POLLS_PER_INVOCATION',
-        'DB_CLUSTER_ARN',
-        'DB_SECRET_ARN',
-        'DB_NAME',
-        'DELIVERY_QUEUE_URL',
-        'TOKEN_KEYS_SECRET_ARN',
-        'ALERT_KEYS_SECRET_ARN',
-        'KILL_SWITCH_PARAM',
-      ].sort(),
-    );
-  });
+  checkEnvContract('ingest', t, 'RAW_BUCKET', 'ingest/handler.ts');
 
   it('grants the specific actions it needs', () => {
     const actions = allActions(t);
@@ -148,10 +153,62 @@ describe('IngestStack wiring', () => {
 describe('ApiStack', () => {
   const t = all.api;
 
-  it('env has exactly the contract names', () => {
+  // Until the check-in handler is merged, the handler reads fewer names than the stack sets,
+  // so only the "stack sets what the handler reads" half runs; the other half is a todo.
+  checkEnvContract('api', t, 'PLACE_INDEX_NAME', 'api/handler.ts', {
+    reverse: envNamesRead('api/handler.ts').includes('CHECKINS_TABLE'),
+  });
+
+  it('sets the check-in env names regardless of the handler', () => {
     expect(envOf(t, 'PLACE_INDEX_NAME')).toEqual(
-      ['DB_CLUSTER_ARN', 'DB_NAME', 'DB_SECRET_ARN', 'PLACE_INDEX_NAME'].sort(),
+      expect.arrayContaining(['CHECKINS_TABLE', 'CHECKIN_TOTALS_TABLE', 'TOKEN_KEYS_SECRET_ARN']),
     );
+  });
+
+  it('has check-in tables with the agreed keys, on demand', () => {
+    t.resourceCountIs('AWS::DynamoDB::Table', 2);
+    t.hasResourceProperties('AWS::DynamoDB::Table', {
+      BillingMode: 'PAY_PER_REQUEST',
+      KeySchema: [
+        { AttributeName: 'alertId', KeyType: 'HASH' },
+        { AttributeName: 'idempotencyKey', KeyType: 'RANGE' },
+      ],
+    });
+    t.hasResourceProperties('AWS::DynamoDB::Table', {
+      BillingMode: 'PAY_PER_REQUEST',
+      KeySchema: [
+        { AttributeName: 'alertId', KeyType: 'HASH' },
+        { AttributeName: 'h3Cell', KeyType: 'RANGE' },
+      ],
+    });
+  });
+
+  it('keeps check-in tables with PITR on prod only', () => {
+    const prod = synthAll('prod').api;
+    for (const table of Object.values(prod.findResources('AWS::DynamoDB::Table')) as any[]) {
+      expect(table.DeletionPolicy).toBe('Retain');
+      expect(table.Properties.PointInTimeRecoverySpecification.PointInTimeRecoveryEnabled).toBe(
+        true,
+      );
+    }
+    for (const table of Object.values(t.findResources('AWS::DynamoDB::Table')) as any[]) {
+      expect(table.DeletionPolicy).toBe('Delete');
+    }
+  });
+
+  it('can read the token keys and put/get/update check-ins, but not delete or scan', () => {
+    const actions = allActions(t);
+    for (const a of [
+      'dynamodb:PutItem',
+      'dynamodb:GetItem',
+      'dynamodb:UpdateItem',
+      'secretsmanager:GetSecretValue',
+    ]) {
+      expect(actions).toContain(a);
+    }
+    for (const a of ['dynamodb:DeleteItem', 'dynamodb:Scan', 'dynamodb:Query']) {
+      expect(actions).not.toContain(a);
+    }
   });
 
   it('has a route for every non-agency path in the OpenAPI spec', () => {
@@ -216,6 +273,40 @@ describe('ConfigStack', () => {
       Name: 'relay/dev/expo-access-token',
     });
   });
+});
+
+describe('resource names', () => {
+  // Properties that hold a physical name. If a stack sets one explicitly, it must carry
+  // the stage, or dev and prod collide in one account. Tables, buckets and queues must not
+  // set a name at all (CDK generates a unique one and passes it to the Lambda through env).
+  const NAME_KEYS = [
+    'TableName',
+    'BucketName',
+    'QueueName',
+    'FunctionName',
+    'IndexName',
+    'LogGroupName',
+    'AlarmName',
+    'RoleName',
+    'Name', // Secrets Manager and SSM
+  ];
+  const GENERATED_ONLY = ['AWS::DynamoDB::Table', 'AWS::S3::Bucket', 'AWS::SQS::Queue'];
+
+  for (const stage of ['dev', 'prod'] as const) {
+    it(`every explicit physical name contains "${stage}"`, () => {
+      for (const [stack, t] of Object.entries(synthAll(stage))) {
+        const resources = Object.entries(t.toJSON().Resources ?? {}) as [string, any][];
+        for (const [id, r] of resources) {
+          for (const key of NAME_KEYS) {
+            const value = r.Properties?.[key];
+            if (typeof value !== 'string') continue;
+            expect(value, `${stack}/${id}.${key}`).toContain(stage);
+            expect(GENERATED_ONLY, `${stack}/${id} must not set ${key}`).not.toContain(r.Type);
+          }
+        }
+      }
+    });
+  }
 });
 
 describe('all stacks', () => {

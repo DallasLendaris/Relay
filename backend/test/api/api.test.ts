@@ -8,9 +8,11 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { AlertSchema, type Alert } from '@relay/shared';
 import { createApi, type ApiEvent } from '../../src/api/index.js';
 import { createHandler } from '../../src/api/handler.js';
+import { MemoryCheckInStore } from '../../src/adapters/memory/checkin-store.js';
 import { MemoryDeviceStore } from '../../src/adapters/memory/device-store.js';
 import { MemoryPlaceStore } from '../../src/adapters/memory/place-store.js';
 import { cellForPoint } from '../../src/geo/index.js';
+import { createCheckInToken } from '../../src/tokens/index.js';
 import type { AlertStore, Geocoder } from '../../src/ports.js';
 
 const SPEC_PATH = fileURLToPath(
@@ -41,6 +43,17 @@ function templateFor(path: string): string {
     if (re.test(path)) return tpl;
   }
   throw new Error(`No spec path for ${path}`);
+}
+
+/**
+ * The spec does not list 403 or 409 for check-ins yet (packages/shared is not ours to edit),
+ * so those bodies are checked against the shared Error schema instead.
+ */
+function expectErrorBody(body: string): void {
+  const schema = (spec as unknown as { components: { schemas: { Error: object } } }).components
+    .schemas.Error;
+  const validate = ajv.compile(schema);
+  expect(validate(JSON.parse(body)), JSON.stringify(validate.errors)).toBe(true);
 }
 
 /** Asserts the response status is documented and the body matches that response's schema. */
@@ -152,6 +165,9 @@ function makeAlert(overrides: Partial<Alert> & { cells: string[] }): Alert {
 
 let devices: MemoryDeviceStore;
 let alerts: FakeAlertStore;
+let places: MemoryPlaceStore;
+let checkins: MemoryCheckInStore;
+const TOKEN_KEYS = new Map([['k1', 'test-secret-one']]);
 let route: ReturnType<typeof createApi>;
 
 function event(method: string, path: string, body?: unknown, credential?: string): ApiEvent {
@@ -166,7 +182,8 @@ function event(method: string, path: string, body?: unknown, credential?: string
 /** Calls the API, checks the response against the OpenAPI spec when the route is documented. */
 async function call(method: string, path: string, body?: unknown, credential?: string) {
   const res = await route(event(method, path, body, credential));
-  expectMatchesSpec(method, path, res.statusCode, res.body);
+  if (res.statusCode === 403 || res.statusCode === 409) expectErrorBody(res.body);
+  else expectMatchesSpec(method, path, res.statusCode, res.body);
   return {
     status: res.statusCode,
     body: res.body ? (JSON.parse(res.body) as Record<string, any>) : null,
@@ -181,11 +198,15 @@ async function register() {
 beforeEach(() => {
   devices = new MemoryDeviceStore();
   alerts = new FakeAlertStore();
+  places = new MemoryPlaceStore();
+  checkins = new MemoryCheckInStore();
   route = createApi({
     devices,
-    places: new MemoryPlaceStore(),
+    places,
     alerts,
     geocoder: fakeGeocoder,
+    checkins,
+    tokenKeys: TOKEN_KEYS,
     clock: { now: () => new Date('2026-11-09T12:00:00Z') },
     newId: randomUUID,
   });
@@ -491,6 +512,185 @@ describe('alerts', () => {
   });
 });
 
+describe('check-ins', () => {
+  const sjCell = cellForPoint(SAN_JOSE.latitude, SAN_JOSE.longitude);
+  const sfCell = cellForPoint(SF.latitude, SF.longitude);
+  const KEY = { id: 'k1', secret: 'test-secret-one' };
+  const EXPIRES = new Date('2026-11-09T18:00:00Z');
+
+  /** A device with a San Jose place, an alert covering it, and a valid token for the pair. */
+  async function setup(cells = [sjCell]) {
+    const device = await register();
+    await call('POST', '/places', { label: 'Home', ...SAN_JOSE }, device.credential);
+    const alert = makeAlert({ cells });
+    await alerts.save(alert);
+    const tokenFor = (alertId: string, deviceId: string, expiresAt = EXPIRES) =>
+      createCheckInToken({ alertId, deviceId, expiresAt }, KEY);
+    return { ...device, alert, token: tokenFor(alert.id, device.deviceId), tokenFor };
+  }
+  const post = (alertId: string, credential: string | undefined, body: unknown) =>
+    call('POST', `/alerts/${alertId}/checkins`, body, credential);
+  const body = (token: string, over: Record<string, unknown> = {}) => ({
+    status: 'ok',
+    token,
+    idempotencyKey: 'key-1',
+    ...over,
+  });
+
+  it('records a valid check-in against the matching cell', async () => {
+    const s = await setup([sfCell, sjCell]);
+    const res = await post(s.alert.id, s.credential, body(s.token));
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ checkedInAt: '2026-11-09T12:00:00.000Z' });
+    expect(await checkins.get(s.alert.id, 'key-1')).toMatchObject({
+      deviceId: s.deviceId,
+      status: 'ok',
+      h3Cell: sjCell,
+    });
+    expect(checkins.total(s.alert.id, sjCell)).toBe(1);
+  });
+
+  it('uses the first of the device places that the alert covers', async () => {
+    const s = await setup([sfCell, sjCell]);
+    await call('POST', '/places', { label: 'SF', ...SF }, s.credential);
+    // Home (San Jose) was saved first, so it wins even though the alert lists SF first.
+    await post(s.alert.id, s.credential, body(s.token));
+    expect((await checkins.get(s.alert.id, 'key-1'))?.h3Cell).toBe(sjCell);
+  });
+
+  it('rejects a token made for another device with 403 invalid_token', async () => {
+    const s = await setup();
+    const other = await register();
+    const res = await post(s.alert.id, s.credential, body(s.tokenFor(s.alert.id, other.deviceId)));
+    expect(res.status).toBe(403);
+    expect(res.body?.['code']).toBe('invalid_token');
+  });
+
+  it('rejects a token made for another alert with 403 invalid_token', async () => {
+    const s = await setup();
+    const res = await post(s.alert.id, s.credential, body(s.tokenFor(randomUUID(), s.deviceId)));
+    expect(res.status).toBe(403);
+    expect(res.body?.['code']).toBe('invalid_token');
+  });
+
+  it('rejects an expired token with 403 invalid_token', async () => {
+    const s = await setup();
+    const old = s.tokenFor(s.alert.id, s.deviceId, new Date('2026-11-09T11:00:00Z'));
+    const res = await post(s.alert.id, s.credential, body(old));
+    expect(res.status).toBe(403);
+    expect(res.body?.['code']).toBe('invalid_token');
+  });
+
+  it('rejects tampered, unknown-key and malformed tokens the same way', async () => {
+    const s = await setup();
+    const [payload = '', sig = ''] = s.token.split('.');
+    const forged = createCheckInToken(
+      { alertId: s.alert.id, deviceId: s.deviceId, expiresAt: EXPIRES },
+      { id: 'k1', secret: 'someone-elses-secret' },
+    );
+    const unknownKey = createCheckInToken(
+      { alertId: s.alert.id, deviceId: s.deviceId, expiresAt: EXPIRES },
+      { id: 'k9', secret: 'test-secret-one' },
+    );
+    const bad = [
+      `${payload}.${sig.slice(0, -2)}AA`,
+      forged,
+      unknownKey,
+      'garbage',
+      `${payload}x.${sig}`,
+    ];
+    const messages = new Set<string>();
+    for (const token of bad) {
+      const res = await post(s.alert.id, s.credential, body(token));
+      expect(res.status).toBe(403);
+      expect(res.body?.['code']).toBe('invalid_token');
+      messages.add(JSON.stringify(res.body));
+    }
+    // One identical answer for every failure: nothing says which check failed.
+    expect(messages.size).toBe(1);
+    expect(checkins.total(s.alert.id, sjCell)).toBe(0);
+  });
+
+  it('returns the original time for a repeated idempotencyKey and counts once', async () => {
+    const s = await setup();
+    const first = await post(s.alert.id, s.credential, body(s.token));
+    const later = createApi({
+      devices,
+      places,
+      alerts,
+      geocoder: fakeGeocoder,
+      checkins,
+      tokenKeys: TOKEN_KEYS,
+      clock: { now: () => new Date('2026-11-09T12:05:00Z') },
+      newId: randomUUID,
+    });
+    const res = await later(
+      event('POST', `/alerts/${s.alert.id}/checkins`, body(s.token), s.credential),
+    );
+    expectMatchesSpec('POST', `/alerts/${s.alert.id}/checkins`, res.statusCode, res.body);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual(first.body);
+    expect(checkins.total(s.alert.id, sjCell)).toBe(1);
+  });
+
+  it('does not let another device reuse an idempotencyKey (409)', async () => {
+    const s = await setup();
+    await post(s.alert.id, s.credential, body(s.token));
+    const other = await register();
+    await call('POST', '/places', { label: 'Home', ...SAN_JOSE }, other.credential);
+    const res = await post(
+      s.alert.id,
+      other.credential,
+      body(s.tokenFor(s.alert.id, other.deviceId)),
+    );
+    expect(res.status).toBe(409);
+    expect(res.body?.['code']).toBe('idempotency_conflict');
+    expect(res.body?.['checkedInAt']).toBeUndefined();
+  });
+
+  it('rejects need_help with 400 (reserved for the Pilot)', async () => {
+    const s = await setup();
+    const res = await post(s.alert.id, s.credential, body(s.token, { status: 'need_help' }));
+    expect(res.status).toBe(400);
+    expect(checkins.total(s.alert.id, sjCell)).toBe(0);
+  });
+
+  it('rejects malformed bodies with 400', async () => {
+    const s = await setup();
+    for (const b of [
+      {},
+      body(s.token, { status: 'maybe' }),
+      body(s.token, { idempotencyKey: '' }),
+      body(s.token, { idempotencyKey: 'x'.repeat(201) }),
+      { status: 'ok', idempotencyKey: 'k' },
+      { status: 'ok', token: 5, idempotencyKey: 'k' },
+    ]) {
+      expect((await post(s.alert.id, s.credential, b)).status).toBe(400);
+    }
+  });
+
+  it('returns 403 not_in_area when none of the device places is in the alert area', async () => {
+    const s = await setup([sfCell]);
+    const res = await post(s.alert.id, s.credential, body(s.token));
+    expect(res.status).toBe(403);
+    expect(res.body?.['code']).toBe('not_in_area');
+    expect(checkins.total(s.alert.id, sfCell)).toBe(0);
+  });
+
+  it('returns 404 for an unknown or malformed alert id', async () => {
+    const s = await setup();
+    expect((await post(randomUUID(), s.credential, body(s.token))).status).toBe(404);
+    expect((await post('nope', s.credential, body(s.token))).status).toBe(404);
+  });
+
+  it('returns 401 without valid device credentials', async () => {
+    const s = await setup();
+    expect((await post(s.alert.id, undefined, body(s.token))).status).toBe(401);
+    expect((await post(s.alert.id, `${s.deviceId}.wrong`, body(s.token))).status).toBe(401);
+    expect(checkins.total(s.alert.id, sjCell)).toBe(0);
+  });
+});
+
 describe('Lambda handler', () => {
   it('builds the API from an injected store factory on first use', async () => {
     let builds = 0;
@@ -501,6 +701,8 @@ describe('Lambda handler', () => {
         places: new MemoryPlaceStore(),
         alerts: new FakeAlertStore(),
         geocoder: fakeGeocoder,
+        checkins: new MemoryCheckInStore(),
+        loadTokenKeys: async () => TOKEN_KEYS,
       };
     });
     const first = await handler(event('POST', '/devices', {}));

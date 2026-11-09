@@ -43,4 +43,9 @@ new IngestStack(app, `relay-${stage}-ingest`, {
   killSwitchParamName: config.killSwitchParamName,
   killSwitchParamArn: config.killSwitchParamArn,
 });
-new ApiStack(app, `relay-${stage}-api`, { env, stage, db });
+new ApiStack(app, `relay-${stage}-api`, {
+  env,
+  stage,
+  db,
+  tokenKeysSecretArn: config.tokenKeysSecretArn,
+});

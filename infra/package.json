@@ -7,6 +7,8 @@
     "build": "tsc -p tsconfig.json",
     "synth": "cdk synth -c stage=dev",
     "seed-keys": "tsx scripts/seed-keys.ts",
+    "presynth": "npm run build -w @relay/shared",
+    "pretest": "npm run build -w @relay/shared",
     "lint": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"

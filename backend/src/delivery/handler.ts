@@ -24,6 +24,19 @@ const logger: Logger = {
   error: (msg, f) => console.error(JSON.stringify({ level: 'error', msg, ...f })),
 };
 
+/**
+ * An empty secret or an unreplaced "REPLACE_ME..." placeholder means "no access token".
+ * Warns once per cold start (this runs while building dependencies).
+ */
+export function resolveExpoAccessToken(raw: string, log: Logger): string | undefined {
+  const token = raw.trim();
+  if (token === '' || token.startsWith('REPLACE_ME')) {
+    log.warn('Expo access token secret is empty or a placeholder; sending without a token');
+    return undefined;
+  }
+  return token;
+}
+
 type Deps = Omit<Parameters<typeof deliveryWorker>[1], 'verifyAlert'> & {
   alertKeysArn: string;
 };
@@ -53,12 +66,12 @@ async function buildDeps(env: Record<string, string | undefined>): Promise<Deps>
   }
   // The Expo access token is optional. When set, it goes out as a bearer token.
   const accessToken = EXPO_ACCESS_TOKEN_SECRET_ARN
-    ? (await loadSecretString(EXPO_ACCESS_TOKEN_SECRET_ARN)).trim()
+    ? resolveExpoAccessToken(await loadSecretString(EXPO_ACCESS_TOKEN_SECRET_ARN), logger)
     : undefined;
   const db = new DataApiExecutor(new RDSDataClient({}), DB_CLUSTER_ARN, DB_SECRET_ARN, DB_NAME);
   const devices = new PostgresDeviceStore(db);
   return {
-    sender: new ExpoPushSender(accessToken ? { accessToken } : {}),
+    sender: new ExpoPushSender({ ...(accessToken ? { accessToken } : {}), logger }),
     alerts: new PostgresAlertStore(db),
     idempotency: new DynamoIdempotencyStore(
       DynamoDBDocumentClient.from(new DynamoDBClient({})),
