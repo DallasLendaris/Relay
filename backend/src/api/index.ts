@@ -1,7 +1,13 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Alert, CheckIn, components } from '@relay/shared';
 import { cellForPoint } from '../geo/index.js';
-import { verifyCheckInToken } from '../tokens/index.js';
+import {
+  createDeviceCredential,
+  verifyCheckInToken,
+  verifyDeviceCredential,
+  type TokenKey,
+} from '../tokens/index.js';
+import type { StoredCheckIn } from '../scale/checkins/types.js';
 import { effectiveState } from '../ingest/lifecycle.js';
 import type {
   AlertStore,
@@ -21,7 +27,7 @@ export type { ApiEvent, ApiResult } from './router.js';
 
 export interface CheckInLookup {
   /** The device's stored check-in for this alert, or null. */
-  get(alertId: string, deviceId: string): Promise<CheckIn | null>;
+  get(alertId: string, deviceId: string): Promise<StoredCheckIn | null>;
 }
 
 export interface ApiDeps {
@@ -33,6 +39,13 @@ export interface ApiDeps {
   checkins: CheckInStore & CheckInLookup;
   /** Check-in token keys by key id (kid -> secret). */
   tokenKeys: Map<string, string>;
+  /**
+   * Device credential keys by key id, for stateless credentials (see tokens/deviceCredential.ts).
+   * Without it, only old two-part credentials verify.
+   */
+  deviceCredentialKeys?: Map<string, string>;
+  /** When set, POST /devices issues stateless credentials signed with this key. */
+  deviceCredentialKey?: TokenKey;
   clock: Clock;
   /** Returns a new UUID. Injected so tests are deterministic. */
   newId: () => string;
@@ -100,6 +113,22 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     return device;
   }
 
+  /**
+   * Device id for the check-in route, with NO database read for a stateless credential
+   * (`<deviceId>.<kid>.<mac>`): the check-in route is the only one a million phones hit at once.
+   * An old two-part credential still goes through the hash lookup, so existing installs work.
+   */
+  async function authenticateCheckIn(req: Request): Promise<string> {
+    const header = req.headers['authorization'];
+    const credential = header ? /^Bearer (\S+)$/.exec(header)?.[1] : undefined;
+    if (credential?.split('.').length === 3) {
+      const deviceId = verifyDeviceCredential(credential, deps.deviceCredentialKeys ?? new Map());
+      if (deviceId) return deviceId;
+      throw new HttpError(401, 'unauthorized', 'Missing or invalid credentials');
+    }
+    return (await authenticate(req)).id;
+  }
+
   // ---------- Devices ----------
 
   router.add('POST', '/devices', async (req) => {
@@ -107,7 +136,9 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       throw new HttpError(400, 'invalid_request', 'Body must be an empty object');
     }
     const id = deps.newId();
-    const credential = `${id}.${randomBytes(32).toString('base64url')}`;
+    const credential = deps.deviceCredentialKey
+      ? createDeviceCredential(id, deps.deviceCredentialKey)
+      : `${id}.${randomBytes(32).toString('base64url')}`;
     await deps.devices.create({
       id,
       credentialHash: sha256Hex(credential),
@@ -259,7 +290,7 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
   // ---------- Check-ins ----------
 
   router.add('POST', '/alerts/{alertId}/checkins', async (req) => {
-    const device = await authenticate(req);
+    const deviceId = await authenticateCheckIn(req);
     const body = requireObject(req.body);
     const status = body['status'];
     if (status !== 'ok' && status !== 'need_help') {
@@ -276,37 +307,49 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     }
 
     const alertId = req.params['alertId'] ?? '';
-    const alert: Alert | null = UUID.test(alertId) ? await deps.alerts.get(alertId) : null;
-    if (!alert) throw new HttpError(404, 'not_found', 'Alert not found');
+    // A malformed id can never match an alert (no lookup needed to know that).
+    if (!UUID.test(alertId)) throw new HttpError(404, 'not_found', 'Alert not found');
 
     // One answer for every token problem (malformed, forged, wrong alert/device, expired),
     // so a caller learns nothing about which check failed.
     const verified = verifyCheckInToken(
       token,
-      { alertId: alert.id, deviceId: device.id, now: deps.clock.now() },
+      { alertId, deviceId, now: deps.clock.now() },
       deps.tokenKeys,
     );
     if (!verified.ok) throw new HttpError(403, 'invalid_token', 'Invalid check-in token');
 
-    // The check-in counts toward the cell of the first saved place that this alert covers.
-    const areaCells = new Set(alert.area.h3Cells);
-    const place = (await deps.places.listForDevice(device.id)).find((p) => areaCells.has(p.h3Cell));
-    if (!place) throw new HttpError(403, 'not_in_area', 'This alert does not cover your places');
+    // A v2 token is signed for this alert, device and cell, so it proves the device was sent this
+    // alert for this cell: no alert or place lookup, and no database read at all.
+    let h3Cell = verified.h3Cell;
+    if (h3Cell === null) {
+      // Legacy v1 token (no cell): fall back to the old lookups. Only tokens issued before the
+      // v2 rollout reach this, and they stop working when their alerts expire.
+      const alert: Alert | null = await deps.alerts.get(alertId);
+      if (!alert) throw new HttpError(404, 'not_found', 'Alert not found');
+      // The check-in counts toward the cell of the first saved place that this alert covers.
+      const areaCells = new Set(alert.area.h3Cells);
+      const place = (await deps.places.listForDevice(deviceId)).find((p) =>
+        areaCells.has(p.h3Cell),
+      );
+      if (!place) throw new HttpError(403, 'not_in_area', 'This alert does not cover your places');
+      h3Cell = place.h3Cell;
+    }
 
     const checkIn: CheckIn = {
-      alertId: alert.id,
-      deviceId: device.id,
+      alertId,
+      deviceId,
       status,
       checkedInAt: deps.clock.now().toISOString(),
       token,
       idempotencyKey,
-      h3Cell: place.h3Cell,
+      h3Cell,
     };
     if (await deps.checkins.save(checkIn)) return json(200, { checkedInAt: checkIn.checkedInAt });
 
     // This device already checked in for this alert (a retry, or a new idempotencyKey).
     // Only the first check-in counts; answer with its original time.
-    const original = await deps.checkins.get(alert.id, device.id);
+    const original = await deps.checkins.get(alertId, deviceId);
     if (!original) throw new Error('Repeated check-in could not be read back');
     return json(200, { checkedInAt: original.checkedInAt });
   });

@@ -205,7 +205,7 @@ describe('demo path', () => {
         { alertId, deviceId: 'inside', now: clock.now() },
         tokenKeys.all,
       ),
-    ).toEqual({ ok: true });
+    ).toEqual({ ok: true, h3Cell: null });
 
     // The stored alert is signed, verifies, and has both summaries.
     const stored = await s.alertStore.get(alertId);

@@ -12,7 +12,8 @@ import { MemoryCheckInStore } from '../../src/adapters/memory/checkin-store.js';
 import { MemoryDeviceStore } from '../../src/adapters/memory/device-store.js';
 import { MemoryPlaceStore } from '../../src/adapters/memory/place-store.js';
 import { cellForPoint } from '../../src/geo/index.js';
-import { createCheckInToken } from '../../src/tokens/index.js';
+// Legacy v1 tokens: these tests cover the v1 fallback path. v2 is covered in checkins.test.ts.
+import { createCheckInTokenV1 as createCheckInToken } from '../../src/tokens/index.js';
 import type { AlertStore, Geocoder } from '../../src/ports.js';
 
 const SPEC_PATH = fileURLToPath(
@@ -544,7 +545,6 @@ describe('check-ins', () => {
     expect(res.body).toEqual({ checkedInAt: '2026-11-09T12:00:00.000Z' });
     expect(await checkins.get(s.alert.id, s.deviceId)).toMatchObject({
       deviceId: s.deviceId,
-      status: 'ok',
       h3Cell: sjCell,
     });
     expect(checkins.total(s.alert.id, sjCell)).toBe(1);
@@ -707,7 +707,10 @@ describe('check-ins', () => {
 
   it('returns 404 for an unknown or malformed alert id', async () => {
     const s = await setup();
-    expect((await post(randomUUID(), s.credential, body(s.token))).status).toBe(404);
+    const unknown = randomUUID(); // a valid v1 token for an alert that does not exist
+    expect((await post(unknown, s.credential, body(s.tokenFor(unknown, s.deviceId)))).status).toBe(
+      404,
+    );
     expect((await post('nope', s.credential, body(s.token))).status).toBe(404);
   });
 
