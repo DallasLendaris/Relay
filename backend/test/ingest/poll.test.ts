@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Alert } from '@relay/shared';
+import { relaySeverityFor, type Alert } from '@relay/shared';
 import { MemoryRawArchive } from '../../src/adapters/memory/raw-archive.js';
 import {
   createNwsClient,
@@ -43,6 +43,8 @@ function fakeNormalize(feature: unknown): NormalizeResult {
     sourceId,
     sent: p.sent ?? '2026-11-09T00:00:00Z',
     event: p.event ?? 'Flood Warning',
+    relaySeverity: relaySeverityFor(p.event ?? 'Flood Warning'),
+    references: [],
     area: { description: '', geometry: null, ugcCodes: [], sameCodes: [], h3Cells: [] },
   } as unknown as Alert;
   return { ok: true, alert };

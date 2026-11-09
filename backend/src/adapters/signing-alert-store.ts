@@ -1,6 +1,7 @@
 import type { Alert } from '@relay/shared';
 import type { AlertStore } from '../ports.js';
 import { signAlert, type SigningKey } from '../signing/index.js';
+import type { ActiveAlertLister } from '../ingest/poll.js';
 import { summariesFor } from '../summaries/index.js';
 
 /**
@@ -23,12 +24,20 @@ export class SigningAlertStore implements AlertStore {
   listActiveForCells(cells: string[], now: Date) {
     return this.inner.listActiveForCells(cells, now);
   }
+  /** Feed reconciliation: every active alert of one source. Needs an inner store that has it. */
+  async listActiveBySource(source: Alert['source'], now: Date): Promise<Alert[]> {
+    const inner = this.inner as Partial<ActiveAlertLister>;
+    if (!inner.listActiveBySource) throw new Error('alert store cannot list active alerts');
+    return inner.listActiveBySource(source, now);
+  }
 
   async save(alert: Alert): Promise<void> {
     const withSummaries: Alert = {
       ...alert,
       // Canonical cell order (sorted, unique) so every store returns exactly what was signed.
       area: { ...alert.area, h3Cells: [...new Set(alert.area.h3Cells)].sort() },
+      // A cancelled alert never carries summaries: regenerating them would say "in effect", and
+      // earlier ones are dropped. summariesFor returns [] for a cancelled alert.
       summaries: summariesFor(alert, { timeZone: 'America/Los_Angeles' }),
     };
     const signed = signAlert(withSummaries, this.currentKey);

@@ -143,11 +143,11 @@ describe('processBatch: building pushes', () => {
       expect(m.data['alertId']).toBe(alert.id);
       expect(m.data['expiresAt']).toBe('2026-11-10T14:00:00.000Z');
     }
-    expect(msgs[0]?.title).toBe('Warning: Flash Flood Warning');
-    expect(msgs[0]?.body).toBe('Flash Flood Warning until 6 PM');
+    expect(msgs[0]?.title).toBe('Flash Flood Warning');
+    expect(msgs[0]?.body).toBe('NWS: Flash Flood Warning until 6 PM');
     expect(msgs[0]?.data['checkInToken']).toBe('ct0');
     expect(msgs[1]?.title).toBe('Aviso: Flash Flood Warning');
-    expect(msgs[1]?.body).toBe('Inundación repentina');
+    expect(msgs[1]?.body).toBe('Resumen de Relay (no oficial): Inundación repentina Fuente: NWS');
   });
 
   it('quiet policy for watch: normal priority, no sound', async () => {

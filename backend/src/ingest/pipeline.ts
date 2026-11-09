@@ -25,7 +25,7 @@ import { parseFeed } from './feed.js';
 import type { EngineDeps } from './handler.js';
 import { applyMessage } from './lifecycle.js';
 import { normalizeFeature } from './normalize.js';
-import { DeliveryPausedError } from './poll.js';
+import { DeliveryPausedError, type ActiveAlertLister, type Reconciler } from './poll.js';
 
 export interface PipelineDeps {
   /** The real alert store (Postgres in AWS). It is wrapped so every save is signed. */
@@ -162,7 +162,29 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
     logger.info('alert ready published', { alertId: saved.id, severity: saved.relaySeverity });
   }
 
+  // Feed reconciliation needs a store that can list every active NWS alert; the Postgres and
+  // in-memory stores can. Without that method it is simply off.
+  const lister = deps.alertStore as Partial<ActiveAlertLister>;
+  const reconcile: Reconciler | undefined = lister.listActiveBySource
+    ? {
+        now: () => clock.now(),
+        listActive: (now) => store.listActiveBySource('nws', now),
+        async cancel(alert, reason) {
+          logger.warn('alert.ended_by_reconciliation', {
+            alertId: alert.id,
+            sourceId: alert.sourceId,
+            reason,
+          });
+          await store.save({ ...alert, state: 'cancelled' });
+          // Reload so the public copy is exactly what was stored: signed, no summaries.
+          const saved = await store.get(alert.id);
+          if (saved) await publishPublic(saved);
+        },
+      }
+    : undefined;
+
   return {
+    ...(reconcile ? { reconcile } : {}),
     normalize: (feature) =>
       normalizeFeature(feature, { newId: randomUUID, warn: (m, f) => logger.warn(m, f) }),
     parseFeed,

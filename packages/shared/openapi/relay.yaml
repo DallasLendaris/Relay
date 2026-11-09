@@ -708,6 +708,11 @@ components:
         signature:
           type: [string, 'null']
           description: Set once Relay validates the alert signature.
+        pds:
+          type: boolean
+          description: >-
+            True for a particularly dangerous situation (NWS damage threat CONSIDERABLE on a
+            Tornado or Flash Flood Warning). The tier stays warning. Omitted when not applicable.
 
     CheckIn:
       type: object

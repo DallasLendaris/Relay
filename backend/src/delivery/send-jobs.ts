@@ -1,42 +1,102 @@
 import type { Alert } from '@relay/shared';
 import type { AlertStore, DeliveryJob, PushMessage, PushSender } from '../ports.js';
+import { RELAY_SUMMARY_LABEL } from '../summaries/index.js';
 import { PUSH_POLICY } from './policy.js';
 import { redactPushTokens } from './redact.js';
 import type { Logger, PolicyPushMessage, SendResult } from './types.js';
-
-const SEVERITY_WORD: Record<Alert['relaySeverity'], string> = {
-  emergency: 'Emergency',
-  warning: 'Warning',
-  watch: 'Watch',
-  advisory: 'Advisory',
-  statement: 'Statement',
-};
 
 const SEVERITY_WORD_ES: Record<Alert['relaySeverity'], string> = {
   emergency: 'Emergencia',
   warning: 'Aviso',
   watch: 'Vigilancia',
   advisory: 'Advertencia',
-  statement: 'Declaración',
+  statement: 'Comunicado',
 };
+
+/** Longest part of a push body that comes from a raw NWS description. */
+export const MAX_DESCRIPTION_CHARS = 140;
+
+/**
+ * Plain text from a raw NWS description for a push body: drops "* WHAT..." style section markers
+ * and the "...ALL CAPS..." wrapper, joins lines, and keeps whole sentences up to `limit`
+ * characters. A first sentence that is too long is cut at a word boundary and ends with "…".
+ */
+export function cleanDescription(description: string, limit = MAX_DESCRIPTION_CHARS): string {
+  const flat = description
+    .replace(/\*\s*[A-Za-z][A-Za-z ]*\.\.\.\s*/g, ' ')
+    .replace(/^\s*\.\.\.+\s*/, '')
+    .replace(/\s*\.\.\.+\s*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (flat === '') return '';
+  const sentences = flat.match(/[^.!?]+(?:[.!?]+(?=\s|$)|$)/g)?.map((x) => x.trim()) ?? [flat];
+  let out = '';
+  for (const sentence of sentences) {
+    const next = out ? `${out} ${sentence}` : sentence;
+    if (next.length <= limit) {
+      out = next;
+      continue;
+    }
+    if (out) return out; // whole sentences only, once at least one fits
+    const room = flat.slice(0, limit - 1);
+    const cut = room.lastIndexOf(' ');
+    const words = (cut > 0 ? room.slice(0, cut) : room).replace(/[\s,;:.\-–]+$/, '');
+    return `${words}…`;
+  }
+  return out;
+}
+
+/** "NWS Hanford CA" becomes "NWS Hanford": the sender name without the trailing state code. */
+export function shortSenderName(senderName: string, source: Alert['source'] = 'nws'): string {
+  const name = senderName.trim().replace(/\s+[A-Z]{2}$/, '');
+  return name || source.toUpperCase();
+}
+
+/** The official one-line text: the NWS headline, or a clean start of the description. */
+function officialLine(alert: Alert): string {
+  return (
+    alert.official.headline?.trim() || cleanDescription(alert.official.description) || alert.event
+  );
+}
+
+/** " – EMERGENCY" or " – PDS" for the highest tiers, unless the event name already says so. */
+function titleSuffix(alert: Alert): string {
+  if (alert.relaySeverity === 'emergency' && !/emergency/i.test(alert.event)) {
+    return ' – EMERGENCY';
+  }
+  if (alert.pds === true && !/\bpds\b|particularly dangerous/i.test(alert.event)) return ' – PDS';
+  return '';
+}
 
 /**
  * The title and body for one alert in one language (shared by the Expo worker and the native
- * sender). Spanish uses the Relay summary; without one we fall back to the official English text.
+ * sender).
+ * - English: title is the official event name (plus " – PDS" or " – EMERGENCY"); body is the
+ *   sender and the official headline or a clean first sentence of the description.
+ * - Spanish with a Relay summary: the body says it is a Relay summary and not official, and
+ *   names the source. The official wording is never passed off as, or replaced by, the summary.
+ * - Spanish without a summary: Spanish tier word and official event name in the title, and the
+ *   body says the official alert is English only, followed by the English text.
  */
 export function alertPushText(
   alert: Alert,
   language: 'en' | 'es',
 ): { title: string; body: string } {
-  const spanish =
-    language === 'es'
-      ? alert.summaries.find((s) => s.language === 'es' && s.text.trim())
-      : undefined;
-  const body = spanish
-    ? spanish.text.trim()
-    : alert.official.headline?.trim() || alert.official.description.trim().slice(0, 140);
-  const word = spanish ? SEVERITY_WORD_ES : SEVERITY_WORD;
-  return { title: `${word[alert.relaySeverity]}: ${alert.event}`, body };
+  const suffix = titleSuffix(alert);
+  if (language === 'en') {
+    const sender = shortSenderName(alert.official.senderName, alert.source);
+    return { title: `${alert.event}${suffix}`, body: `${sender}: ${officialLine(alert)}` };
+  }
+  const title = `${SEVERITY_WORD_ES[alert.relaySeverity]}: ${alert.event}${suffix}`;
+  const summary = alert.summaries.find((s) => s.language === 'es' && s.text.trim());
+  if (summary) {
+    return {
+      title,
+      body: `${RELAY_SUMMARY_LABEL.es} (no oficial): ${summary.text.trim()} Fuente: ${alert.source.toUpperCase()}`,
+    };
+  }
+  const official = alert.source === 'nws' ? 'Alerta oficial del NWS' : 'Alerta oficial';
+  return { title, body: `${official} (solo en inglés): ${officialLine(alert)}` };
 }
 
 export function buildMessage(job: DeliveryJob, alert: Alert): PushMessage & PolicyPushMessage {
