@@ -23,7 +23,11 @@ export class FakePlaces implements PlaceStore {
     return cells.flatMap((c) => this.byCell.get(c) ?? []);
   }
   async listMatchesForCells(cells: string[]) {
-    return (await this.listForCells(cells)).map((p) => ({ placeId: p.id, deviceId: p.deviceId }));
+    return (await this.listForCells(cells)).map((p) => ({
+      placeId: p.id,
+      deviceId: p.deviceId,
+      h3Cell: p.h3Cell,
+    }));
   }
 }
 

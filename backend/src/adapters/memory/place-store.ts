@@ -28,7 +28,11 @@ export class MemoryPlaceStore implements PlaceStore {
 
   async listMatchesForCells(
     cells: string[],
-  ): Promise<Array<{ placeId: string; deviceId: string }>> {
-    return (await this.listForCells(cells)).map((p) => ({ placeId: p.id, deviceId: p.deviceId }));
+  ): Promise<Array<{ placeId: string; deviceId: string; h3Cell: string }>> {
+    return (await this.listForCells(cells)).map((p) => ({
+      placeId: p.id,
+      deviceId: p.deviceId,
+      h3Cell: p.h3Cell,
+    }));
   }
 }

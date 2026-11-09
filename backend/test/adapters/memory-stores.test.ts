@@ -148,6 +148,8 @@ describe('MemoryPlaceStore.listMatchesForCells', () => {
     });
     await s.add(p('1', 'c1'));
     await s.add(p('2', 'c2'));
-    expect(await s.listMatchesForCells(['c1'])).toEqual([{ placeId: '1', deviceId: 'd-1' }]);
+    expect(await s.listMatchesForCells(['c1'])).toEqual([
+      { placeId: '1', deviceId: 'd-1', h3Cell: 'c1' },
+    ]);
   });
 });

@@ -23,6 +23,7 @@ import {
   type ServiceAccount,
 } from '../../adapters/push/index.js';
 import { ExpoPushSender } from '../../adapters/expo/expo-push-sender.js';
+import { DynamoCellIndex } from '../cell-index/dynamo-cell-index.js';
 import { createKillSwitch } from '../../config/kill-switch.js';
 import { clearKeyringCache, loadKeyring, loadSecretString } from '../../config/secrets.js';
 import { DataApiExecutor } from '../../db/sql.js';
@@ -118,8 +119,7 @@ async function main(): Promise<void> {
     onDeadTarget: createDeadTargetClearer({
       devices: new PostgresDeviceStore(db),
       places: new PostgresPlaceStore(db),
-      doc,
-      cellIndexTable: env.CELL_INDEX_TABLE,
+      cellIndex: new DynamoCellIndex(doc, env.CELL_INDEX_TABLE),
     }),
     clock: { now: () => new Date() },
     logger,
