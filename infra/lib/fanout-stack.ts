@@ -53,8 +53,10 @@ export class FanoutStack extends Stack {
   readonly planQueueUrl: string;
   readonly urgentQueueArn: string;
   readonly urgentQueueUrl: string;
+  readonly urgentQueueName: string;
   readonly standardQueueArn: string;
   readonly standardQueueUrl: string;
+  readonly standardQueueName: string;
   readonly shardFunctionName: string;
   readonly shardFunctionArn: string;
   readonly shardDlqUrl: string;
@@ -218,8 +220,10 @@ export class FanoutStack extends Stack {
     this.planQueueUrl = plan.queue.queueUrl;
     this.urgentQueueArn = urgent.queue.queueArn;
     this.urgentQueueUrl = urgent.queue.queueUrl;
+    this.urgentQueueName = urgent.queue.queueName;
     this.standardQueueArn = standard.queue.queueArn;
     this.standardQueueUrl = standard.queue.queueUrl;
+    this.standardQueueName = standard.queue.queueName;
     this.shardFunctionName = shardFn.functionName;
     this.shardFunctionArn = shardFn.functionArn;
     this.shardDlqUrl = shardDlq.queueUrl;
