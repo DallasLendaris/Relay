@@ -1,0 +1,43 @@
+# DEP-7: keep the build context small and free of anything that is not needed to build the
+# sender image (backend/Dockerfile.sender copies manifests, packages/shared and backend only).
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.jks
+*.keystore
+
+# VCS and tooling
+.git
+.github
+.claude
+.vscode
+.idea
+
+# Dependencies and build output (the image installs and builds its own)
+**/node_modules
+**/dist
+**/cdk.out
+**/coverage
+**/*.tsbuildinfo
+
+# Tests and docs are not part of the runtime image (READMEs and docs are not read by any build step)
+**/test
+**/tests
+**/*.test.ts
+*.md
+**/*.md
+
+# Not part of the backend image
+app
+agency
+docs
+infra/lib
+infra/bin
+infra/test
+infra/scripts
+loadtest
+backend/dev-data

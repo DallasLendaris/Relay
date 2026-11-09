@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { LIMITS } from './limits.js';
 
 /**
  * "need_help" is reserved for the Pilot. The demo API rejects it, but the format
@@ -12,8 +13,8 @@ export const CheckInSchema = z.object({
   deviceId: z.string().uuid(),
   status: CheckInStatusSchema,
   checkedInAt: z.string().datetime({ offset: true }),
-  token: z.string(),
-  idempotencyKey: z.string(),
-  h3Cell: z.string(),
+  token: z.string().max(LIMITS.checkInTokenMax),
+  idempotencyKey: z.string().max(LIMITS.idempotencyKeyMax),
+  h3Cell: z.string().max(64),
 });
 export type CheckIn = z.infer<typeof CheckInSchema>;

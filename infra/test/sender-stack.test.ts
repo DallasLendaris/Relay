@@ -150,6 +150,26 @@ describe('SenderStack service', () => {
 const STOP = { senderEnabled: 'false', iUnderstandSenderStops: 'true' };
 const prodOff = synth('prod', STOP);
 
+describe('SenderStack container hardening (SEC-C-14)', () => {
+  it.each([
+    ['dev', dev],
+    ['prod', prod],
+  ])(
+    '%s: read-only root filesystem, no writable volumes, user left to the image (USER node)',
+    (_n, t) => {
+      const defs = Object.values(t.findResources('AWS::ECS::TaskDefinition')) as any[];
+      expect(defs).toHaveLength(1);
+      const containers = defs[0].Properties.ContainerDefinitions as any[];
+      expect(containers).toHaveLength(1);
+      expect(containers[0].ReadonlyRootFilesystem).toBe(true);
+      expect(containers[0].User).toBeUndefined();
+      // The process writes no files; a volume would be a reason to re-check this.
+      expect(defs[0].Properties.Volumes ?? []).toEqual([]);
+      expect(containers[0].MountPoints ?? []).toEqual([]);
+    },
+  );
+});
+
 describe('SenderStack gating (placeholder secrets must not crash-loop)', () => {
   it('dev defaults to off: desiredCount 0 and no auto scaling at all', () => {
     dev.hasResourceProperties('AWS::ECS::Service', { DesiredCount: 0 });
