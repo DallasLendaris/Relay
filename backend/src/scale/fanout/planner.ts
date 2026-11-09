@@ -76,7 +76,10 @@ export async function planShards(ready: AlertReady, deps: PlannerDeps): Promise<
   if (!outcome.ok) return { refused: outcome.refused, shards: 0, cells: 0 };
   const { alert, queue } = outcome;
 
-  const jobs = buildShardJobs(alert);
+  // The eligibility check above just read the kill switch (running, or we would have stopped).
+  // Hand that reading to every shard so they do not all read SSM (PERF-4c).
+  const killSwitch = { paused: false, readAtMs: deps.clock.now().getTime() };
+  const jobs = buildShardJobs(alert).map((job) => ({ ...job, killSwitch }));
   // Start the sender fleet ramping before the shards run: SQS-metric scaling alone needs 3-5
   // minutes. Urgent alerts only, and never allowed to block or fail the fan-out.
   if (queue === 'urgent' && deps.fleetScaler) {

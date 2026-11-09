@@ -1,3 +1,4 @@
+import { KILL_SWITCH_TTL_MS } from '../../config/kill-switch.js';
 import { alertEndTime } from '../../delivery/eligibility.js';
 import { CELL_BUCKETS, type CellIndex, type SendBatch, type SendQueue } from '../contracts.js';
 import { checkEligibility, type EligibilityDeps, type FanoutRefusal } from './common.js';
@@ -55,6 +56,17 @@ const FLUSH_BATCHES = 200;
 /** Headroom under MAX_MESSAGE_BYTES for the array brackets and a single-batch message. */
 const OVERSIZE_LIMIT = MAX_MESSAGE_BYTES - 1_024;
 
+/**
+ * The job's kill-switch value if it is fresh (younger than the worker's own cache TTL), else
+ * undefined. Malformed or future-dated values are ignored, so a bad field only costs an SSM read.
+ */
+export function freshKillSwitch(job: ResumableShardJob, nowMs: number): boolean | undefined {
+  const k = job.killSwitch as { paused?: unknown; readAtMs?: unknown } | undefined;
+  if (!k || typeof k.paused !== 'boolean' || typeof k.readAtMs !== 'number') return undefined;
+  const age = nowMs - k.readAtMs;
+  return age >= -1_000 && age < KILL_SWITCH_TTL_MS ? k.paused : undefined;
+}
+
 const emptyResult = (cells: number): ShardResult => ({
   cells,
   entries: 0,
@@ -83,7 +95,12 @@ export async function processShard(
   job: ResumableShardJob,
   deps: ShardWorkerDeps,
 ): Promise<ShardResult> {
-  const outcome = await checkEligibility(job, deps, 'shard');
+  const passed = freshKillSwitch(job, deps.clock.now().getTime());
+  const outcome = await checkEligibility(
+    job,
+    passed === undefined ? deps : { ...deps, isDeliveryPaused: async () => passed },
+    'shard',
+  );
   if (!outcome.ok) return { ...emptyResult(job.cells.length), refused: outcome.refused };
   const { alert, queue } = outcome;
   const alertCellSet = new Set(alert.area.h3Cells);

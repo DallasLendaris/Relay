@@ -160,19 +160,18 @@ describe('capacity', () => {
     const warmed = (Object.values(prod.api.findResources('AWS::DynamoDB::Table')) as any[]).filter(
       (x) => x.Properties.WarmThroughput,
     );
-    expect(warmed).toHaveLength(1); // the totals table is written in small batches
+    expect(warmed).toHaveLength(2); // the check-ins table and the totals table (capacity.test.ts)
     const custom = synthAll('prod', { capacity: { checkinsWarmWritesPerSecond: 10000 } });
     expect(checkins(custom.api).Properties.WarmThroughput).toEqual({ WriteUnitsPerSecond: 10000 });
   });
 
-  it('reserved concurrency is unset by default (a fresh account deploys) and settable', () => {
-    for (const t of [dev.api, prod.api]) {
-      expect(
-        fns(t).filter((f) => f.Properties['ReservedConcurrentExecutions'] !== undefined),
-      ).toEqual([]);
-    }
+  it('reserved concurrency is unset on dev, planned on prod (capacity.test.ts), and settable', () => {
+    expect(
+      fns(dev.api).filter((f) => f.Properties['ReservedConcurrentExecutions'] !== undefined),
+    ).toEqual([]);
     const t = synthAll('prod', {
       capacity: {
+        lambdaConcurrencyQuota: 15000,
         apiReservedConcurrency: 3000,
         aggregatorReservedConcurrency: 20,
         repairReservedConcurrency: 5,

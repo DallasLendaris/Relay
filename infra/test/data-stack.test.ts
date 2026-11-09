@@ -21,7 +21,7 @@ describe('DataStack', () => {
     });
   });
 
-  it('scales serverless v2 between 0 and 2 ACU', () => {
+  it('scales serverless v2 between 0 (auto-pause) and 2 ACU on dev', () => {
     t.hasResourceProperties('AWS::RDS::DBCluster', {
       ServerlessV2ScalingConfiguration: Match.objectLike({ MinCapacity: 0, MaxCapacity: 2 }),
     });

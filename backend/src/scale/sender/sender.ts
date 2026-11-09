@@ -119,6 +119,7 @@ export type BatchReason =
   | 'sent'
   | 'duplicate'
   | 'leased'
+  | 'claim_throttled'
   | 'alert_missing'
   | 'unsigned'
   | 'paused'
@@ -307,10 +308,19 @@ export async function processBatch(
 ): Promise<BatchOutcome> {
   const { idempotency, logger } = deps;
   const write = deps.writeMetric ?? consoleMetricWriter;
-  const claim = await idempotency.claim(
-    batch.batchKey,
-    new Date(deps.clock.now().getTime() + SENDER_LEASE_MS),
-  );
+  let claim: Awaited<ReturnType<typeof idempotency.claim>>;
+  try {
+    claim = await idempotency.claim(
+      batch.batchKey,
+      new Date(deps.clock.now().getTime() + SENDER_LEASE_MS),
+    );
+  } catch (err) {
+    // The store retried its own throttles and gave up (PERF-4b). No claim was taken, so there is
+    // nothing to release: leave this batch's message to be redelivered, never crash the message.
+    if ((err as { retryable?: unknown } | null)?.retryable !== true) throw err;
+    logger.warn('sender.claim_throttled', { batchKey: batch.batchKey, ...errorFields(err) });
+    return outcome(false, 'claim_throttled');
+  }
   if (claim === 'sent') return outcome(true, 'duplicate');
   if (claim === 'leased') return outcome(false, 'leased'); // another attempt is live; retry later
 

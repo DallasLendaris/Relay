@@ -354,8 +354,14 @@ describe('FanoutStack', () => {
           ) && !(f as Res).Properties.Handler.includes('shardHandler'),
       ) as Res;
 
-    it('runs every minute with DB access and cell-index write access', () => {
-      t.hasResourceProperties('AWS::Events::Rule', { ScheduleExpression: 'rate(1 minute)' });
+    it('runs every 5 minutes on dev and every minute on prod (PERF-5)', () => {
+      t.hasResourceProperties('AWS::Events::Rule', { ScheduleExpression: 'rate(5 minutes)' });
+      synth('prod').t.hasResourceProperties('AWS::Events::Rule', {
+        ScheduleExpression: 'rate(1 minute)',
+      });
+    });
+
+    it('has DB access and cell-index write access', () => {
       const vars = drainerFn().Properties.Environment.Variables;
       expect(Object.keys(vars).sort()).toEqual([
         'CELL_INDEX_TABLE',
