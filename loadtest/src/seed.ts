@@ -69,6 +69,13 @@ export const DEFAULT_SEED = 1;
 export interface SeedOptions {
   devices?: number;
   seed?: number;
+  /** `dev` (default): `dev-00000042`. `uuid`: a deterministic v4-shaped UUID, as the API issues. */
+  deviceIds?: 'dev' | 'uuid';
+}
+
+/** Deterministic UUID-shaped id for device number i (matches the API's id check). */
+export function uuidForDevice(i: number): string {
+  return `00000000-0000-4000-8000-${i.toString(16).padStart(12, '0')}`;
 }
 
 export interface SeedPlace {
@@ -154,6 +161,7 @@ function fcmToken(rng: Rng): string {
 export function* generateDevices(options: SeedOptions = {}): Generator<SeedDevice> {
   const count = options.devices ?? DEFAULT_DEVICES;
   const rng = createRng(options.seed ?? DEFAULT_SEED);
+  const uuid = options.deviceIds === 'uuid';
   for (let i = 0; i < count; i++) {
     const ios = rng() < IOS_SHARE;
     const language = rng() < EN_SHARE ? 'en' : 'es';
@@ -162,7 +170,7 @@ export function* generateDevices(options: SeedOptions = {}): Generator<SeedDevic
     const places: SeedPlace[] = [];
     for (let p = 1; p <= placeCount; p++) places.push(drawPlace(rng, p));
     yield {
-      deviceId: `dev-${String(i).padStart(8, '0')}`,
+      deviceId: uuid ? uuidForDevice(i) : `dev-${String(i).padStart(8, '0')}`,
       target: ios
         ? { platform: 'ios', token: apnsToken(rng) }
         : { platform: 'android', token: fcmToken(rng) },

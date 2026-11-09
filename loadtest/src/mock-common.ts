@@ -92,12 +92,16 @@ export function pickOutcome(mix: ErrorMix, rng: Rng): Outcome {
  * `attempts` counts every request that reached the handler with a usable token.
  */
 export class TokenCounters {
+  /** @param trackAttempts set false to skip the per-token attempt map (saves memory at 1M tokens). */
+  constructor(private readonly trackAttempts = true) {}
+
   readonly attempts = new Map<string, number>();
   readonly delivered = new Map<string, number>();
   /** Tokens answered with "unregistered" (a terminal answer, not a delivery). */
   readonly unregistered = new Map<string, number>();
 
   recordAttempt(token: string): void {
+    if (!this.trackAttempts) return;
     this.attempts.set(token, (this.attempts.get(token) ?? 0) + 1);
   }
 
