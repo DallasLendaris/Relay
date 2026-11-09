@@ -4,13 +4,18 @@ import { cellForPoint } from '../geo/index.js';
 import {
   QUEUE_FOR_SEVERITY,
   type CellIndex,
-  type CellIndexEntry,
   type PushTarget,
   type SendBatch,
   type SendQueue,
   type SendQueueName,
 } from '../scale/contracts.js';
 import type { IndexRepairMessage, IndexRepairQueue } from '../scale/cell-index/repair-queue.js';
+import {
+  deviceCellsOf,
+  syncDeviceCells,
+  type DeviceTruth,
+} from '../scale/cell-index/sync-device-cells.js';
+import { primaryCellOf } from '../scale/fanout/primary-cell.js';
 import { targetOf } from '../scale/cell-index/util.js';
 import { alertEndTime } from '../delivery/eligibility.js';
 import {
@@ -212,6 +217,8 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     target: PushTarget | null,
     language: 'en' | 'es',
     cells: string[],
+    /** ALL the device's cells (sorted). Defaults to `cells` (fail open: sends). */
+    deviceCells: string[] = cells,
   ): Promise<void> {
     const late = deps.lateJoin;
     if (!late || !target || cells.length === 0) return;
@@ -226,8 +233,12 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
         const expiresAt = alertEndTime(alert);
         if (expiresAt.getTime() <= now.getTime()) continue;
         const areaCells = new Set(alert.area.h3Cells);
-        const h3Cell = cells.find((c) => areaCells.has(c));
-        if (!h3Cell) continue;
+        if (!cells.some((c) => areaCells.has(c))) continue;
+        // Same primary-cell rule as the shard worker: the device is sent from the smallest of its
+        // cells in the alert area. A new place in any other cell adds no push: the planned
+        // fan-out already reaches the device through its primary cell.
+        const h3Cell = primaryCellOf(deviceCells, areaCells);
+        if (h3Cell === undefined || !cells.includes(h3Cell)) continue;
         batches[queue].push({
           alertId: alert.id,
           sourceId: alert.sourceId,
@@ -282,10 +293,6 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     deviceId,
     placeId: '',
   });
-  const targetKey = (d: Device): string => {
-    const t = targetOf(d);
-    return `${t?.platform ?? ''}:${t?.token ?? ''}:${d.language}`;
-  };
 
   /** Reads `Authorization: Bearer <deviceId>.<secret>` and returns the device, or throws 401. */
   async function authenticate(req: Request): Promise<Device> {
@@ -373,8 +380,8 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       try {
         const cells = [
           ...new Set((await deps.places.listForDevice(device.id)).map((p) => p.h3Cell)),
-        ];
-        await sendLateJoinAlerts(device.id, target, language, cells);
+        ].sort();
+        await sendLateJoinAlerts(device.id, target, language, cells, cells);
       } catch {
         /* best effort */
       }
@@ -448,42 +455,44 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       createdAt: deps.clock.now().toISOString(),
     };
     await deps.places.add(place);
-    // Read the device's CURRENT target now, after the place is saved. The row loaded for
-    // authentication is from the start of the request; a push token registered in between would
-    // otherwise be written as null here. Residual race: a token registered after this read but
-    // before the put lands is not seen by that request's syncDevice (the entry did not exist
-    // yet); the re-read below catches it and queues a repair. A change after the re-read is
-    // picked up by the next sync or the backfill.
-    let current: Device = device;
-    try {
-      current = (await deps.devices.get(device.id)) ?? device;
-    } catch {
-      /* use the authenticated row */
-    }
-    const entry: CellIndexEntry = {
-      h3Cell: place.h3Cell,
-      deviceId: device.id,
-      placeId: place.id,
-      target: targetOf(current),
-      language: current.language,
-    };
+    // Write the new entry FIRST, then rewrite deviceCells on the device's other entries
+    // (syncDeviceCells). It reads the device's CURRENT target and places from Aurora after the
+    // place is saved (the row loaded for authentication is from the start of the request) and
+    // re-reads afterwards, so a push token registered in between is caught and rewritten.
+    const seen: { truth?: DeviceTruth } = {};
     const repairPut: IndexRepairMessage = {
       op: 'put',
       h3Cell: place.h3Cell,
       deviceId: device.id,
       placeId: place.id,
     };
-    await writeThrough('put', () => deps.cellIndex.put([entry]), [repairPut]);
-    try {
-      const after = (await deps.devices.get(device.id)) ?? current;
-      if (targetKey(after) !== targetKey(current)) {
-        await enqueueRepair([{ ...repairPut, op: 'update' }]);
-        current = after;
-      }
-    } catch {
-      /* the verification read is best effort */
-    }
-    await sendLateJoinAlerts(device.id, targetOf(current), current.language, [place.h3Cell]);
+    await writeThrough(
+      'put',
+      () =>
+        syncDeviceCells(deps.cellIndex, {
+          deviceId: device.id,
+          added: { placeId: place.id },
+          load: async () => {
+            const current = (await deps.devices.get(device.id)) ?? device;
+            const places = await deps.places.listForDevice(device.id);
+            seen.truth = {
+              target: targetOf(current),
+              language: current.language,
+              places: places.map((p) => ({ id: p.id, h3Cell: p.h3Cell })),
+            };
+            return seen.truth;
+          },
+        }),
+      [repairPut],
+    );
+    const truth = seen.truth;
+    await sendLateJoinAlerts(
+      device.id,
+      truth ? truth.target : targetOf(device),
+      truth ? truth.language : device.language,
+      [place.h3Cell],
+      truth ? deviceCellsOf(truth.places) : [place.h3Cell],
+    );
     return json(201, toPlaceBody(place));
   });
 
@@ -503,9 +512,25 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     if (!place || !(await deps.places.remove(device.id, placeId))) {
       throw new HttpError(404, 'not_found', 'Place not found');
     }
-    await writeThrough('remove', () => deps.cellIndex.remove(place.h3Cell, device.id, place.id), [
-      { op: 'remove', h3Cell: place.h3Cell, deviceId: device.id, placeId: place.id },
-    ]);
+    // Rewrite the remaining entries without this cell FIRST, then delete the removed entry.
+    await writeThrough(
+      'remove',
+      () =>
+        syncDeviceCells(deps.cellIndex, {
+          deviceId: device.id,
+          removed: { h3Cell: place.h3Cell, placeId: place.id },
+          load: async () => {
+            const current = (await deps.devices.get(device.id)) ?? device;
+            const places = await deps.places.listForDevice(device.id);
+            return {
+              target: targetOf(current),
+              language: current.language,
+              places: places.map((p) => ({ id: p.id, h3Cell: p.h3Cell })),
+            };
+          },
+        }),
+      [{ op: 'remove', h3Cell: place.h3Cell, deviceId: device.id, placeId: place.id }],
+    );
     return noContent();
   });
 

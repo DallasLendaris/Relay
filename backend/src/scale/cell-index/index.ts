@@ -9,3 +9,9 @@ export {
   type IndexRepairMessage,
   type IndexRepairQueue,
 } from './repair-queue.js';
+export {
+  deviceCellsOf,
+  syncDeviceCells,
+  type DeviceTruth,
+  type SyncDeviceCellsInput,
+} from './sync-device-cells.js';

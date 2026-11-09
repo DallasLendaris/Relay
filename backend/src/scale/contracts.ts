@@ -42,6 +42,14 @@ export interface CellIndexEntry {
   /** Null when the device has no working push target yet; such entries are skipped. */
   target: PushTarget | null;
   language: 'en' | 'es';
+  /**
+   * The sorted, de-duplicated H3 cells of ALL of this device's saved places (at most 5), the same
+   * list on every one of the device's entries. The shard worker uses it to send a multi-cell
+   * device from exactly one cell per alert (the smallest cell of the alert area, see
+   * fanout/primary-cell.ts). Optional for backward compatibility: an entry without it is
+   * always sent (fail open: a duplicate push is better than a missed one).
+   */
+  deviceCells?: string[];
 }
 
 export interface CellIndexPage {

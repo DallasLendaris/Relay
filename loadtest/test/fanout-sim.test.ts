@@ -24,9 +24,10 @@ describe('fan-out simulation (20,000 devices)', () => {
     expect(r.exactlyOnce.deliveredOnce + r.exactlyOnce.excusedPermanent).toBe(
       r.exactlyOnce.expectedDevices - r.exactlyOnce.knownTwoCellDuplicates,
     );
-    // The documented gap shows up (devices with places in two alert cells), and only as such.
+    // Devices with places in two alert cells exist, and the primary-cell rule (seed entries carry
+    // deviceCells) sends each of them once: no cross-cell duplicates at all.
     expect(r.counts.devicesInTwoOrMoreCells).toBeGreaterThan(0);
-    expect(r.exactlyOnce.knownTwoCellDuplicates).toBeGreaterThan(0);
+    expect(r.exactlyOnce.knownTwoCellDuplicates).toBe(0);
     // The error mix was really on: dead tokens and retries happened.
     expect(r.pass1.permanentFailed).toBeGreaterThan(0);
     expect(r.pass1.retried).toBeGreaterThan(0);

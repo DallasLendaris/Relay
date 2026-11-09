@@ -53,6 +53,22 @@ describe('seed generator', () => {
     expect(tokens.size).toBe(byDevice.size);
   });
 
+  it('gives every entry of a device the same sorted, de-duplicated deviceCells of all its places', () => {
+    const byDevice = new Map<string, CellIndexEntry[]>();
+    for (const e of generateEntries({ devices: 20_000, seed: 5 })) {
+      byDevice.set(e.deviceId, [...(byDevice.get(e.deviceId) ?? []), e]);
+    }
+    let multiCell = 0;
+    for (const list of byDevice.values()) {
+      const want = [...new Set(list.map((e) => e.h3Cell))].sort();
+      for (const e of list) expect(e.deviceCells).toEqual(want);
+      expect(want.length).toBeLessThanOrEqual(5);
+      if (want.length > 1) multiCell++;
+    }
+    // About 10% of devices have several places, nearly all in different cells.
+    expect(multiCell).toBeGreaterThan(1_000);
+  });
+
   it('has the stated platform, language, multi-place and urban mix (100k devices)', () => {
     const N = 100_000;
     let ios = 0;

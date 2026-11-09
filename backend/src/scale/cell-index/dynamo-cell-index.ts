@@ -27,12 +27,19 @@ export interface DynamoCellIndexOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
+/** `deviceCells` as stored (a list of strings), or nothing for old entries. */
+function deviceCellsOf(raw: unknown): { deviceCells?: string[] } {
+  if (!Array.isArray(raw)) return {};
+  const cells = raw.filter((c): c is string => typeof c === 'string');
+  return cells.length > 0 ? { deviceCells: cells } : {};
+}
+
 const realSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /**
  * CellIndex on DynamoDB. Table: partition key `h3Cell` (S), sort key `sk` (S) =
  * `${deviceId}#${placeId}`. Attributes: deviceId, placeId, target ({platform, token} or null),
- * language, updatedAt (ISO).
+ * language, deviceCells (list of strings, optional on old entries), updatedAt (ISO).
  */
 export class DynamoCellIndex implements CellIndex {
   private readonly now: () => Date;
@@ -60,6 +67,7 @@ export class DynamoCellIndex implements CellIndex {
         placeId: e.placeId,
         target: e.target ? { platform: e.target.platform, token: e.target.token } : null,
         language: e.language,
+        ...(e.deviceCells ? { deviceCells: [...e.deviceCells] } : {}),
         updatedAt,
       });
     }
@@ -167,6 +175,7 @@ export class DynamoCellIndex implements CellIndex {
         placeId: String(item['placeId']),
         target: target ? { platform: target.platform, token: target.token } : null,
         language: item['language'] === 'es' ? 'es' : 'en',
+        ...deviceCellsOf(item['deviceCells']),
       };
     });
     const last = res.LastEvaluatedKey;

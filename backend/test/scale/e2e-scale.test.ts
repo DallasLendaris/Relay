@@ -216,6 +216,9 @@ describe('statewide scale path, in memory', () => {
       });
       const placeCells = [cells[i % cells.length] as string];
       if (i < SECOND_PLACES) placeCells.push(cells[(i + 7) % cells.length] as string);
+      // Every entry carries all of the device's cells; only the smallest one sends (the whole
+      // alert area is covered here).
+      const deviceCells = [...new Set(placeCells)].sort();
       for (const [n, h3Cell] of placeCells.entries()) {
         const placeId = `p${n}-${i}`;
         await places.add({
@@ -234,8 +237,9 @@ describe('statewide scale path, in memory', () => {
           placeId,
           target,
           language: i % 5 === 0 ? 'es' : 'en',
+          deviceCells,
         });
-        if (target) expected.set(`${deviceId}|${h3Cell}`, target);
+        if (target && h3Cell === deviceCells[0]) expected.set(`${deviceId}|${h3Cell}`, target);
       }
     }
     expect(entries).toHaveLength(TOTAL_ENTRIES);
@@ -316,7 +320,7 @@ describe('statewide scale path, in memory', () => {
     expect(outcomes.reduce((n, o) => n + o.retried, 0)).toBe(push.retryable);
     expect(outcomes.some((o) => o.gaveUp > 0)).toBe(false);
 
-    // Every device with a target that is not dead got exactly one successful push per cell.
+    // Every device with a target that is not dead got exactly one successful push, in its primary cell.
     let live = 0;
     for (const [key, target] of expected) {
       const got = push.ok.get(key) ?? 0;
@@ -329,11 +333,20 @@ describe('statewide scale path, in memory', () => {
     expect(live).toBeGreaterThan(expected.size * 0.97);
     // Nobody got a push they should not have: no target, or an unknown device/cell pair.
     for (const key of push.ok.keys()) expect(expected.has(key), key).toBe(true);
-    // Devices with a second place were pushed once in EACH of their cells (one per cell batch).
-    const twoCells = [...expected.keys()].filter((k) => k.startsWith(deviceIdOf(1))).length;
-    expect(twoCells).toBe(2);
-    expect(push.ok.get(`${deviceIdOf(1)}|${cells[1]}`)).toBe(1);
-    expect(push.ok.get(`${deviceIdOf(1)}|${cells[8]}`)).toBe(1);
+    // Devices with a second place in another cell were pushed ONCE, from the smaller cell, and
+    // never in the other: zero cross-cell duplicates.
+    const [lo, hi] = [cells[1] as string, cells[8] as string].sort() as [string, string];
+    expect([...expected.keys()].filter((k) => k.startsWith(deviceIdOf(1)))).toEqual([
+      `${deviceIdOf(1)}|${lo}`,
+    ]);
+    expect(push.ok.get(`${deviceIdOf(1)}|${lo}`)).toBe(1);
+    expect(push.ok.get(`${deviceIdOf(1)}|${hi}`)).toBeUndefined();
+    const perDevice = new Map<string, number>();
+    for (const [key, n] of push.ok) {
+      const id = key.split('|')[0] as string;
+      perDevice.set(id, (perDevice.get(id) ?? 0) + n);
+    }
+    for (const [id, n] of perDevice) expect(n, id).toBe(1);
 
     // ---------- 5. Dead targets are cleared, nothing else is ----------
     const dead = [...targetOfDevice].filter(([, t]) => t && isDead(t.token)).map(([id]) => id);
