@@ -21,6 +21,7 @@ import { createCheckInToken, type TokenKey } from '../../tokens/index.js';
 import type { FanoutRefusal } from './common.js';
 import { CachedAlertReader } from './alert-cache.js';
 import { fleetScalerFromEnv } from './fleet-scaler.js';
+import { SqsPausedQueue, type PausedQueue } from './paused-queue.js';
 import { isAlertReady, isShardJob, type ResumableShardJob } from './messages.js';
 import { DynamoCellReader } from './dynamo-cell-reader.js';
 import { planShards, type PlannerDeps } from './planner.js';
@@ -86,25 +87,63 @@ async function retryUnsigned<D extends { logger: Logger }, R extends { refused?:
   return result;
 }
 
+/**
+ * A paused kill switch is not final, and must not throw (a throw ends in a DLQ and a manual
+ * redrive): with a parking queue the message is parked there, the run counts as handled, and the
+ * paused-queue consumer re-dispatches it once the switch is back to running.
+ */
+async function parkIfPaused<R extends { refused?: FanoutRefusal }>(
+  result: R,
+  park: PausedQueue | undefined,
+  message: Parameters<PausedQueue['park']>[0],
+  log: Logger,
+): Promise<R | { refused?: undefined }> {
+  if (result.refused !== 'paused' || !park) return result;
+  await park.park(message);
+  log.warn('fanout.parked_while_paused', {
+    kind: message.kind,
+    alertId: message.kind === 'shard' ? message.job.alertId : message.ready.alertId,
+    ...(message.kind === 'shard' ? { shardId: message.job.shardId } : {}),
+  });
+  return {};
+}
+
 export const buildPlannerHandler =
-  (deps: PlannerDeps, refreshKeys?: () => Promise<PlannerDeps>) =>
+  (deps: PlannerDeps, refreshKeys?: () => Promise<PlannerDeps>, paused?: PausedQueue) =>
   (event: SQSEvent): Promise<SQSBatchResponse> =>
-    runRecords(event, isAlertReady, (ready) =>
-      retryUnsigned({ alertId: ready.alertId }, deps, refreshKeys, (d) => planShards(ready, d)),
+    runRecords(event, isAlertReady, async (ready) =>
+      parkIfPaused(
+        await retryUnsigned({ alertId: ready.alertId }, deps, refreshKeys, (d) =>
+          planShards(ready, d),
+        ),
+        paused,
+        { kind: 'plan', ready, parkedAt: deps.clock.now().toISOString() },
+        deps.logger,
+      ),
     );
 
 /**
  * The shard worker takes a ShardJob two ways:
  *  - directly, from an async Lambda invoke (the default): the event IS the job. Failures throw,
- *    so Lambda's async retry (2 retries, then the on-failure DLQ) takes over. 'paused' throws too.
+ *    so Lambda's async retry (2 retries, then the on-failure DLQ) takes over.
  *  - from SQS (SHARD_DISPATCH=sqs): returns batchItemFailures.
+ * A paused kill switch never throws when `paused` (the parking queue) is given: the job is
+ * parked and the invoke succeeds. Without it, the old behavior: throw (direct) or retry (SQS).
  */
 export const buildShardHandler =
-  (deps: ShardWorkerDeps, refreshKeys?: () => Promise<ShardWorkerDeps>) =>
+  (deps: ShardWorkerDeps, refreshKeys?: () => Promise<ShardWorkerDeps>, paused?: PausedQueue) =>
   async (event: SQSEvent | ResumableShardJob): Promise<SQSBatchResponse | undefined> => {
-    const run = (job: ResumableShardJob) =>
-      retryUnsigned({ alertId: job.alertId, shardId: job.shardId }, deps, refreshKeys, (d) =>
-        processShard(job, d),
+    const run = async (job: ResumableShardJob) =>
+      parkIfPaused(
+        await retryUnsigned(
+          { alertId: job.alertId, shardId: job.shardId },
+          deps,
+          refreshKeys,
+          (d) => processShard(job, d),
+        ),
+        paused,
+        { kind: 'shard', job, parkedAt: deps.clock.now().toISOString() },
+        deps.logger,
       );
     if ('Records' in event) return runRecords(event, isShardJob, run);
     if (!isShardJob(event)) throw new Error('shard event is not a ShardJob');
@@ -152,7 +191,11 @@ const PLANNER_ENV = [
   'DB_NAME',
   'ALERT_KEYS_SECRET_ARN',
   'KILL_SWITCH_PARAM',
+  'PAUSED_QUEUE_URL',
 ] as const;
+
+/** Upper bound of the random delay before a cold shard container's first kill-switch read. */
+const COLD_START_JITTER_MS = 2_000;
 
 const SHARD_ENV = [
   'DB_CLUSTER_ARN',
@@ -164,6 +207,7 @@ const SHARD_ENV = [
   'ALERT_KEYS_SECRET_ARN',
   'TOKEN_KEYS_SECRET_ARN',
   'KILL_SWITCH_PARAM',
+  'PAUSED_QUEUE_URL',
 ] as const;
 
 let planner: Promise<(event: SQSEvent) => Promise<SQSBatchResponse>> | undefined;
@@ -203,11 +247,16 @@ function buildPlanner(env: Record<string, string | undefined>) {
     verifyAlert: createAlertVerifier((await loadKeyring(e.ALERT_KEYS_SECRET_ARN)).all),
   });
   // Keys are read per invocation (loadKeyring caches for 5 minutes), so rotation is picked up.
+  const paused = new SqsPausedQueue(new SQSClient({}), e.PAUSED_QUEUE_URL);
   return async (event: SQSEvent) =>
-    buildPlannerHandler(await withKeys(), async () => {
-      clearKeyringCache();
-      return withKeys();
-    })(event);
+    buildPlannerHandler(
+      await withKeys(),
+      async () => {
+        clearKeyringCache();
+        return withKeys();
+      },
+      paused,
+    )(event);
 }
 
 function buildShard(env: Record<string, string | undefined>) {
@@ -229,10 +278,14 @@ function buildShard(env: Record<string, string | undefined>) {
       urgent: e.URGENT_QUEUE_URL,
       standard: e.STANDARD_QUEUE_URL,
     }),
-    isDeliveryPaused: createKillSwitch(e.KILL_SWITCH_PARAM),
+    // Up to 2 s of jitter before the first read: hundreds of cold shards must not hit SSM at once.
+    isDeliveryPaused: createKillSwitch(e.KILL_SWITCH_PARAM, undefined, undefined, {
+      coldJitterMs: COLD_START_JITTER_MS,
+    }),
     clock,
     logger,
   };
+  const paused = new SqsPausedQueue(new SQSClient({}), e.PAUSED_QUEUE_URL);
   const withKeys = async (): Promise<ShardWorkerDeps> => {
     const [alertKeys, tokenKeys] = await Promise.all([
       loadKeyring(e.ALERT_KEYS_SECRET_ARN),
@@ -253,10 +306,14 @@ function buildShard(env: Record<string, string | undefined>) {
       ...(await withKeys()),
       ...(remainingMs ? { remainingMs } : {}),
     });
-    return buildShardHandler(await timed(), async () => {
-      clearKeyringCache();
-      return timed();
-    })(event);
+    return buildShardHandler(
+      await timed(),
+      async () => {
+        clearKeyringCache();
+        return timed();
+      },
+      paused,
+    )(event);
   };
 }
 

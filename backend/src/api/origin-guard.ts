@@ -1,10 +1,13 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { loadSecretString } from '../config/secrets.js';
+import { readThrough, type CacheEntry } from '../config/stale.js';
 
 /** The header CloudFront adds to every request it forwards to the API origin. */
 export const ORIGIN_VERIFY_HEADER = 'x-relay-origin-verify';
 
 const TTL_MS = 5 * 60 * 1000;
+/** When Secrets Manager errors, the last good secret is served for up to this long. */
+export const ORIGIN_SECRET_STALE_MS = 60 * 60 * 1000;
 
 export interface OriginGuardOptions {
   /** Reads the shared secret (Secrets Manager in AWS). Cached, so not one call per request. */
@@ -20,15 +23,22 @@ export interface OriginGuardOptions {
  */
 export function createOriginGuard(opts: OriginGuardOptions) {
   const now = opts.now ?? Date.now;
-  let cached: { at: number; digest: Buffer } | undefined;
+  let cached: CacheEntry<Buffer> | undefined;
 
-  async function expectedDigest(): Promise<Buffer> {
-    if (cached && now() - cached.at < TTL_MS) return cached.digest;
-    const secret = (await opts.loadSecret()).trim();
-    if (secret === '') throw new Error('origin verify secret is empty');
-    cached = { at: now(), digest: createHash('sha256').update(secret).digest() };
-    return cached.digest;
-  }
+  const expectedDigest = (): Promise<Buffer> =>
+    readThrough({
+      source: 'origin_secret',
+      entry: cached,
+      ttlMs: TTL_MS,
+      staleMs: ORIGIN_SECRET_STALE_MS,
+      now,
+      store: (e) => (cached = e),
+      load: async () => {
+        const secret = (await opts.loadSecret()).trim();
+        if (secret === '') throw new Error('origin verify secret is empty');
+        return createHash('sha256').update(secret).digest();
+      },
+    });
 
   return {
     /** True when the request carries the right header. Throws if the secret cannot be loaded. */

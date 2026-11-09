@@ -18,6 +18,7 @@ const event = (headers: Record<string, string> = {}): ApiEvent => ({
 });
 
 beforeEach(() => {
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -95,6 +96,46 @@ describe('origin verification (REQUIRE_ORIGIN_HEADER)', () => {
     });
     const res = await h(event({ [ORIGIN_VERIFY_HEADER]: SECRET }));
     expect(res.statusCode).toBe(500);
+  });
+
+  it('SEC-A-6: serves the last good secret when Secrets Manager errors after the cache expired (up to 1 hour)', async () => {
+    let t = 0;
+    let fail = false;
+    const h = handlerWith(
+      async () => {
+        if (fail) throw new Error('ThrottlingException');
+        return SECRET;
+      },
+      () => t,
+    );
+    expect((await h(event({ [ORIGIN_VERIFY_HEADER]: SECRET }))).statusCode).toBe(201);
+    fail = true;
+    t = 6 * 60 * 1000; // cache expired, load fails
+    expect((await h(event({ [ORIGIN_VERIFY_HEADER]: SECRET }))).statusCode).toBe(201);
+    expect((await h(event({ [ORIGIN_VERIFY_HEADER]: 'wrong' }))).statusCode).toBe(403);
+    t = 59 * 60 * 1000;
+    expect((await h(event({ [ORIGIN_VERIFY_HEADER]: SECRET }))).statusCode).toBe(201);
+    const logged = vi.mocked(console.warn).mock.calls.map((c) => String(c[0]));
+    expect(logged.some((l) => l.includes('config.stale_value_served'))).toBe(true);
+    // Past one hour it fails closed again.
+    t = 61 * 60 * 1000;
+    expect((await h(event({ [ORIGIN_VERIFY_HEADER]: SECRET }))).statusCode).toBe(500);
+  });
+
+  it('SEC-A-6: does not retry Secrets Manager on every request while it is failing', async () => {
+    let t = 0;
+    let fail = false;
+    const load = vi.fn(async () => {
+      if (fail) throw new Error('down');
+      return SECRET;
+    });
+    const guard = createOriginGuard({ loadSecret: load, now: () => t });
+    await guard.allows({ [ORIGIN_VERIFY_HEADER]: SECRET });
+    fail = true;
+    t = 6 * 60 * 1000;
+    for (let i = 0; i < 5; i++)
+      expect(await guard.allows({ [ORIGIN_VERIFY_HEADER]: SECRET })).toBe(true);
+    expect(load).toHaveBeenCalledTimes(2); // the first load plus one failed refresh
   });
 
   it('compares hashes of equal length in constant time (any length or content is handled)', async () => {

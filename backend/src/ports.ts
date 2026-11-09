@@ -9,6 +9,7 @@
  */
 import type { Alert, CheckIn } from '@relay/shared';
 import type { PushPlatform, PushTarget } from './scale/contracts.js';
+import type { OutboxEntry } from './scale/cell-index/outbox.js';
 
 /** Injectable clock so tests control time. */
 export interface Clock {
@@ -92,16 +93,26 @@ export interface DeviceStore {
     deviceId: string,
     target: PushTarget,
     language: 'en' | 'es',
-  ): Promise<{ displaced: string[] }>;
+    /**
+     * `outbox: true`: in the same transaction, write an "update" cell-index outbox row for this
+     * device and for each displaced device that has places. Their ids come back in `outboxIds`
+     * (by device id) so the caller can delete them after its write-through succeeds.
+     */
+    opts?: { outbox?: boolean },
+  ): Promise<{ displaced: string[]; outboxIds?: Record<string, string> }>;
   /** Forget a push token reported as dead (Expo DeviceNotRegistered, or APNs/FCM unregistered). */
   clearPushToken(token: string): Promise<void>;
 }
 
 export interface PlaceStore {
-  add(place: Place): Promise<void>;
+  /**
+   * `opts.outbox`: write this cell-index outbox row in the SAME transaction as the insert
+   * (stores that cannot do transactions, such as the in-memory one, ignore it).
+   */
+  add(place: Place, opts?: { outbox?: OutboxEntry }): Promise<void>;
   listForDevice(deviceId: string): Promise<Place[]>;
   /** Permanent delete. Returns false if no such place for that device. */
-  remove(deviceId: string, placeId: string): Promise<boolean>;
+  remove(deviceId: string, placeId: string, opts?: { outbox?: OutboxEntry }): Promise<boolean>;
   /** Every place whose h3Cell is in the list. Used to match an alert to devices. */
   listForCells(cells: string[]): Promise<Place[]>;
   /**

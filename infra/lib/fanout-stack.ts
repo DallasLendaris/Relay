@@ -8,7 +8,9 @@ import {
   StackProps,
   Tags,
 } from 'aws-cdk-lib';
-import { Alarm, ComparisonOperator, TreatMissingData } from 'aws-cdk-lib/aws-cloudwatch';
+import { Alarm, ComparisonOperator, Metric, TreatMissingData } from 'aws-cdk-lib/aws-cloudwatch';
+import { Rule, Schedule } from 'aws-cdk-lib/aws-events';
+import { LambdaFunction } from 'aws-cdk-lib/aws-events-targets';
 import { AttributeType, BillingMode, Table } from 'aws-cdk-lib/aws-dynamodb';
 import { Architecture, Runtime } from 'aws-cdk-lib/aws-lambda';
 import { SqsDestination } from 'aws-cdk-lib/aws-lambda-destinations';
@@ -65,6 +67,10 @@ export const SENDER_ENABLED_CONTEXT = 'senderEnabled';
 export const isSenderEnabled = (scope: Construct): boolean =>
   String(scope.node.tryGetContext(SENDER_ENABLED_CONTEXT) ?? 'false') === 'true';
 const PLANNER_TIMEOUT_SECONDS = 60;
+const PAUSED_CONSUMER_TIMEOUT_SECONDS = 60;
+const OUTBOX_DRAINER_TIMEOUT_SECONDS = 60;
+/** The drainer's alarm threshold (attempts); keep in step with OUTBOX_ALARM_ATTEMPTS in the backend. */
+const OUTBOX_ALARM_ATTEMPTS = 10;
 const SHARD_MAX_EVENT_AGE = Duration.hours(1);
 const SHARD_RETRY_ATTEMPTS = 2;
 
@@ -95,6 +101,7 @@ export class FanoutStack extends Stack {
   readonly shardFunctionName: string;
   readonly shardFunctionArn: string;
   readonly shardDlqUrl: string;
+  readonly pausedQueueUrl: string;
 
   constructor(scope: Construct, id: string, props: FanoutStackProps) {
     super(scope, id, props);
@@ -147,6 +154,23 @@ export class FanoutStack extends Stack {
       retentionPeriod: Duration.days(14),
     });
 
+    // Parking queue for work found while the kill switch is paused (instead of throwing into the
+    // shard DLQ). Messages come back every 60 s to the paused consumer, which re-checks the switch
+    // and re-dispatches once it is running. After 24 h of pause a message fails into this DLQ.
+    const pausedDlq = new Queue(this, 'ShardPausedDlq', {
+      encryption: QueueEncryption.SQS_MANAGED,
+      retentionPeriod: Duration.days(14),
+    });
+    const paused = new Queue(this, 'ShardPausedQueue', {
+      queueName: `relay-${props.stage}-shard-paused`,
+      encryption: QueueEncryption.SQS_MANAGED,
+      visibilityTimeout: Duration.seconds(PAUSED_CONSUMER_TIMEOUT_SECONDS),
+      retentionPeriod: Duration.days(2),
+      // Normal messages are received once (the consumer re-parks as a NEW message); a few
+      // receives cover transient errors and move over-age messages to the DLQ.
+      deadLetterQueue: { queue: pausedDlq, maxReceiveCount: 3 },
+    });
+
     const common = {
       depsLockFilePath: fileURLToPath(new URL('../../package-lock.json', import.meta.url)),
       projectRoot: fileURLToPath(new URL('../../', import.meta.url)),
@@ -186,6 +210,7 @@ export class FanoutStack extends Stack {
         ALERT_KEYS_SECRET_ARN: props.alertKeysSecretArn,
         TOKEN_KEYS_SECRET_ARN: props.tokenKeysSecretArn,
         KILL_SWITCH_PARAM: props.killSwitchParamName,
+        PAUSED_QUEUE_URL: paused.queueUrl,
       },
     });
     grantDb(shardFn, props.db);
@@ -194,6 +219,7 @@ export class FanoutStack extends Stack {
     allow(shardFn, ['ssm:GetParameter'], [props.killSwitchParamArn]);
     allow(shardFn, ['dynamodb:Query'], [cellIndex.tableArn]);
     allow(shardFn, ['sqs:SendMessage'], [urgent.queue.queueArn, standard.queue.queueArn]);
+    allow(shardFn, ['sqs:SendMessage'], [paused.queueArn]);
     // A shard that runs short of time hands the rest of its cells to a new invoke of itself.
     allow(shardFn, ['lambda:InvokeFunction'], [shardFunctionArnByName]);
 
@@ -222,6 +248,7 @@ export class FanoutStack extends Stack {
         SHARD_FUNCTION_NAME: shardFn.functionName,
         ALERT_KEYS_SECRET_ARN: props.alertKeysSecretArn,
         KILL_SWITCH_PARAM: props.killSwitchParamName,
+        PAUSED_QUEUE_URL: paused.queueUrl,
         // Pre-scale of the sender fleet. SENDER_MAX_TASKS is 0 (off) until senderEnabled=true,
         // so the planner never wakes a fleet that has placeholder secrets.
         SENDER_CLUSTER_ARN: senderClusterArn,
@@ -238,10 +265,92 @@ export class FanoutStack extends Stack {
     grantDb(planner, props.db);
     grantSecretRead(planner, props.alertKeysSecretArn);
     allow(planner, ['ssm:GetParameter'], [props.killSwitchParamArn]);
+    allow(planner, ['sqs:SendMessage'], [paused.queueArn]);
     // Invoke the shard function only (no wildcard, no other functions).
     allow(planner, ['lambda:InvokeFunction'], [shardFn.functionArn]);
     // Pre-scale: read the sender service's desired count and raise it. Nothing else, on that service only.
     allow(planner, ['ecs:UpdateService', 'ecs:DescribeServices'], [senderServiceArn]);
+
+    // Paused consumer: re-checks the kill switch for parked shard jobs / AlertReady messages and
+    // re-dispatches them through the shard function (or the plan queue) once it is running.
+    const pausedConsumer = new NodejsFunction(this, 'PausedConsumerFunction', {
+      ...common,
+      entry: entry('paused-consumer.ts'),
+      handler: 'handler',
+      timeout: Duration.seconds(PAUSED_CONSUMER_TIMEOUT_SECONDS),
+      memorySize: 256,
+      logGroup: logs('PausedConsumerLogs'),
+      environment: {
+        KILL_SWITCH_PARAM: props.killSwitchParamName,
+        PAUSED_QUEUE_URL: paused.queueUrl,
+        PLAN_QUEUE_URL: plan.queue.queueUrl,
+        SHARD_FUNCTION_NAME: shardFn.functionName,
+      },
+    });
+    pausedConsumer.addEventSource(
+      new SqsEventSource(paused, { batchSize: 10, reportBatchItemFailures: true }),
+    );
+    allow(pausedConsumer, ['ssm:GetParameter'], [props.killSwitchParamArn]);
+    allow(pausedConsumer, ['sqs:SendMessage'], [paused.queueArn, plan.queue.queueArn]);
+    allow(pausedConsumer, ['lambda:InvokeFunction'], [shardFn.functionArn]);
+
+    // Cell-index outbox drainer (every minute): redoes the cell-index writes the API did not
+    // finish (a crash between the Aurora commit and the DynamoDB write), from Aurora's truth.
+    const drainer = new NodejsFunction(this, 'OutboxDrainerFunction', {
+      ...common,
+      entry: fileURLToPath(
+        new URL('../../backend/src/scale/cell-index/drainer.ts', import.meta.url),
+      ),
+      handler: 'handler',
+      timeout: Duration.seconds(OUTBOX_DRAINER_TIMEOUT_SECONDS),
+      memorySize: 256,
+      logGroup: logs('OutboxDrainerLogs'),
+      environment: { ...dbEnv(props.db), CELL_INDEX_TABLE: cellIndex.tableName },
+    });
+    grantDb(drainer, props.db);
+    allow(
+      drainer,
+      [
+        'dynamodb:BatchWriteItem',
+        'dynamodb:PutItem',
+        'dynamodb:DeleteItem',
+        'dynamodb:UpdateItem',
+        'dynamodb:Query',
+      ],
+      [cellIndex.tableArn],
+    );
+    new Rule(this, 'OutboxDrainerSchedule', {
+      schedule: Schedule.rate(Duration.minutes(1)),
+      targets: [new LambdaFunction(drainer)],
+    });
+    new Alarm(this, 'CellIndexOutboxStuckAlarm', {
+      alarmDescription:
+        'A cell-index outbox row failed 10 or more times: a device may be missing from the index and miss alerts',
+      metric: new Metric({
+        namespace: 'Relay/CellIndex',
+        metricName: 'OutboxMaxAttempts',
+        statistic: 'Maximum',
+        period: Duration.minutes(1),
+      }),
+      threshold: OUTBOX_ALARM_ATTEMPTS - 1,
+      evaluationPeriods: 1,
+      comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: TreatMissingData.NOT_BREACHING,
+    });
+    new Alarm(this, 'DrainerNotRunningAlarm', {
+      alarmDescription:
+        'The cell-index outbox drainer has not reported for 5 minutes: unfinished index writes are not being redone',
+      metric: new Metric({
+        namespace: 'Relay/CellIndex',
+        metricName: 'OutboxPending',
+        statistic: 'SampleCount',
+        period: Duration.minutes(5),
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: ComparisonOperator.LESS_THAN_THRESHOLD,
+      treatMissingData: TreatMissingData.BREACHING,
+    });
 
     // Manual DLQ replay. Not scheduled: a person decides when replaying is wise.
     const redrive = new NodejsFunction(this, 'RedriveFunction', {
@@ -301,6 +410,11 @@ export class FanoutStack extends Stack {
         shardDlq,
         'Shard jobs failed after retries: some areas have not been sent. Run the redrive',
       ],
+      [
+        'ShardPausedDlqAlarm',
+        pausedDlq,
+        'Work parked during a pause was not resumed within 24 hours (or the resume failed): re-run the redrive for these jobs',
+      ],
       ['UrgentDlqAlarm', urgent.dlq, 'Urgent send batches are landing in the DLQ'],
       ['StandardDlqAlarm', standard.dlq, 'Standard send batches are landing in the DLQ'],
     ];
@@ -331,11 +445,13 @@ export class FanoutStack extends Stack {
     this.shardFunctionName = shardFn.functionName;
     this.shardFunctionArn = shardFn.functionArn;
     this.shardDlqUrl = shardDlq.queueUrl;
+    this.pausedQueueUrl = paused.queueUrl;
 
     new CfnOutput(this, 'CellIndexTableName', { value: this.cellIndexTableName });
     new CfnOutput(this, 'PlanQueueUrl', { value: this.planQueueUrl });
     new CfnOutput(this, 'UrgentQueueUrl', { value: this.urgentQueueUrl });
     new CfnOutput(this, 'StandardQueueUrl', { value: this.standardQueueUrl });
+    new CfnOutput(this, 'ShardPausedQueueUrl', { value: this.pausedQueueUrl });
     new CfnOutput(this, 'ShardDlqUrl', { value: this.shardDlqUrl });
     new CfnOutput(this, 'RedriveFunctionName', { value: redrive.functionName });
     new CfnOutput(this, 'SendRedriveFunctionName', { value: sendRedrive.functionName });

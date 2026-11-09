@@ -9,6 +9,7 @@ import {
   type SendQueue,
   type SendQueueName,
 } from '../scale/contracts.js';
+import type { CellIndexOutbox } from '../scale/cell-index/outbox.js';
 import type { IndexRepairMessage, IndexRepairQueue } from '../scale/cell-index/repair-queue.js';
 import {
   deviceCellsOf,
@@ -64,6 +65,12 @@ export interface ApiDeps {
    * Without it a failure is only logged, and the backfill reconciles.
    */
   repairQueue?: IndexRepairQueue;
+  /**
+   * Transactional outbox for cell-index writes. When set, every place insert/delete and push-target
+   * change writes an outbox row in the same Aurora transaction; the row is deleted here after the
+   * write-through succeeds, and the scheduled drainer redoes any that are left.
+   */
+  outbox?: Pick<CellIndexOutbox, 'remove'>;
   /**
    * Late joiners: a device that registers a place or a push target while an alert is already
    * active missed the fan-out (re-planning skips batches already sent), so the API sends it the
@@ -187,9 +194,18 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     op: string,
     fn: () => Promise<void>,
     repairs: IndexRepairMessage[],
+    /** Outbox rows written with the Aurora change: deleted on success, kept for the drainer on failure. */
+    outboxIds: string[] = [],
   ): Promise<void> {
     try {
       await fn();
+      if (deps.outbox && outboxIds.length > 0) {
+        try {
+          await deps.outbox.remove(outboxIds);
+        } catch {
+          // The write-through is done; the drainer redoes it harmlessly and deletes the row.
+        }
+      }
     } catch (err) {
       // Never log tokens or coordinates: only the operation and the error's class.
       console.warn(
@@ -359,12 +375,21 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     }
     const target = parsePushTarget(body);
     // Moves the target here if another (reinstalled) device still holds it.
-    const { displaced } = await deps.devices.assignPushTarget(device.id, target, language);
+    const { displaced, outboxIds = {} } = await deps.devices.assignPushTarget(
+      device.id,
+      target,
+      language,
+      deps.outbox ? { outbox: true } : undefined,
+    );
+    const outboxFor = (id: string): string[] => (outboxIds[id] ? [outboxIds[id]] : []);
     // Keep the cell index in step. A failure here never fails the request (Aurora is the
     // record); the failed update is queued for the repair Lambda.
-    await writeThrough('update_device', () => syncDevice(device.id, target, language), [
-      allPlaces(device.id),
-    ]);
+    await writeThrough(
+      'update_device',
+      () => syncDevice(device.id, target, language),
+      [allPlaces(device.id)],
+      outboxFor(device.id),
+    );
     for (const otherId of displaced) {
       await writeThrough(
         'update_device',
@@ -373,6 +398,7 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
           if (other) await syncDevice(otherId, null, other.language);
         },
         [allPlaces(otherId)],
+        outboxFor(otherId),
       );
     }
     // A device that just got a target missed any alert that is already active: send it now.
@@ -454,7 +480,13 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       h3Cell: cellForPoint(latitude, longitude),
       createdAt: deps.clock.now().toISOString(),
     };
-    await deps.places.add(place);
+    const addOutboxId = deps.outbox ? deps.newId() : undefined;
+    await deps.places.add(
+      place,
+      addOutboxId
+        ? { outbox: { id: addOutboxId, op: 'put', h3Cell: place.h3Cell, placeId: place.id } }
+        : undefined,
+    );
     // Write the new entry FIRST, then rewrite deviceCells on the device's other entries
     // (syncDeviceCells). It reads the device's CURRENT target and places from Aurora after the
     // place is saved (the row loaded for authentication is from the start of the request) and
@@ -484,6 +516,7 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
           },
         }),
       [repairPut],
+      addOutboxId ? [addOutboxId] : [],
     );
     const truth = seen.truth;
     await sendLateJoinAlerts(
@@ -509,7 +542,17 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     const place = UUID.test(placeId)
       ? (await deps.places.listForDevice(device.id)).find((p) => p.id === placeId)
       : undefined;
-    if (!place || !(await deps.places.remove(device.id, placeId))) {
+    const removeOutboxId = deps.outbox ? deps.newId() : undefined;
+    if (
+      !place ||
+      !(await deps.places.remove(
+        device.id,
+        placeId,
+        removeOutboxId
+          ? { outbox: { id: removeOutboxId, op: 'remove', h3Cell: place.h3Cell, placeId } }
+          : undefined,
+      ))
+    ) {
       throw new HttpError(404, 'not_found', 'Place not found');
     }
     // Rewrite the remaining entries without this cell FIRST, then delete the removed entry.
@@ -530,6 +573,7 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
           },
         }),
       [{ op: 'remove', h3Cell: place.h3Cell, deviceId: device.id, placeId: place.id }],
+      removeOutboxId ? [removeOutboxId] : [],
     );
     return noContent();
   });

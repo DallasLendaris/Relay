@@ -1,5 +1,6 @@
 import type { Place, PlaceStore } from '../../ports.js';
 import type { SqlExecutor } from '../../db/sql.js';
+import { insertOutboxRow, type OutboxEntry } from '../../scale/cell-index/outbox.js';
 import { CELL_CHUNK, chunk, isoUtc, textArrayParam } from './common.js';
 
 interface PlaceRow {
@@ -36,21 +37,32 @@ export class PostgresPlaceStore implements PlaceStore {
     private readonly pageSize = 5000,
   ) {}
 
-  async add(place: Place): Promise<void> {
-    await this.db.query(
-      `INSERT INTO places (id, device_id, label, short_address, latitude, longitude, h3_cell, created_at)
+  async add(place: Place, opts?: { outbox?: OutboxEntry }): Promise<void> {
+    const insert = (db: SqlExecutor) =>
+      db.query(
+        `INSERT INTO places (id, device_id, label, short_address, latitude, longitude, h3_cell, created_at)
        VALUES ($1::uuid, $2::uuid, $3, $4, $5::double precision, $6::double precision, $7, $8::timestamptz)`,
-      [
-        place.id,
-        place.deviceId,
-        place.label,
-        place.shortAddress,
-        place.latitude,
-        place.longitude,
-        place.h3Cell,
-        place.createdAt,
-      ],
-    );
+        [
+          place.id,
+          place.deviceId,
+          place.label,
+          place.shortAddress,
+          place.latitude,
+          place.longitude,
+          place.h3Cell,
+          place.createdAt,
+        ],
+      );
+    if (!opts?.outbox) {
+      await insert(this.db);
+      return;
+    }
+    // The place and its outbox row commit together or not at all.
+    const outbox = opts.outbox;
+    await this.db.transaction(async (tx) => {
+      await insert(tx);
+      await insertOutboxRow(tx, place.deviceId, outbox);
+    });
   }
 
   async listForDevice(deviceId: string): Promise<Place[]> {
@@ -61,12 +73,23 @@ export class PostgresPlaceStore implements PlaceStore {
     return rows.map(toPlace);
   }
 
-  async remove(deviceId: string, placeId: string): Promise<boolean> {
-    const rows = await this.db.query(
-      'DELETE FROM places WHERE id = $1::uuid AND device_id = $2::uuid RETURNING id',
-      [placeId, deviceId],
-    );
-    return rows.length > 0;
+  async remove(
+    deviceId: string,
+    placeId: string,
+    opts?: { outbox?: OutboxEntry },
+  ): Promise<boolean> {
+    const del = (db: SqlExecutor) =>
+      db.query('DELETE FROM places WHERE id = $1::uuid AND device_id = $2::uuid RETURNING id', [
+        placeId,
+        deviceId,
+      ]);
+    const outbox = opts?.outbox;
+    if (!outbox) return (await del(this.db)).length > 0;
+    return this.db.transaction(async (tx) => {
+      const deleted = (await del(tx)).length > 0;
+      if (deleted) await insertOutboxRow(tx, deviceId, outbox);
+      return deleted;
+    });
   }
 
   async listForCells(cells: string[]): Promise<Place[]> {

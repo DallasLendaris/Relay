@@ -476,6 +476,9 @@ describe('resource names', () => {
             const value = r.Properties?.[key];
             if (typeof value !== 'string') continue;
             expect(value, `${stack}/${id}.${key}`).toContain(stage);
+            // The one deliberate exception: the paused queue has a fixed, stage-named identity
+            // (relay-<stage>-shard-paused) so operators and runbooks can find it.
+            if (key === 'QueueName' && value === `relay-${stage}-shard-paused`) continue;
             expect(GENERATED_ONLY, `${stack}/${id} must not set ${key}`).not.toContain(r.Type);
           }
         }
