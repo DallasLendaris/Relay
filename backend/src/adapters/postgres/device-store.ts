@@ -106,9 +106,17 @@ export class PostgresDeviceStore implements DeviceStore {
   }
 
   async clearPushToken(token: string): Promise<void> {
+    // Two index-friendly lookups (devices_expo_push_token_key and devices_push_token_idx) joined
+    // by UNION inside one statement, so it is atomic and never scans the table. A single
+    // `expo_push_token = $1 OR push_token = $1` predicate cannot use both indexes cheaply.
     await this.db.query(
-      `UPDATE devices SET expo_push_token = NULL, push_platform = NULL, push_token = NULL
-        WHERE expo_push_token = $1 OR push_token = $1`,
+      `WITH hit AS (
+         SELECT id FROM devices WHERE expo_push_token = $1::text
+         UNION
+         SELECT id FROM devices WHERE push_token = $1::text
+       )
+       UPDATE devices SET expo_push_token = NULL, push_platform = NULL, push_token = NULL
+        WHERE id IN (SELECT id FROM hit)`,
       [token],
     );
   }

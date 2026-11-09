@@ -1,4 +1,13 @@
-import { Aws, CfnOutput, Duration, RemovalPolicy, Stack, StackProps, Tags } from 'aws-cdk-lib';
+import {
+  Aws,
+  CfnOutput,
+  Duration,
+  RemovalPolicy,
+  SecretValue,
+  Stack,
+  StackProps,
+  Tags,
+} from 'aws-cdk-lib';
 import {
   AllowedMethods,
   CachePolicy,
@@ -52,7 +61,16 @@ export interface EdgeStackProps extends StackProps {
   stage: 'dev' | 'prod';
   /** Host name of the HTTP API (no scheme, no path), e.g. abc.execute-api.us-west-2.amazonaws.com. */
   apiDomainName: string;
+  /**
+   * Name of the origin-verify secret (ConfigStack, replicated to this region). CloudFront sends
+   * its value as x-relay-origin-verify so the API can refuse requests that skipped the WAF.
+   * Resolved by CloudFormation at deploy time; the value never appears in the template.
+   */
+  originVerifySecretName?: string;
 }
+
+/** Header CloudFront adds to API requests (must match backend/src/api/origin-guard.ts). */
+export const ORIGIN_VERIFY_HEADER = 'x-relay-origin-verify';
 
 /**
  * Public edge: a private S3 bucket of public alert JSON and a CloudFront distribution in front of
@@ -107,6 +125,15 @@ export class EdgeStack extends Stack {
       defaultBehavior: {
         origin: new HttpOrigin(props.apiDomainName, {
           protocolPolicy: OriginProtocolPolicy.HTTPS_ONLY,
+          ...(props.originVerifySecretName
+            ? {
+                customHeaders: {
+                  [ORIGIN_VERIFY_HEADER]: SecretValue.secretsManager(
+                    props.originVerifySecretName,
+                  ).unsafeUnwrap(),
+                },
+              }
+            : {}),
         }),
         allowedMethods: AllowedMethods.ALLOW_ALL,
         cachePolicy: CachePolicy.CACHING_DISABLED,

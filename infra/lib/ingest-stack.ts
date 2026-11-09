@@ -29,6 +29,9 @@ export interface IngestStackProps extends StackProps {
   fanoutMode?: FanoutMode;
 }
 
+/** Ingest Lambda memory (CPU scales with it: JSON signing, zone geometry and the S3 fan-out). */
+export const INGEST_MEMORY_MB = 1024;
+
 export type FanoutMode = 'queue' | 'inline';
 
 /** Where ingest reads the zone pack from (fixed key, see backend/src/geo/s3-zone-provider.ts). */
@@ -96,7 +99,7 @@ export class IngestStack extends Stack {
       runtime: Runtime.NODEJS_22_X,
       architecture: Architecture.ARM_64,
       timeout: Duration.seconds(70), // 5 polls x 12 s plus headroom
-      memorySize: 256,
+      memorySize: INGEST_MEMORY_MB, // the post-AlertReady CDN publish runs 16 uploads at once
       reservedConcurrentExecutions: 1, // never two overlapping pollers
       logGroup: new LogGroup(this, 'IngestLogs', {
         retention: RetentionDays.ONE_MONTH,

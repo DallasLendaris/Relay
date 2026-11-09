@@ -84,7 +84,16 @@ function setup(writer: PublicObjectWriter, errors: unknown[][] = []) {
     clock: { now: () => NOW },
     logger: { info() {}, warn() {}, error: (...a) => errors.push(a) },
   });
-  return { inner, store: new SigningAlertStore(inner, KEY, publisher) };
+  const signing = new SigningAlertStore(inner, KEY);
+  // Publishing is no longer part of save: the pipeline runs it afterwards.
+  const store = {
+    async save(a: Alert) {
+      await signing.save(a);
+      const saved = await inner.get(a.id);
+      if (saved) await publisher.publish(saved);
+    },
+  };
+  return { inner, publisher, store };
 }
 
 describe('AlertPublisher via SigningAlertStore', () => {
@@ -166,22 +175,87 @@ describe('AlertPublisher via SigningAlertStore', () => {
     expect(errors[0]?.[1]).toMatchObject({ alertId: A, error: 's3 down' });
   });
 
-  it('a publisher that throws still does not fail the save', async () => {
-    const inner = new InMemoryAlertStore();
-    const store = new SigningAlertStore(inner, KEY, {
-      publish: async () => {
-        throw new Error('boom');
-      },
-    });
-    await expect(store.save(alert(A, [LA]))).resolves.toBeUndefined();
-    expect(await inner.get(A)).not.toBeNull();
-  });
-
-  it('works unchanged without a publisher', async () => {
+  it('SigningAlertStore.save never calls a publisher: it only signs and stores', async () => {
     const inner = new InMemoryAlertStore();
     const store = new SigningAlertStore(inner, KEY);
     await store.save(alert(A, [LA]));
     expect((await inner.get(A))?.signature).toMatch(/^v1\./);
+    expect(writer.puts).toEqual([]);
+  });
+
+  it('writes the alert JSON first, then shard indexes with at most `concurrency` in flight', async () => {
+    const cells = [LA, SF, latLngToCell(32.7, -117.1, 7), latLngToCell(38.58, -121.49, 7)];
+    const inner = new InMemoryAlertStore();
+    const order: string[] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const slow: PublicObjectWriter = {
+      async putJson(key) {
+        order.push(key);
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 10));
+        inFlight--;
+      },
+    };
+    const publisher = new AlertPublisher({
+      writer: slow,
+      alerts: inner,
+      cellResolution: 7,
+      clock: { now: () => NOW },
+    });
+    await publisher.publish(alert(A, cells), { concurrency: 2 });
+    expect(order[0]).toBe(`alerts/v1/${A}.json`);
+    expect(order.length).toBe(1 + 4);
+    expect(maxInFlight).toBe(2);
+  });
+
+  it('stops after the total time cap: no new shards start and publish still resolves', async () => {
+    const cells = [LA, SF, latLngToCell(32.7, -117.1, 7), latLngToCell(38.58, -121.49, 7)];
+    const inner = new InMemoryAlertStore();
+    const started: string[] = [];
+    const warns: unknown[][] = [];
+    const hung: PublicObjectWriter = {
+      async putJson(key) {
+        started.push(key);
+        if (key.includes('/active/')) await new Promise(() => {}); // never settles
+      },
+    };
+    const publisher = new AlertPublisher({
+      writer: hung,
+      alerts: inner,
+      cellResolution: 7,
+      clock: { now: () => NOW },
+      logger: { info() {}, warn: (...a) => warns.push(a), error() {} },
+    });
+    const t0 = Date.now();
+    await publisher.publish(alert(A, cells), { concurrency: 1, deadlineMs: 50 });
+    expect(Date.now() - t0).toBeLessThan(1000);
+    // Alert JSON plus the single shard that was in flight; the other three never started.
+    expect(started.length).toBe(2);
+    expect(warns[0]?.[0]).toBe('publish.deadline_exceeded');
+  });
+
+  it('one failing shard is logged and the others are still written', async () => {
+    const inner = new InMemoryAlertStore();
+    const errors: unknown[][] = [];
+    const puts: string[] = [];
+    const writer2: PublicObjectWriter = {
+      async putJson(key) {
+        if (key === `alerts/v1/active/${LA_SHARD}.json`) throw new Error('boom');
+        puts.push(key);
+      },
+    };
+    const publisher = new AlertPublisher({
+      writer: writer2,
+      alerts: inner,
+      cellResolution: 7,
+      clock: { now: () => NOW },
+      logger: { info() {}, warn() {}, error: (...a) => errors.push(a) },
+    });
+    await publisher.publish(alert(A, [LA, SF]));
+    expect(puts).toContain(`alerts/v1/active/${SF_SHARD}.json`);
+    expect(errors[0]?.[0]).toBe('publish.shard_failed');
   });
 });
 
@@ -211,8 +285,7 @@ describe('S3PublicObjectWriter', () => {
       cellResolution: 7,
       clock: { now: () => NOW },
     });
-    const store = new SigningAlertStore(inner, KEY, publisher);
-    await expect(store.save(alert(A, [LA]))).resolves.toBeUndefined();
+    await expect(publisher.publish(alert(A, [LA]))).resolves.toBeUndefined();
     expect(s3Mock.commandCalls(PutObjectCommand).length).toBeGreaterThan(0);
   });
 });

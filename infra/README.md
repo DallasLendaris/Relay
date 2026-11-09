@@ -72,6 +72,16 @@ While paused the worker fails every record, so SQS keeps redelivering them (visi
 
 Resume by writing `running` the same way. Any value other than `paused` means running.
 
+## Edge hardening, repair outbox and capacity
+
+**Origin verification.** The API's `execute-api` URL is public, so a caller could skip CloudFront and the WAF. CloudFront adds the header `x-relay-origin-verify` to every API request; the API Lambda returns 403 without the matching value when `REQUIRE_ORIGIN_HEADER=true` (prod). The value is a generated secret `relay/<stage>/origin-verify` in the config stack, replicated to us-east-1; the edge stack resolves it at deploy time with `{{resolve:secretsmanager:...}}`, so it never appears in a template. The Lambda reads it by `ORIGIN_VERIFY_SECRET_ARN` and caches it 5 minutes. To rotate, change the secret, redeploy `edge` (CloudFront picks up the new value), and expect up to 5 minutes of 403s until the Lambda cache refreshes.
+
+**Quota: API Gateway.** The account-level API Gateway quota is 10,000 requests per second per region (adjustable), but the prod `$default` stage throttle is 20,000 rps. The stage cannot exceed the account quota, so request an increase to at least 20,000 rps (and verify the burst limit) before a statewide check-in burst, or lower `apiThrottleRate`/`apiThrottleBurst`.
+
+**Cell-index repair.** When the API cannot write a place into the cell index it queues `{op, h3Cell, deviceId, placeId}` to `INDEX_REPAIR_QUEUE_URL`; a repair Lambda re-reads Aurora and redoes the write (idempotent, per-item failures). After 5 failed receives a message goes to the repair DLQ, which has an alarm (`IndexRepairDlqAlarm`). Fix the cause, then redrive the DLQ to the repair queue.
+
+**Capacity context.** `-c auroraMaxAcu=N` (default prod 16, dev 2), `-c checkinsWarmWritesPerSecond=N` (default prod 40,000, dev none; 0 disables), and `-c apiReservedConcurrency=N`, `-c aggregatorReservedConcurrency=N`, `-c repairReservedConcurrency=N` (unset by default so a fresh account deploys). The idempotency table's warm throughput (20,000 writes/s on prod) belongs to the delivery stack and is not set here.
+
 ## Fan-out stack (statewide scale)
 
 `fanout` creates the plan queue, the planner and shard worker Lambdas, the urgent and standard send queues (30 s visibility, each with a DLQ), and the DynamoDB cell index (`h3Cell` + `sk` = `deviceId#placeId`, on demand, PITR on prod). Ingest publishes to the plan queue only when it runs with `FANOUT_MODE=queue` and `PLAN_QUEUE_URL`; otherwise the original in-line planning runs.

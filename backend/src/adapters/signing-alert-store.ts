@@ -1,7 +1,6 @@
 import type { Alert } from '@relay/shared';
 import type { AlertStore } from '../ports.js';
 import { signAlert, type SigningKey } from '../signing/index.js';
-import type { PostSavePublisher } from '../scale/publish/alert-publisher.js';
 import { summariesFor } from '../summaries/index.js';
 
 /**
@@ -13,8 +12,6 @@ export class SigningAlertStore implements AlertStore {
   constructor(
     private readonly inner: AlertStore,
     private readonly currentKey: SigningKey,
-    /** Optional: publishes the saved alert to the CDN. Its failures never fail the save. */
-    private readonly publisher?: PostSavePublisher,
   ) {}
 
   get(id: string) {
@@ -35,20 +32,8 @@ export class SigningAlertStore implements AlertStore {
       summaries: summariesFor(alert, { timeZone: 'America/Los_Angeles' }),
     };
     const signed = signAlert(withSummaries, this.currentKey);
+    // Public CDN publishing is NOT done here: it is slow (a Data API query and a cross-region PUT
+    // per shard), so the ingest pipeline runs it after AlertReady has been published.
     await this.inner.save(signed);
-    if (!this.publisher) return;
-    try {
-      await this.publisher.publish(signed);
-    } catch (err) {
-      // The save already succeeded; the API remains the fallback for reads.
-      console.error(
-        JSON.stringify({
-          level: 'error',
-          msg: 'publish.failed',
-          alertId: signed.id,
-          error: err instanceof Error ? err.message : String(err),
-        }),
-      );
-    }
   }
 }

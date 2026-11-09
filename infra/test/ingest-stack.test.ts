@@ -26,7 +26,7 @@ describe('IngestStack', () => {
       Runtime: 'nodejs22.x',
       Architectures: ['arm64'],
       Timeout: 70,
-      MemorySize: 256,
+      MemorySize: 1024,
       Environment: {
         Variables: Match.objectLike({
           NWS_USER_AGENT: 'Relay capstone (contact via GitHub DallasLendaris/Relay)',
