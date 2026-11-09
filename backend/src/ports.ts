@@ -105,10 +105,13 @@ export interface PlaceStore {
   /** Every place whose h3Cell is in the list. Used to match an alert to devices. */
   listForCells(cells: string[]): Promise<Place[]>;
   /**
-   * Lightweight version of listForCells for delivery fan-out: only the ids, so large
-   * matches stay well under the Data API's response size limit.
+   * Lightweight version of listForCells for delivery fan-out: only the ids and the matched
+   * cell (bound into the v2 check-in token), so large matches stay well under the Data API's
+   * response size limit.
    */
-  listMatchesForCells(cells: string[]): Promise<Array<{ placeId: string; deviceId: string }>>;
+  listMatchesForCells(
+    cells: string[],
+  ): Promise<Array<{ placeId: string; deviceId: string; h3Cell: string }>>;
 }
 
 /** Address to coordinates (Amazon Location Service in AWS). */

@@ -132,7 +132,7 @@ describe('planDelivery', () => {
         { alertId: alert.id, deviceId: 'd1', now: clock.now() },
         keys,
       ),
-    ).toEqual({ ok: true, h3Cell: null });
+    ).toEqual({ ok: true, h3Cell: latLngToCell(SJ.lat, SJ.lng, 7) }); // v2: the matched cell is bound in
   });
 
   it('queries places in chunks of 1000 cells and enqueues in batches of 10', async () => {

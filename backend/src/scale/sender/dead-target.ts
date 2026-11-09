@@ -1,42 +1,39 @@
-import { UpdateCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb';
 import type { DeviceStore, PlaceStore } from '../../ports.js';
-import type { PushTarget } from '../contracts.js';
+import type { CellIndex, PushTarget } from '../contracts.js';
 
 /**
  * Builds the sender's onDeadTarget: a dead push token must stop being used.
- * - device store: forget the token (only Expo tokens live there; a no-op for native tokens)
- * - cell index: set `target` to null on every entry of this device (pk = h3Cell,
- *   sk = `${deviceId}#${placeId}`; the device's cells come from its places). UpdateItem only,
- *   guarded by attribute_exists so it can never create a stray row for a deleted place.
+ *
+ * - Stale report: if the device has since registered a DIFFERENT target (a newer
+ *   assignPushTarget), the report is about a token the device no longer uses. Nothing is
+ *   cleared, so a fresh registration is never wiped by a late failure.
+ * - Device store: clearPushToken(token) for every platform. It forgets the token wherever it
+ *   is held (the legacy Expo column and the native pushPlatform/pushToken pair), the same
+ *   thing assignPushTarget does to a device that loses a target.
+ * - Cell index: CellIndex.updateDevice with target null on every cell of the device's places.
+ *   The real DynamoCellIndex only updates entries that still exist (key h3Cell + sk), so a
+ *   deleted place is never resurrected, and the stored language is kept.
+ *
+ * The device is read first for the guard and for its language. The small window between that
+ * read and the index update can only lose a registration that lands in those milliseconds,
+ * and the register path rewrites the index entries when it does.
  */
 export function createDeadTargetClearer(deps: {
-  devices: Pick<DeviceStore, 'clearPushToken'>;
+  devices: Pick<DeviceStore, 'get' | 'clearPushToken'>;
   places: Pick<PlaceStore, 'listForDevice'>;
-  doc: Pick<DynamoDBDocumentClient, 'send'>;
-  cellIndexTable: string;
+  cellIndex: Pick<CellIndex, 'updateDevice'>;
 }): (deviceId: string, target: PushTarget) => Promise<void> {
   return async (deviceId, target) => {
-    if (target.platform === 'expo') await deps.devices.clearPushToken(target.token);
+    const device = await deps.devices.get(deviceId);
+    const currentToken = device?.pushToken ?? device?.expoPushToken ?? null;
+    if (currentToken !== null && currentToken !== target.token) return;
+
+    await deps.devices.clearPushToken(target.token);
     const places = await deps.places.listForDevice(deviceId);
-    await Promise.all(
-      places.map(async (p) => {
-        try {
-          await deps.doc.send(
-            new UpdateCommand({
-              TableName: deps.cellIndexTable,
-              Key: { pk: p.h3Cell, sk: `${deviceId}#${p.id}` },
-              UpdateExpression: 'SET #target = :none',
-              // Only clear the dead token: a newer registration must survive.
-              ConditionExpression: 'attribute_exists(pk) AND #target.#token = :token',
-              ExpressionAttributeNames: { '#target': 'target', '#token': 'token' },
-              ExpressionAttributeValues: { ':none': null, ':token': target.token },
-            }),
-          );
-        } catch (err) {
-          if (!(err instanceof ConditionalCheckFailedException)) throw err;
-        }
-      }),
+    await deps.cellIndex.updateDevice(
+      deviceId,
+      places.map((p) => ({ h3Cell: p.h3Cell, placeId: p.id })),
+      { target: null, language: device?.language ?? 'en' },
     );
   };
 }

@@ -1,6 +1,6 @@
 import type { Alert } from '@relay/shared';
 import type { Clock, DeliveryJob, DeliveryQueue, DeviceStore, PlaceStore } from '../ports.js';
-import { createCheckInToken, createCheckInTokenV1, type TokenKey } from '../tokens/index.js';
+import { createCheckInToken, type TokenKey } from '../tokens/index.js';
 import { alertEndTime, refusalFor, type Refusal } from './eligibility.js';
 import { PUSH_POLICY } from './policy.js';
 import type { Logger } from './types.js';
@@ -28,13 +28,6 @@ export interface PlanResult {
   enqueued: number;
   skippedNoToken: number;
 }
-
-/** v2 token (cell bound in) when the matched cell is known, else a v1 token the API still accepts. */
-const checkInTokenFor = (
-  p: { alertId: string; deviceId: string; expiresAt: Date },
-  h3Cell: string | undefined,
-  key: TokenKey,
-): string => (h3Cell ? createCheckInToken({ ...p, h3Cell }, key) : createCheckInTokenV1(p, key));
 
 const CELL_CHUNK = 1000;
 const QUEUE_BATCH = 10;
@@ -79,10 +72,8 @@ export async function planDelivery(alert: Alert, deps: PlanDeps): Promise<PlanRe
     for (const m of await deps.places.listMatchesForCells(cells.slice(i, i + CELL_CHUNK))) {
       placeIds.add(m.placeId);
       deviceIds.add(m.deviceId);
-      // The matched place's cell, for the v2 check-in token. Match rows carry it when the place
-      // store returns it (the scale planner always knows it); otherwise we issue a v1 token.
-      const matchedCell = (m as { h3Cell?: string }).h3Cell;
-      if (matchedCell && !cellByDevice.has(m.deviceId)) cellByDevice.set(m.deviceId, matchedCell);
+      // The matched place's cell, bound into the v2 check-in token.
+      if (!cellByDevice.has(m.deviceId)) cellByDevice.set(m.deviceId, m.h3Cell);
     }
   }
   result.matchedPlaces = placeIds.size;
@@ -105,9 +96,14 @@ export async function planDelivery(alert: Alert, deps: PlanDeps): Promise<PlanRe
         deviceId: device.id,
         expoPushToken: device.expoPushToken,
         language: device.language,
-        checkInToken: checkInTokenFor(
-          { alertId: alert.id, deviceId: device.id, expiresAt: tokenExpiry },
-          cellByDevice.get(device.id),
+        checkInToken: createCheckInToken(
+          {
+            alertId: alert.id,
+            deviceId: device.id,
+            expiresAt: tokenExpiry,
+            // Every device in deviceIds was matched through a place, so its cell is known.
+            h3Cell: cellByDevice.get(device.id) ?? '',
+          },
           deps.tokenKey,
         ),
         expiresAt: alert.expires,

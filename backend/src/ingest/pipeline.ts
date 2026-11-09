@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { S3Client } from '@aws-sdk/client-s3';
 import { SQSClient } from '@aws-sdk/client-sqs';
 import type { Alert } from '@relay/shared';
 import { SigningAlertStore } from '../adapters/signing-alert-store.js';
@@ -6,10 +7,19 @@ import type { Keyring } from '../config/secrets.js';
 import { refusalFor } from '../delivery/eligibility.js';
 import { planDelivery } from '../delivery/plan-delivery.js';
 import type { Logger } from '../delivery/types.js';
-import { NwsZoneProvider, cellsForAlertArea } from '../geo/index.js';
+import {
+  H3_RESOLUTION,
+  NwsZoneProvider,
+  cellsForAlertArea,
+  type ZoneGeometryProvider,
+} from '../geo/index.js';
+import { LayeredZoneProvider } from '../geo/layered-zone-provider.js';
+import { S3ZoneProvider } from '../geo/s3-zone-provider.js';
 import type { AlertStore, Clock, DeliveryQueue, DeviceStore, PlaceStore } from '../ports.js';
 import { QUEUE_FOR_SEVERITY } from '../scale/contracts.js';
 import { SqsPlanQueue, type PlanQueue } from '../scale/fanout/queues.js';
+import { AlertPublisher } from '../scale/publish/alert-publisher.js';
+import { S3PublicObjectWriter } from '../scale/publish/s3-object-writer.js';
 import { createAlertVerifier } from '../signing/index.js';
 import { parseFeed } from './feed.js';
 import type { EngineDeps } from './handler.js';
@@ -39,7 +49,15 @@ export interface PipelineDeps {
   env?: Record<string, string | undefined>;
   /** Replaces the SQS plan queue built from PLAN_QUEUE_URL (tests). */
   planQueue?: PlanQueue;
+  /**
+   * Builds the S3 client for the zone pack (no region) and for the public alerts bucket (its
+   * region, PUBLIC_ALERTS_REGION). Default: a real S3Client. Tests inject fakes.
+   */
+  s3?: (region?: string) => S3Client;
 }
+
+/** Where the zone pack lives in ZONE_PACK_BUCKET (fixed by the pack builder). */
+export const ZONE_PACK_KEY = 'zones/v1/california.json.gz';
 
 const jsonLogger: Logger = {
   info: (msg, f) => console.log(JSON.stringify({ level: 'info', msg, ...f })),
@@ -51,7 +69,6 @@ const jsonLogger: Logger = {
 export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
   const clock = deps.clock ?? { now: () => new Date() };
   const logger = deps.logger ?? jsonLogger;
-  const store = new SigningAlertStore(deps.alertStore, deps.alertKeys.current);
   const verifyAlert = createAlertVerifier(deps.alertKeys.all);
   const env = deps.env ?? process.env;
   const queueMode = env.FANOUT_MODE === 'queue';
@@ -61,15 +78,38 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
     planQueue = new SqsPlanQueue(new SQSClient({}), env.PLAN_QUEUE_URL);
   }
 
+  const s3For = deps.s3 ?? ((region?: string) => new S3Client(region ? { region } : {}));
+
   // Same fetch and User-Agent as the NWS client; NwsZoneProvider caches while warm.
   // The signal (5 s timeout from NwsZoneProvider) must reach fetch, or a hung zone lookup
   // could eat the whole Lambda budget.
-  const zones = new NwsZoneProvider((url, init) =>
+  const nwsZones = new NwsZoneProvider((url, init) =>
     deps.fetch(url, {
       headers: { ...init?.headers, 'User-Agent': deps.userAgent },
       signal: init?.signal,
     }),
   );
+  // With ZONE_PACK_BUCKET set, the pre-built pack answers first and NWS fills any miss or
+  // pack failure. Without it, NWS only.
+  const zones: ZoneGeometryProvider = env.ZONE_PACK_BUCKET
+    ? new LayeredZoneProvider(
+        [new S3ZoneProvider(env.ZONE_PACK_BUCKET, ZONE_PACK_KEY, s3For()), nwsZones],
+        logger,
+      )
+    : nwsZones;
+
+  // With PUBLIC_ALERTS_BUCKET set, every signed save is also published for the CDN. The bucket
+  // may live in another region than the Lambda (CloudFront origins are often us-east-1).
+  const publisher = env.PUBLIC_ALERTS_BUCKET
+    ? new AlertPublisher({
+        writer: new S3PublicObjectWriter(s3For(env.PUBLIC_ALERTS_REGION), env.PUBLIC_ALERTS_BUCKET),
+        alerts: deps.alertStore,
+        cellResolution: H3_RESOLUTION,
+        logger,
+        clock,
+      })
+    : undefined;
+  const store = new SigningAlertStore(deps.alertStore, deps.alertKeys.current, publisher);
 
   /**
    * Queue mode: same checks and pause semantics as planDelivery, then hand the alert to the

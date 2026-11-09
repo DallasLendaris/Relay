@@ -15,7 +15,7 @@ import { clearKeyringCache, loadKeyring } from '../../config/secrets.js';
 import { DataApiExecutor } from '../../db/sql.js';
 import type { Logger } from '../../delivery/types.js';
 import { createAlertVerifier } from '../../signing/index.js';
-import { createCheckInToken } from '../../tokens/index.js';
+import { createCheckInToken, type TokenKey } from '../../tokens/index.js';
 import type { ShardJob } from '../contracts.js';
 import type { FanoutRefusal } from './common.js';
 import { isAlertReady, isShardJob } from './messages.js';
@@ -94,6 +94,12 @@ export const buildShardHandler =
     }
     return undefined;
   };
+
+/** The shard worker's token factory: a v2 token with the device's cell signed in. */
+export const makeCheckInTokenFor =
+  (key: TokenKey): ShardWorkerDeps['makeCheckInToken'] =>
+  (alertId, deviceId, h3Cell, expiresAt) =>
+    createCheckInToken({ alertId, deviceId, h3Cell, expiresAt }, key);
 
 // ---------- Real AWS wiring ----------
 
@@ -198,12 +204,7 @@ function buildShard(env: Record<string, string | undefined>) {
     return {
       ...base,
       verifyAlert: createAlertVerifier(alertKeys.all),
-      makeCheckInToken: (alertId, deviceId, h3Cell, expiresAt) => {
-        // Token v2 binds the cell in. Passed as a variable so this compiles both before and
-        // after createCheckInToken gains the h3Cell field.
-        const params = { alertId, deviceId, h3Cell, expiresAt };
-        return createCheckInToken(params, tokenKeys.current);
-      },
+      makeCheckInToken: makeCheckInTokenFor(tokenKeys.current),
     };
   };
   return async (event: SQSEvent | ShardJob) =>
