@@ -12,25 +12,25 @@ Machine: 2 CPUs (Intel(R) Xeon(R) Processor @ 2.30GHz), 8,023 MB RAM (4,306 MB f
 
 ## Result
 
-| Measure | Value |
-| --- | --- |
-| Devices seeded / entries / cells used | 1,000,000 / 1,149,982 / 1,130 |
-| Alert cells (shards) | 1,136 (8 shards) |
-| Devices in the alert area / with a push target | 1,000,000 / 1,000,000 |
-| Batches planned (recipients) | 70,042 (1,148,582) |
-| Time to plan (`planShards` returns) | 4 ms |
-| Time to first successful push | 4.9 s |
-| Time to last successful push | 212.7 s |
-| Sends per second, mean (first to last push) | 5,500 |
-| Sends per second, best 5 s window | 7,398 |
+| Measure                                                              | Value                                                    |
+| -------------------------------------------------------------------- | -------------------------------------------------------- |
+| Devices seeded / entries / cells used                                | 1,000,000 / 1,149,982 / 1,130                            |
+| Alert cells (shards)                                                 | 1,136 (8 shards)                                         |
+| Devices in the alert area / with a push target                       | 1,000,000 / 1,000,000                                    |
+| Batches planned (recipients)                                         | 70,042 (1,148,582)                                       |
+| Time to plan (`planShards` returns)                                  | 4 ms                                                     |
+| Time to first successful push                                        | 4.9 s                                                    |
+| Time to last successful push                                         | 212.7 s                                                  |
+| Sends per second, mean (first to last push)                          | 5,500                                                    |
+| Sends per second, best 5 s window                                    | 7,398                                                    |
 | Push latency p50 / p99 / max (per push, includes in-sender queueing) | 299.0 ms / 1851.4 ms / 6074.7 ms over 1,160,864 attempts |
-| Batches processed (of which retries) | 74,442 (4,400) |
-| Recipients retried after a retryable failure | 12,282 |
-| Permanent failures (dead token, cleared) | 5,630 |
-| Gave up (still failing after 5 attempts) | 0 |
-| Message redeliveries (batch not acked) | 0 |
-| FCM requests rate-limited by the quota bucket (429) | 0 |
-| Peak heap / peak RSS | 1996.1 MB / 2731.3 MB |
+| Batches processed (of which retries)                                 | 74,442 (4,400)                                           |
+| Recipients retried after a retryable failure                         | 12,282                                                   |
+| Permanent failures (dead token, cleared)                             | 5,630                                                    |
+| Gave up (still failing after 5 attempts)                             | 0                                                        |
+| Message redeliveries (batch not acked)                               | 0                                                        |
+| FCM requests rate-limited by the quota bucket (429)                  | 0                                                        |
+| Peak heap / peak RSS                                                 | 1996.1 MB / 2731.3 MB                                    |
 
 ## Reading these numbers
 
@@ -59,66 +59,66 @@ Planner and shard workers ran again on the same signed alert: 8 shards in 3 ms, 
 ## Sends per second, per 5 s window (successful pushes)
 
 | Window start | Successful pushes | per second | Retryable failures | Permanent failures |
-| ---: | ---: | ---: | ---: | ---: |
-| 0 s | 760 | 152 | 2 | 7 |
-| 5 s | 23,327 | 4,665 | 174 | 98 |
-| 10 s | 27,708 | 5,542 | 267 | 163 |
-| 15 s | 29,178 | 5,836 | 355 | 136 |
-| 20 s | 33,478 | 6,696 | 185 | 121 |
-| 25 s | 19,233 | 3,847 | 297 | 75 |
-| 30 s | 25,400 | 5,080 | 263 | 113 |
-| 35 s | 20,911 | 4,182 | 124 | 108 |
-| 40 s | 31,943 | 6,389 | 242 | 164 |
-| 45 s | 24,715 | 4,943 | 263 | 116 |
-| 50 s | 25,646 | 5,129 | 299 | 122 |
-| 55 s | 22,529 | 4,506 | 328 | 112 |
-| 60 s | 24,559 | 4,912 | 301 | 132 |
-| 65 s | 32,587 | 6,517 | 242 | 158 |
-| 70 s | 23,758 | 4,752 | 289 | 125 |
-| 75 s | 36,135 | 7,227 | 386 | 182 |
-| 80 s | 26,951 | 5,390 | 106 | 144 |
-| 85 s | 30,636 | 6,127 | 377 | 167 |
-| 90 s | 35,785 | 7,157 | 296 | 180 |
-| 95 s | 24,227 | 4,845 | 356 | 125 |
-| 100 s | 28,385 | 5,677 | 246 | 150 |
-| 105 s | 34,817 | 6,963 | 421 | 195 |
-| 110 s | 27,987 | 5,597 | 410 | 141 |
-| 115 s | 22,095 | 4,419 | 239 | 120 |
-| 120 s | 36,992 | 7,398 | 307 | 190 |
-| 125 s | 22,961 | 4,592 | 177 | 135 |
-| 130 s | 26,029 | 5,206 | 490 | 132 |
-| 135 s | 32,862 | 6,572 | 253 | 163 |
-| 140 s | 21,280 | 4,256 | 164 | 107 |
-| 145 s | 30,863 | 6,173 | 485 | 160 |
-| 150 s | 23,024 | 4,605 | 213 | 115 |
-| 155 s | 28,415 | 5,683 | 325 | 124 |
-| 160 s | 16,808 | 3,362 | 147 | 66 |
-| 165 s | 27,498 | 5,500 | 251 | 136 |
-| 170 s | 26,390 | 5,278 | 237 | 114 |
-| 175 s | 29,718 | 5,944 | 422 | 157 |
-| 180 s | 31,776 | 6,355 | 501 | 156 |
-| 185 s | 23,308 | 4,662 | 455 | 108 |
-| 190 s | 28,184 | 5,637 | 231 | 113 |
-| 195 s | 34,991 | 6,998 | 326 | 152 |
-| 200 s | 26,059 | 5,212 | 299 | 146 |
-| 205 s | 32,816 | 6,563 | 435 | 152 |
-| 210 s | 10,228 | 2,046 | 96 | 50 |
+| -----------: | ----------------: | ---------: | -----------------: | -----------------: |
+|          0 s |               760 |        152 |                  2 |                  7 |
+|          5 s |            23,327 |      4,665 |                174 |                 98 |
+|         10 s |            27,708 |      5,542 |                267 |                163 |
+|         15 s |            29,178 |      5,836 |                355 |                136 |
+|         20 s |            33,478 |      6,696 |                185 |                121 |
+|         25 s |            19,233 |      3,847 |                297 |                 75 |
+|         30 s |            25,400 |      5,080 |                263 |                113 |
+|         35 s |            20,911 |      4,182 |                124 |                108 |
+|         40 s |            31,943 |      6,389 |                242 |                164 |
+|         45 s |            24,715 |      4,943 |                263 |                116 |
+|         50 s |            25,646 |      5,129 |                299 |                122 |
+|         55 s |            22,529 |      4,506 |                328 |                112 |
+|         60 s |            24,559 |      4,912 |                301 |                132 |
+|         65 s |            32,587 |      6,517 |                242 |                158 |
+|         70 s |            23,758 |      4,752 |                289 |                125 |
+|         75 s |            36,135 |      7,227 |                386 |                182 |
+|         80 s |            26,951 |      5,390 |                106 |                144 |
+|         85 s |            30,636 |      6,127 |                377 |                167 |
+|         90 s |            35,785 |      7,157 |                296 |                180 |
+|         95 s |            24,227 |      4,845 |                356 |                125 |
+|        100 s |            28,385 |      5,677 |                246 |                150 |
+|        105 s |            34,817 |      6,963 |                421 |                195 |
+|        110 s |            27,987 |      5,597 |                410 |                141 |
+|        115 s |            22,095 |      4,419 |                239 |                120 |
+|        120 s |            36,992 |      7,398 |                307 |                190 |
+|        125 s |            22,961 |      4,592 |                177 |                135 |
+|        130 s |            26,029 |      5,206 |                490 |                132 |
+|        135 s |            32,862 |      6,572 |                253 |                163 |
+|        140 s |            21,280 |      4,256 |                164 |                107 |
+|        145 s |            30,863 |      6,173 |                485 |                160 |
+|        150 s |            23,024 |      4,605 |                213 |                115 |
+|        155 s |            28,415 |      5,683 |                325 |                124 |
+|        160 s |            16,808 |      3,362 |                147 |                 66 |
+|        165 s |            27,498 |      5,500 |                251 |                136 |
+|        170 s |            26,390 |      5,278 |                237 |                114 |
+|        175 s |            29,718 |      5,944 |                422 |                157 |
+|        180 s |            31,776 |      6,355 |                501 |                156 |
+|        185 s |            23,308 |      4,662 |                455 |                108 |
+|        190 s |            28,184 |      5,637 |                231 |                113 |
+|        195 s |            34,991 |      6,998 |                326 |                152 |
+|        200 s |            26,059 |      5,212 |                299 |                146 |
+|        205 s |            32,816 |      6,563 |                435 |                152 |
+|        210 s |            10,228 |      2,046 |                 96 |                 50 |
 
 ## Check-in burst
 
 One v2 check-in per delivered device (995,558), tokens taken from this run's sends, through the API's stateless `POST /alerts/{id}/checkins` route with an in-memory check-in store (the device, place, alert and cell-index stores are traps that fail the run if touched), then every stored check-in as a stream INSERT through the real aggregator in batches of 1,000 against an in-memory totals table. Single JS thread, no network, so this is a code-path throughput, not an API Gateway figure.
 
-| Measure | Value |
-| --- | --- |
-| API check-ins | 995,558 in 19.6 s = **50,825/s** (200 OK: 995,558, errors: 0) |
-| API handler time p50 / p99 (200 in flight) | 3 ms / 12.69 ms |
-| Aggregator | 996 batches of 1,000 in 1.7 s = **594,862/s** (failed items: 0) |
-| Counter rows / marker rows written | 1,130 / 995,558 |
-| Per-cell totals sum | 995,558 |
-| Expected (devices in area - permanent failures - delivered without an ack) | 995,558 = 1,000,000 - 4,442 - 0 |
-| Check-in store total | 995,558 |
-| Per-cell mismatches (1,130 cells) | 0 |
-| Verdict | **PASS** |
+| Measure                                                                    | Value                                                           |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| API check-ins                                                              | 995,558 in 19.6 s = **50,825/s** (200 OK: 995,558, errors: 0)   |
+| API handler time p50 / p99 (200 in flight)                                 | 3 ms / 12.69 ms                                                 |
+| Aggregator                                                                 | 996 batches of 1,000 in 1.7 s = **594,862/s** (failed items: 0) |
+| Counter rows / marker rows written                                         | 1,130 / 995,558                                                 |
+| Per-cell totals sum                                                        | 995,558                                                         |
+| Expected (devices in area - permanent failures - delivered without an ack) | 995,558 = 1,000,000 - 4,442 - 0                                 |
+| Check-in store total                                                       | 995,558                                                         |
+| Per-cell mismatches (1,130 cells)                                          | 0                                                               |
+| Verdict                                                                    | **PASS**                                                        |
 
 ## Results JSON
 
