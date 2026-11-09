@@ -4,17 +4,24 @@
  * A sandbox/production mismatch or a wrong bundle id makes APNs call EVERY token dead. Clearing
  * them would wipe everyone's push target, so when failures look systemic we do not clear.
  *
+ * The breaker targets that systemic case, where nearly 100% of results are permanent. It must not
+ * trip on ordinary token churn: real apps routinely see 1-5% dead tokens, and the 1M simulation
+ * at a 0.5% rate opened an earlier, tighter (2% per batch, 5% rolling) version 6 times on batches
+ * of 121-238. A false open delays clearing and retries dead tokens, so the thresholds sit far
+ * above normal churn and far below a misconfiguration.
+ *
  * Opens (for the batch being judged) when either:
- *   - more than 2% of the batch's results are permanent AND at least 5 are, or
- *   - the rolling permanent rate over the last 1,000 results (process-wide) is above 5%, once
- *     the window holds at least 100 results and 5 permanents (so a tiny first batch with one
- *     genuinely dead token cannot trip it).
+ *   - at least 20 of the batch's results are permanent AND they are more than 25% of the batch, or
+ *   - the rolling permanent rate over the last 1,000 results (process-wide) is above 20%, once
+ *     the window holds at least 200 results and 20 permanents (so a small first batch with a few
+ *     genuinely dead tokens cannot trip it).
  */
-export const BATCH_RATE_LIMIT = 0.02;
-export const BATCH_MIN_PERMANENT = 5;
+export const BATCH_RATE_LIMIT = 0.25;
+export const BATCH_MIN_PERMANENT = 20;
 export const ROLLING_WINDOW = 1000;
-export const ROLLING_RATE_LIMIT = 0.05;
-export const ROLLING_MIN_SAMPLES = 100;
+export const ROLLING_RATE_LIMIT = 0.2;
+export const ROLLING_MIN_SAMPLES = 200;
+export const ROLLING_MIN_PERMANENT = 20;
 
 export interface BreakerVerdict {
   open: boolean;
@@ -39,7 +46,7 @@ export class PermanentBreaker {
     if (permanent >= BATCH_MIN_PERMANENT && batchRate > BATCH_RATE_LIMIT) reason = 'batch_rate';
     else if (
       this.filled >= ROLLING_MIN_SAMPLES &&
-      this.permanents >= BATCH_MIN_PERMANENT &&
+      this.permanents >= ROLLING_MIN_PERMANENT &&
       rollingRate > ROLLING_RATE_LIMIT
     ) {
       reason = 'rolling_rate';
