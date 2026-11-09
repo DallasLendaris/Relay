@@ -14,7 +14,14 @@ export interface ApiStackProps extends StackProps {
   stage: 'dev' | 'prod';
   db: DbRefs;
   tokenKeysSecretArn: string;
+  /** Stage throttle on $default. Defaults: dev 50 rps / burst 100, prod 20,000 rps / burst 10,000. */
+  throttle?: { rateLimit: number; burstLimit: number };
 }
+
+export const DEFAULT_THROTTLE = {
+  dev: { rateLimit: 50, burstLimit: 100 },
+  prod: { rateLimit: 20_000, burstLimit: 10_000 },
+} as const;
 
 /**
  * Every path in packages/shared/openapi/relay.yaml except /agency/*, which belongs
@@ -32,6 +39,9 @@ export const API_ROUTES: ReadonlyArray<{ method: HttpMethod; path: string }> = [
 ];
 
 export class ApiStack extends Stack {
+  /** Host name of the HTTP API, for the CloudFront origin. */
+  readonly apiDomainName: string;
+
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
     const isProd = props.stage === 'prod';
@@ -109,13 +119,15 @@ export class ApiStack extends Stack {
       httpApi: api,
       stageName: '$default',
       autoDeploy: true,
-      throttle: { rateLimit: 50, burstLimit: 100 },
+      throttle: props.throttle ?? DEFAULT_THROTTLE[props.stage],
     });
 
     const integration = new HttpLambdaIntegration('ApiIntegration', apiFn);
     for (const { method, path } of API_ROUTES) {
       api.addRoutes({ path, methods: [method], integration });
     }
+
+    this.apiDomainName = api.apiEndpoint;
 
     new CfnOutput(this, 'ApiUrl', { value: stage.url });
 

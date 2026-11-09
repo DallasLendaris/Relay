@@ -20,6 +20,8 @@ export interface IngestStackProps extends StackProps {
   alertKeysSecretArn: string;
   killSwitchParamName: string;
   killSwitchParamArn: string;
+  /** Public alert bucket (edge stack). Optional: when set, ingest may publish to the CDN. */
+  publicAlerts?: { bucketName: string; region: string };
 }
 
 export class IngestStack extends Stack {
@@ -81,6 +83,10 @@ export class IngestStack extends Stack {
         TOKEN_KEYS_SECRET_ARN: props.tokenKeysSecretArn,
         ALERT_KEYS_SECRET_ARN: props.alertKeysSecretArn,
         KILL_SWITCH_PARAM: props.killSwitchParamName,
+        ...(props.publicAlerts && {
+          PUBLIC_ALERTS_BUCKET: props.publicAlerts.bucketName,
+          PUBLIC_ALERTS_REGION: props.publicAlerts.region,
+        }),
       },
     });
 
@@ -92,6 +98,13 @@ export class IngestStack extends Stack {
     grantSecretRead(ingestFn, props.tokenKeysSecretArn);
     grantSecretRead(ingestFn, props.alertKeysSecretArn);
     allow(ingestFn, ['ssm:GetParameter'], [props.killSwitchParamArn]);
+    if (props.publicAlerts) {
+      allow(
+        ingestFn,
+        ['s3:PutObject'],
+        [`arn:aws:s3:::${props.publicAlerts.bucketName}/alerts/v1/*`],
+      );
+    }
 
     // No retries: the next minute's run catches up on anything missed.
     new Rule(this, 'EveryMinute', {
