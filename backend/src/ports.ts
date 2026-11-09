@@ -159,6 +159,12 @@ export interface IdempotencyStore {
   markSent(key: string, expiresAt: Date): Promise<void>;
   /** Give a claim back after a retryable failure, so the next attempt can send. */
   release(key: string): Promise<void>;
+  /**
+   * Push the lease end of our own live claim out to `leaseUntil`. Resolves true if extended;
+   * false if the claim is no longer ours (state is not 'leased', or a different attempt owns it),
+   * in which case the caller must stop work on the key.
+   */
+  extend?(key: string, leaseUntil: Date): Promise<boolean>;
 }
 
 export interface PushMessage {

@@ -64,8 +64,8 @@ export class MockApns {
   dropNext = false;
   /** Never answer requests whose token starts with `hang-`. */
   private readonly sessions = new Set<Http2Session>();
-  /** Force a response for the next N requests: [status, reason]. */
-  forced: Array<[number, string]> = [];
+  /** Force a response for the next N requests: [status, reason, optional Retry-After]. */
+  forced: Array<[number, string] | [number, string, string]> = [];
   port = 0;
 
   constructor() {
@@ -105,8 +105,9 @@ export class MockApns {
           }
           let status = 200;
           let reason = '';
+          let retryAfter: string | undefined;
           const forced = this.forced.shift();
-          if (forced) [status, reason] = forced;
+          if (forced) [status, reason, retryAfter] = forced;
           else if (token.startsWith('gone-')) [status, reason] = [410, 'Unregistered'];
           else if (token.startsWith('bad-')) [status, reason] = [400, 'BadDeviceToken'];
           else if (token.startsWith('wrongtopic-'))
@@ -115,7 +116,10 @@ export class MockApns {
           else if (token.startsWith('slow-')) [status, reason] = [429, 'TooManyRequests'];
           else if (token.startsWith('err-')) [status, reason] = [503, 'ServiceUnavailable'];
           else if (token.startsWith('ise-')) [status, reason] = [500, 'InternalServerError'];
-          stream.respond({ ':status': status });
+          stream.respond({
+            ':status': status,
+            ...(retryAfter ? { 'retry-after': retryAfter } : {}),
+          });
           stream.end(reason ? JSON.stringify({ reason }) : undefined);
           if (this.goawayAfterNext) {
             this.goawayAfterNext = false;

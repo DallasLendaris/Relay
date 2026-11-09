@@ -10,9 +10,16 @@
  *   become visible again when the queue's visibility timeout runs out.
  * - A message still running after `extendAfterMs` gets its visibility extended (repeatedly),
  *   so a slow batch is not redelivered while its lease is live.
- * - stop() (SIGTERM): stop receiving, finish in-flight work, flush deletes and metrics, return.
- *   Work that does not finish within `drainTimeoutMs` is abandoned; SQS redelivers it and the
- *   idempotency lease expires on its own.
+ * - Pause: the kill switch is checked before every receive (cached 5 s). While paused nothing is
+ *   received at all (so no message's receive count grows toward the DLQ); the loop sleeps 5 s.
+ *   A batch already in flight that finds the pause releases its claim and its message gets a
+ *   60 s visibility timeout instead of bouncing back quickly.
+ * - Lease: the visibility heartbeat also extends the idempotency lease of every active batch in
+ *   the message. If an extension is refused the lease is lost; the batch stops sending.
+ * - stop() (SIGTERM): stop receiving and let in-flight batches finish for `drainTimeoutMs`
+ *   (25 s). Batches still running then are told to abort: they stop starting chunks, persist
+ *   nothing, release their claims, and their messages are made visible again. Recipients in
+ *   chunks that were already sent may get one duplicate push when the batch is redone.
  * - Metrics are EMF lines on stdout in namespace Relay/Sender, one per queue per flush.
  */
 import {
@@ -24,9 +31,10 @@ import {
 } from '@aws-sdk/client-sqs';
 import type { Logger } from '../../delivery/types.js';
 import type { SendBatch, SendQueueName } from '../contracts.js';
-import type { BatchOutcome } from './sender.js';
+import { METRIC_NAMESPACE } from './metrics.js';
+import { newBatchControl, type BatchControl, type BatchOutcome } from './sender.js';
 
-export const METRIC_NAMESPACE = 'Relay/Sender';
+export { METRIC_NAMESPACE };
 const DELETE_BATCH = 10;
 const MAX_LAG_SAMPLES = 100; // EMF allows up to 100 values per metric
 
@@ -35,7 +43,24 @@ export interface ConsumerOptions {
   urgentQueueUrl: string;
   standardQueueUrl: string;
   /** Processes one batch. Throwing counts as a failed batch (the message stays on the queue). */
-  handle(batch: SendBatch): Promise<BatchOutcome>;
+  handle(batch: SendBatch, control: BatchControl): Promise<BatchOutcome>;
+  /**
+   * Extends the idempotency lease of an active batch. Resolves false when the lease is lost.
+   * Called from the visibility heartbeat for every active batch of a message.
+   */
+  extendLease?(batch: SendBatch): Promise<boolean>;
+  /** Kill switch (true = paused). Checked before each receive, cached for `pauseCacheMs`. */
+  isPaused?(): Promise<boolean>;
+  /** Sleep used while paused. Default: setTimeout, cut short by stop(). */
+  sleep?(ms: number): Promise<void>;
+  /** How long a pause check stays cached. Default 5 s. */
+  pauseCacheMs?: number;
+  /** Sleep between checks while paused. Default 5 s. */
+  pausePollMs?: number;
+  /** Visibility timeout for a message whose batch found the pause mid-way. Default 60 s. */
+  pauseVisibilitySeconds?: number;
+  /** After the drain deadline, how long aborted batches get to wind down. Default 2 s. */
+  abortGraceMs?: number;
   logger: Logger;
   /** Max messages in flight. Default 50. */
   concurrency?: number;
@@ -57,6 +82,14 @@ export interface ConsumerOptions {
 interface Pending {
   queueUrl: string;
   message: Message;
+}
+
+interface ActiveMessage {
+  queueUrl: string;
+  message: Message;
+  batches: SendBatch[];
+  controls: BatchControl[];
+  done: boolean;
 }
 
 interface Counters {
@@ -108,12 +141,19 @@ export class SenderConsumer {
     urgent: emptyCounters(),
     standard: emptyCounters(),
   };
+  private readonly active = new Set<ActiveMessage>();
+  private pauseCache: { at: number; paused: boolean } | undefined;
   private wake: (() => void) | undefined;
+  private sleepWake: (() => void) | undefined;
   private readonly concurrency: number;
   private readonly extendAfterMs: number;
   private readonly extendToSeconds: number;
   private readonly waitSeconds: number;
   private readonly drainTimeoutMs: number;
+  private readonly pauseCacheMs: number;
+  private readonly pausePollMs: number;
+  private readonly pauseVisibilitySeconds: number;
+  private readonly abortGraceMs: number;
   private readonly now: () => number;
   private readonly write: (line: string) => void;
 
@@ -124,6 +164,10 @@ export class SenderConsumer {
     this.waitSeconds = opts.waitSeconds ?? 1;
     this.drainTimeoutMs = opts.drainTimeoutMs ?? 25_000;
     this.now = opts.now ?? Date.now;
+    this.pauseCacheMs = opts.pauseCacheMs ?? 5000;
+    this.pausePollMs = opts.pausePollMs ?? 5000;
+    this.pauseVisibilitySeconds = opts.pauseVisibilitySeconds ?? 60;
+    this.abortGraceMs = opts.abortGraceMs ?? 2000;
     this.write = opts.writeMetric ?? ((line) => console.log(line));
   }
 
@@ -131,6 +175,7 @@ export class SenderConsumer {
   stop(): void {
     this.stopping = true;
     this.wake?.();
+    this.sleepWake?.();
   }
 
   get inFlightCount(): number {
@@ -147,6 +192,10 @@ export class SenderConsumer {
     try {
       while (!this.stopping) {
         await this.flushDeletes();
+        if (await this.paused()) {
+          await this.sleep(this.pausePollMs);
+          continue;
+        }
         const free = this.concurrency - this.inflight.size;
         if (free <= 0) {
           await this.waitForSlot();
@@ -173,6 +222,40 @@ export class SenderConsumer {
       await this.flushDeletes();
       this.flushMetrics();
     }
+  }
+
+  /** Kill switch, cached. A failed read counts as paused: never receive when we cannot tell. */
+  private async paused(): Promise<boolean> {
+    const check = this.opts.isPaused;
+    if (!check) return false;
+    const t = this.now();
+    if (this.pauseCache && t - this.pauseCache.at < this.pauseCacheMs) {
+      return this.pauseCache.paused;
+    }
+    let paused: boolean;
+    try {
+      paused = await check();
+    } catch (err) {
+      this.opts.logger.warn('sender.pause_check_failed', { error: errName(err) });
+      paused = true;
+    }
+    if (paused && !this.pauseCache?.paused) this.opts.logger.warn('sender.receiving_paused', {});
+    if (!paused && this.pauseCache?.paused) this.opts.logger.info('sender.receiving_resumed', {});
+    this.pauseCache = { at: t, paused };
+    return paused;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    if (this.opts.sleep) return this.opts.sleep(ms);
+    return new Promise<void>((resolve) => {
+      const t = setTimeout(() => done(), ms);
+      const done = (): void => {
+        clearTimeout(t);
+        this.sleepWake = undefined;
+        resolve();
+      };
+      this.sleepWake = done;
+    });
   }
 
   private async receive(queueUrl: string, max: number, wait: number): Promise<Message[]> {
@@ -228,26 +311,28 @@ export class SenderConsumer {
       this.opts.logger.error('sender.unparseable_message', { messageId: message.MessageId });
       return;
     }
-    // Visibility heartbeat while this message is still running.
+    const entry: ActiveMessage = {
+      queueUrl,
+      message,
+      batches,
+      controls: batches.map(() => newBatchControl()),
+      done: false,
+    };
+    this.active.add(entry);
+    // Heartbeat while this message is still running: keep the SQS message invisible and keep
+    // the idempotency lease of every active batch alive.
     const timer = setInterval(() => {
-      if (!message.ReceiptHandle) return;
-      this.opts.sqs
-        .send(
-          new ChangeMessageVisibilityCommand({
-            QueueUrl: queueUrl,
-            ReceiptHandle: message.ReceiptHandle,
-            VisibilityTimeout: this.extendToSeconds,
-          }),
-        )
-        .catch((err: unknown) => {
-          this.opts.logger.warn('sender.extend_failed', { error: errName(err) });
-        });
+      void this.setVisibility(queueUrl, message, this.extendToSeconds);
+      this.extendLeases(entry);
     }, this.extendAfterMs);
 
     try {
-      const results = await Promise.allSettled(batches.map((b) => this.opts.handle(b)));
+      const results = await Promise.allSettled(
+        batches.map((b, i) => this.opts.handle(b, entry.controls[i] ?? newBatchControl())),
+      );
       const c = this.counters[queue];
       let allAcked = true;
+      let sawPause = false;
       for (const r of results) {
         if (r.status === 'rejected') {
           allAcked = false;
@@ -260,6 +345,11 @@ export class SenderConsumer {
         c.Retried += r.value.retried;
         c.GaveUp += r.value.gaveUp;
         if (!r.value.ack) allAcked = false;
+        if (r.value.reason === 'paused') sawPause = true;
+      }
+      if (sawPause && !allAcked) {
+        // Found the kill switch on: park the message instead of letting it bounce to the DLQ.
+        await this.setVisibility(queueUrl, message, this.pauseVisibilitySeconds);
       }
       const sentAt = Number(message.Attributes?.['SentTimestamp']);
       if (Number.isFinite(sentAt) && c.lag.length < MAX_LAG_SAMPLES) {
@@ -268,7 +358,52 @@ export class SenderConsumer {
       if (allAcked) this.pendingDeletes.push({ queueUrl, message });
     } finally {
       clearInterval(timer);
+      entry.done = true;
+      this.active.delete(entry);
     }
+  }
+
+  private setVisibility(queueUrl: string, message: Message, seconds: number): Promise<void> {
+    if (!message.ReceiptHandle) return Promise.resolve();
+    return this.opts.sqs
+      .send(
+        new ChangeMessageVisibilityCommand({
+          QueueUrl: queueUrl,
+          ReceiptHandle: message.ReceiptHandle,
+          VisibilityTimeout: seconds,
+        }),
+      )
+      .then(
+        () => undefined,
+        (err: unknown) => {
+          this.opts.logger.warn('sender.extend_failed', { error: errName(err) });
+        },
+      );
+  }
+
+  /** Extends the claim lease of each active batch; a refused extension means the lease is lost. */
+  private extendLeases(entry: ActiveMessage): void {
+    const extend = this.opts.extendLease;
+    if (!extend) return;
+    entry.batches.forEach((batch, i) => {
+      const control = entry.controls[i];
+      if (!control?.active || control.leaseLost) return;
+      extend(batch).then(
+        (ok) => {
+          if (!ok && control.active) {
+            control.leaseLost = true;
+            this.opts.logger.warn('sender.lease_extend_refused', { batchKey: batch.batchKey });
+          }
+        },
+        (err: unknown) => {
+          // A failed call says nothing about ownership; the next heartbeat tries again.
+          this.opts.logger.warn('sender.lease_extend_failed', {
+            batchKey: batch.batchKey,
+            error: errName(err),
+          });
+        },
+      );
+    });
   }
 
   private async flushDeletes(): Promise<void> {
@@ -304,16 +439,32 @@ export class SenderConsumer {
 
   private async drain(): Promise<void> {
     if (this.inflight.size === 0) return;
-    let timer: NodeJS.Timeout | undefined;
-    const deadline = new Promise<'timeout'>((resolve) => {
-      timer = setTimeout(() => resolve('timeout'), this.drainTimeoutMs);
-    });
-    const done = Promise.all([...this.inflight]).then(() => 'done' as const);
-    const result = await Promise.race([done, deadline]);
-    clearTimeout(timer);
-    if (result === 'timeout') {
-      this.opts.logger.warn('sender.drain_timeout', { abandoned: this.inflight.size });
+    const settle = (ms: number): Promise<'done' | 'timeout'> => {
+      let timer: NodeJS.Timeout | undefined;
+      const deadline = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), ms);
+      });
+      const done = Promise.all([...this.inflight]).then(() => 'done' as const);
+      return Promise.race([done, deadline]).finally(() => clearTimeout(timer));
+    };
+    if ((await settle(this.drainTimeoutMs)) === 'done') return;
+
+    // Deadline: tell unfinished batches to stop starting chunks, persist nothing and release.
+    const unfinished = [...this.active];
+    this.opts.logger.warn('sender.drain_timeout', { abandoned: unfinished.length });
+    for (const e of unfinished) for (const c of e.controls) c.abort = true;
+    await settle(this.abortGraceMs);
+    for (const e of unfinished) {
+      if (e.done) continue;
+      // Still stuck in a network call: release the claims ourselves.
+      await Promise.all(e.controls.map((c) => (c.active ? c.release?.() : undefined)));
     }
+    // Leave the messages visible so another consumer takes them right away.
+    await Promise.all(
+      unfinished
+        .filter((e) => !this.pendingDeletes.some((p) => p.message === e.message))
+        .map((e) => this.setVisibility(e.queueUrl, e.message, 0)),
+    );
   }
 
   /** Writes one EMF line per queue that has activity, then resets the counters. */

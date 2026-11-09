@@ -11,6 +11,8 @@ import type {
 } from '../../scale/contracts.js';
 import { noopLogger, type Logger } from '../../delivery/types.js';
 import { errName, signJwt } from './jwt.js';
+import { PAYLOAD_LIMITS, PAYLOAD_TOO_LARGE, fitPayload } from './payload.js';
+import { parseRetryAfter } from './retry-after.js';
 import { Limiter } from './limiter.js';
 
 export const APNS_PRODUCTION = 'https://api.push.apple.com';
@@ -157,7 +159,10 @@ export class ApnsSender implements NativePushSender {
     return session;
   }
 
-  private buildRequest(m: NativePushMessage): { headers: Record<string, string>; body: string } {
+  /** Null when the payload cannot be made to fit 4096 bytes. */
+  private buildRequest(
+    m: NativePushMessage,
+  ): { headers: Record<string, string>; body: string } | null {
     const nowSec = Math.floor(this.now() / 1000);
     const high = m.priority === 'high';
     const headers: Record<string, string> = {
@@ -169,29 +174,46 @@ export class ApnsSender implements NativePushSender {
       'content-type': 'application/json',
     };
     if (m.collapseKey) headers['apns-collapse-id'] = truncateBytes(m.collapseKey, 64);
-    const aps: Record<string, unknown> = {
-      alert: { title: m.title, body: m.body },
-      category: m.category,
-      'thread-id': m.collapseKey,
-    };
-    if (m.sound) aps['sound'] = 'default';
-    if (high) aps['interruption-level'] = 'time-sensitive';
-    return { headers, body: JSON.stringify({ ...m.data, aps }) };
+    const body = fitPayload(
+      m,
+      (x) => {
+        const aps: Record<string, unknown> = {
+          alert: { title: x.title, body: x.body },
+          category: x.category,
+          'thread-id': x.collapseKey,
+        };
+        if (x.sound) aps['sound'] = 'default';
+        if (high) aps['interruption-level'] = 'time-sensitive';
+        return JSON.stringify({ ...x.data, aps });
+      },
+      PAYLOAD_LIMITS.apnsBytes,
+    );
+    return body === null ? null : { headers, body };
   }
 
   private sendOne(m: NativePushMessage): Promise<NativePushResult> {
     const retry = (error: string): NativePushResult => ({ ok: false, kind: 'retryable', error });
     let jwt: Jwt;
-    let built: { headers: Record<string, string>; body: string };
+    let built: { headers: Record<string, string>; body: string } | null;
     let acquired: { slot: PoolSlot; session: ClientHttp2Session };
     try {
       jwt = this.providerToken();
       built = this.buildRequest(m);
+      if (built === null) {
+        // Not the token's fault: never clear the target for this.
+        return Promise.resolve({
+          ok: false,
+          kind: 'permanent',
+          scope: 'message',
+          error: `Apns:${PAYLOAD_TOO_LARGE}`,
+        });
+      }
       acquired = this.acquireSlot();
     } catch (err) {
       return Promise.resolve(retry(`ApnsSetupError: ${errName(err)}`));
     }
     const { slot, session } = acquired;
+    const payload = built;
 
     return new Promise<NativePushResult>((resolve) => {
       let settled = false;
@@ -214,7 +236,7 @@ export class ApnsSender implements NativePushSender {
           ':method': 'POST',
           ':path': `/3/device/${encodeURIComponent(m.target.token)}`,
           authorization: `bearer ${jwt.token}`,
-          ...built.headers,
+          ...payload.headers,
         });
       } catch (err) {
         done(retry(`ApnsConnectionError: ${errName(err)}`));
@@ -222,9 +244,11 @@ export class ApnsSender implements NativePushSender {
       }
 
       let status = 0;
+      let retryAfter: number | undefined;
       const chunks: Buffer[] = [];
       req.on('response', (h) => {
         status = Number(h[':status']);
+        retryAfter = parseRetryAfter(h['retry-after'], this.now());
       });
       req.on('data', (c: Buffer) => chunks.push(c));
       req.on('error', (err) => done(retry(`ApnsConnectionError: ${errName(err)}`)));
@@ -240,13 +264,18 @@ export class ApnsSender implements NativePushSender {
         } catch {
           // Empty body on 200 and on some errors.
         }
-        done(this.mapResponse(status, reason, jwt));
+        done(this.mapResponse(status, reason, jwt, retryAfter));
       });
-      req.end(built.body);
+      req.end(payload.body);
     });
   }
 
-  private mapResponse(status: number, reason: string, jwt: Jwt): NativePushResult {
+  private mapResponse(
+    status: number,
+    reason: string,
+    jwt: Jwt,
+    retryAfter?: number,
+  ): NativePushResult {
     if (status === 200) return { ok: true };
     const error = `Apns${status}${reason ? `:${reason}` : ''}`;
     if (status === 410) return { ok: false, kind: 'permanent', error };
@@ -256,8 +285,15 @@ export class ApnsSender implements NativePushSender {
       this.invalidateToken(jwt);
       this.logger.warn('apns.provider_token_rejected', { reason });
     }
-    // 429, 5xx, 403 and anything unexpected (e.g. 400 BadTopic, 413) are not proof that the
+    // The payload is too big: that message can never go out, but the token is fine.
+    if (status === 413) return { ok: false, kind: 'permanent', scope: 'message', error };
+    // 429, 5xx, 403 and anything unexpected (e.g. 400 BadTopic) are not proof that the
     // token is dead, so they stay retryable rather than erasing a good device.
-    return { ok: false, kind: 'retryable', error };
+    return {
+      ok: false,
+      kind: 'retryable',
+      error,
+      ...(retryAfter !== undefined ? { retryAfterSeconds: retryAfter } : {}),
+    };
   }
 }

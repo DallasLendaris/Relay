@@ -30,6 +30,11 @@ const ENTRIES_PER_REQUEST = 10; // SQS maximum
 const REQUEST_BYTES = 250 * 1024;
 const MAX_ATTEMPTS = 4;
 
+/** SQS allows 0 to 900 seconds of per-message delay. */
+export const MAX_SQS_DELAY_SECONDS = 900;
+export const clampDelay = (s: number | undefined): number | undefined =>
+  s === undefined ? undefined : Math.max(0, Math.min(MAX_SQS_DELAY_SECONDS, Math.ceil(s)));
+
 type SqsLike = Pick<SQSClient, 'send'>;
 type Sleep = (ms: number) => Promise<void>;
 const defaultSleep: Sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -44,6 +49,8 @@ export async function sendBodies(
   queueUrl: string,
   bodies: string[],
   sleep: Sleep = defaultSleep,
+  /** Per-message delay (SQS caps it at 900 s). Omitted: no delay. */
+  delaySeconds?: number,
 ): Promise<void> {
   const requests: string[][] = [];
   let current: string[] = [];
@@ -67,6 +74,7 @@ export async function sendBodies(
     let pending: SendMessageBatchRequestEntry[] = request.map((body, i) => ({
       Id: String(i),
       MessageBody: body,
+      ...(delaySeconds ? { DelaySeconds: delaySeconds } : {}),
     }));
     for (let attempt = 1; pending.length > 0; attempt++) {
       const res = await sqs.send(
@@ -148,9 +156,19 @@ export class SqsSendQueue implements SendQueue {
     private readonly urls: Record<SendQueueName, string>,
     private readonly sleep: Sleep = defaultSleep,
   ) {}
-  async enqueue(queue: SendQueueName, batches: SendBatch[]): Promise<void> {
+  async enqueue(
+    queue: SendQueueName,
+    batches: SendBatch[],
+    opts?: { delaySeconds?: number },
+  ): Promise<void> {
     const bodies = packBatches(batches).map(serializeMessage);
-    await sendBodies(this.sqs, this.urls[queue], bodies, this.sleep);
+    await sendBodies(
+      this.sqs,
+      this.urls[queue],
+      bodies,
+      this.sleep,
+      clampDelay(opts?.delaySeconds),
+    );
   }
 }
 
@@ -184,7 +202,11 @@ export class MemoryShardDispatcher implements ShardDispatcher {
 /** Records the packed messages exactly as SqsSendQueue would send them. */
 export class MemorySendQueue implements SendQueue {
   readonly messages: Record<SendQueueName, string[]> = { urgent: [], standard: [] };
-  async enqueue(queue: SendQueueName, batches: SendBatch[]): Promise<void> {
+  async enqueue(
+    queue: SendQueueName,
+    batches: SendBatch[],
+    _opts?: { delaySeconds?: number },
+  ): Promise<void> {
     for (const m of packBatches(batches)) this.messages[queue].push(serializeMessage(m));
   }
   /** Every batch sent to a queue, parsed back from the messages. */

@@ -20,7 +20,8 @@ import {
   ExpoNativeAdapter,
   FcmSender,
   RoutingPushSender,
-  type ServiceAccount,
+  validateApnsSecret,
+  validateFcmServiceAccount,
 } from '../../adapters/push/index.js';
 import { ExpoPushSender } from '../../adapters/expo/expo-push-sender.js';
 import { DynamoCellIndex } from '../cell-index/dynamo-cell-index.js';
@@ -32,7 +33,8 @@ import { createAlertVerifier } from '../../signing/index.js';
 import { CachedAlertStore } from './cached-alerts.js';
 import { SenderConsumer } from './consumer.js';
 import { createDeadTargetClearer } from './dead-target.js';
-import { processBatch, type SenderDeps } from './sender.js';
+import { DeadTargetQueue } from './dead-target-queue.js';
+import { SENDER_LEASE_MS, processBatch, type SenderDeps } from './sender.js';
 import { SqsSendQueue } from './sqs-send-queue.js';
 
 const logger: Logger = {
@@ -77,29 +79,30 @@ async function main(): Promise<void> {
     env.DB_NAME,
   );
 
-  const apns = JSON.parse(await loadSecretString(env.APNS_KEY_SECRET_ARN)) as {
-    keyId: string;
-    teamId: string;
-    bundleId: string;
-    p8: string;
-    sandbox: boolean;
-  };
-  const fcm = JSON.parse(
-    await loadSecretString(env.FCM_SERVICE_ACCOUNT_SECRET_ARN),
-  ) as ServiceAccount;
-  // Refuse to start with the placeholder secrets CDK creates, rather than failing every push.
-  if (apns.p8.startsWith('REPLACE_ME') || String(fcm.private_key ?? '').startsWith('REPLACE_ME')) {
-    throw new Error('APNs/FCM secrets not configured (placeholder values)');
-  }
+  // Refuse to start with the placeholder secrets CDK creates, or with malformed ones, rather
+  // than failing (or, worse, "killing" every token) once pushes start. Errors name fields only.
+  const apns = validateApnsSecret(JSON.parse(await loadSecretString(env.APNS_KEY_SECRET_ARN)));
+  const fcm = validateFcmServiceAccount(
+    JSON.parse(await loadSecretString(env.FCM_SERVICE_ACCOUNT_SECRET_ARN)),
+  );
 
   const alerts = new CachedAlertStore(new PostgresAlertStore(db));
   let verify = createAlertVerifier((await loadKeyring(env.ALERT_KEYS_SECRET_ARN)).all);
+  const idempotency = new DynamoIdempotencyStore(doc, env.IDEMPOTENCY_TABLE);
+  const clearDeadTarget = createDeadTargetClearer({
+    devices: new PostgresDeviceStore(db),
+    places: new PostgresPlaceStore(db),
+    cellIndex: new DynamoCellIndex(doc, env.CELL_INDEX_TABLE),
+  });
+  // Cleanup runs in the background (4 at a time, 10,000 queued) so it never delays a batch.
+  const deadTargets = new DeadTargetQueue({ process: clearDeadTarget, logger });
+  const isPaused = createKillSwitch(env.KILL_SWITCH_PARAM);
   const deps: SenderDeps = {
-    idempotency: new DynamoIdempotencyStore(doc, env.IDEMPOTENCY_TABLE),
+    idempotency,
     alerts,
     // Evaluated per call so a rotated key (refreshKeys) takes effect.
     verifyAlert: (alert: Alert) => verify(alert),
-    isDeliveryPaused: createKillSwitch(env.KILL_SWITCH_PARAM),
+    isDeliveryPaused: isPaused,
     push: new RoutingPushSender({
       ios: new ApnsSender({
         privateKeyPem: apns.p8,
@@ -116,11 +119,8 @@ async function main(): Promise<void> {
       urgent: env.URGENT_QUEUE_URL,
       standard: env.STANDARD_QUEUE_URL,
     }),
-    onDeadTarget: createDeadTargetClearer({
-      devices: new PostgresDeviceStore(db),
-      places: new PostgresPlaceStore(db),
-      cellIndex: new DynamoCellIndex(doc, env.CELL_INDEX_TABLE),
-    }),
+    onDeadTarget: clearDeadTarget,
+    deadTargets,
     clock: { now: () => new Date() },
     logger,
     invalidateAlert: (id) => alerts.invalidate(id),
@@ -134,22 +134,31 @@ async function main(): Promise<void> {
     sqs,
     urgentQueueUrl: env.URGENT_QUEUE_URL,
     standardQueueUrl: env.STANDARD_QUEUE_URL,
-    handle: (batch) => processBatch(batch, deps),
+    handle: (batch, control) => processBatch(batch, deps, control),
+    extendLease: (batch) =>
+      idempotency.extend(batch.batchKey, new Date(Date.now() + SENDER_LEASE_MS)),
+    isPaused,
     logger,
     concurrency: Number(process.env['SENDER_CONCURRENCY'] ?? 50),
   });
 
+  let shutdownAt = 0;
   const shutdown = (signal: string) => {
     logger.info('sender.shutdown', { signal });
+    shutdownAt = Date.now();
     consumer.stop();
-    // Fargate sends SIGKILL 30 s after SIGTERM. The consumer drains for 25 s; this is the backstop.
-    setTimeout(() => process.exit(1), 29_000).unref();
+    // Fargate sends SIGKILL 30 s after SIGTERM. The consumer drains for 25 s (plus 2 s for
+    // aborted batches to release), the dead-target queue gets the rest; this is the backstop.
+    setTimeout(() => process.exit(1), 29_500).unref();
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
   logger.info('sender.started', {});
   await consumer.run();
+  // Flush pending dead-target cleanups with whatever is left of the 29 s budget.
+  const left = Math.max(500, 29_000 - (Date.now() - (shutdownAt || Date.now())));
+  await deadTargets.flush(left);
   logger.info('sender.stopped', {});
 }
 

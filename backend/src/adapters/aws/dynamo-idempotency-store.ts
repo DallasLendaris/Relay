@@ -111,4 +111,31 @@ export class DynamoIdempotencyStore implements IdempotencyStore {
       if (!(err instanceof ConditionalCheckFailedException)) throw err; // not ours any more
     }
   }
+
+  async extend(key: string, leaseUntil: Date): Promise<boolean> {
+    const attemptId = this.attempts.get(key);
+    if (!attemptId) return false; // not claimed by this instance
+    try {
+      await this.doc.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: { pk: key },
+          UpdateExpression: 'SET leaseUntil = :until, #ttl = :ttl',
+          // Same guard as release: still leased, and still this attempt's.
+          ConditionExpression: '#state = :leased AND attemptId = :attempt',
+          ExpressionAttributeNames: { '#state': 'state', '#ttl': 'ttl' },
+          ExpressionAttributeValues: {
+            ':leased': 'leased',
+            ':attempt': attemptId,
+            ':until': leaseUntil.getTime(),
+            ':ttl': Math.floor(leaseUntil.getTime() / 1000) + DAY_SECONDS,
+          },
+        }),
+      );
+      return true;
+    } catch (err) {
+      if (!(err instanceof ConditionalCheckFailedException)) throw err;
+      return false;
+    }
+  }
 }

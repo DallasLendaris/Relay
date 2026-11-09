@@ -7,6 +7,8 @@ import type {
 } from '../../scale/contracts.js';
 import { noopLogger, type Logger } from '../../delivery/types.js';
 import { errName, signJwt } from './jwt.js';
+import { PAYLOAD_LIMITS, PAYLOAD_TOO_LARGE, fitPayload } from './payload.js';
+import { parseRetryAfter } from './retry-after.js';
 import { Limiter } from './limiter.js';
 
 export const FCM_BASE_URL = 'https://fcm.googleapis.com';
@@ -141,34 +143,45 @@ export class FcmSender implements NativePushSender {
     return token;
   }
 
-  private buildBody(m: NativePushMessage): string {
-    const notification: Record<string, unknown> = {
-      channel_id: 'alerts',
-      click_action: m.category,
-    };
-    if (m.sound) notification['sound'] = 'default';
-    return JSON.stringify({
-      message: {
-        token: m.target.token,
-        notification: { title: m.title, body: m.body },
-        data: m.data,
-        android: {
-          priority: m.priority === 'high' ? 'HIGH' : 'NORMAL',
-          ttl: `${Math.max(0, Math.floor(m.ttlSeconds))}s`,
-          collapse_key: m.collapseKey,
-          notification,
-        },
+  /** Null when the message cannot be made to fit 4000 bytes. */
+  private buildBody(message: NativePushMessage): string | null {
+    return fitPayload(
+      message,
+      (m) => {
+        const notification: Record<string, unknown> = {
+          channel_id: 'alerts',
+          click_action: m.category,
+        };
+        if (m.sound) notification['sound'] = 'default';
+        return JSON.stringify({
+          message: {
+            token: m.target.token,
+            notification: { title: m.title, body: m.body },
+            data: m.data,
+            android: {
+              priority: m.priority === 'high' ? 'HIGH' : 'NORMAL',
+              ttl: `${Math.max(0, Math.floor(m.ttlSeconds))}s`,
+              collapse_key: m.collapseKey,
+              notification,
+            },
+          },
+        });
       },
-    });
+      PAYLOAD_LIMITS.fcmBytes,
+    );
   }
 
   private async sendOne(m: NativePushMessage, token: CachedToken): Promise<NativePushResult> {
+    const body = this.buildBody(m);
+    if (body === null) {
+      return { ok: false, kind: 'permanent', scope: 'message', error: `Fcm:${PAYLOAD_TOO_LARGE}` };
+    }
     let res: HttpResult;
     try {
       res = await this.post(
         this.url,
         { authorization: `Bearer ${token.accessToken}`, 'content-type': 'application/json' },
-        this.buildBody(m),
+        body,
       );
     } catch (err) {
       if (err instanceof TimeoutError) return { ok: false, kind: 'retryable', error: 'Timeout' };
@@ -263,10 +276,12 @@ export class FcmSender implements NativePushSender {
 
     const ra = res.headers['retry-after'];
     const retryAfter = Array.isArray(ra) ? ra[0] : ra;
+    const seconds = parseRetryAfter(retryAfter, this.now());
     return {
       ok: false,
       kind: 'retryable',
       error: retryAfter ? `${label} retry-after=${retryAfter}` : label,
+      ...(seconds !== undefined ? { retryAfterSeconds: seconds } : {}),
     };
   }
 }
