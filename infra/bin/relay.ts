@@ -28,6 +28,9 @@ const delivery = new DeliveryStack(app, `relay-${stage}-delivery`, {
   stage,
   db,
   expoSecretArn: config.expoSecretArn,
+  alertKeysSecretArn: config.alertKeysSecretArn,
+  killSwitchParamName: config.killSwitchParamName,
+  killSwitchParamArn: config.killSwitchParamArn,
 });
 new IngestStack(app, `relay-${stage}-ingest`, {
   env,
@@ -35,8 +38,6 @@ new IngestStack(app, `relay-${stage}-ingest`, {
   db,
   deliveryQueueArn: delivery.queueArn,
   deliveryQueueUrl: delivery.queueUrl,
-  idempotencyTableName: delivery.idempotencyTableName,
-  idempotencyTableArn: delivery.idempotencyTableArn,
   tokenKeysSecretArn: config.tokenKeysSecretArn,
   alertKeysSecretArn: config.alertKeysSecretArn,
   killSwitchParamName: config.killSwitchParamName,

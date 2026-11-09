@@ -22,6 +22,9 @@ export function synthAll(stage: 'dev' | 'prod' = 'dev') {
     stage,
     db,
     expoSecretArn: config.expoSecretArn,
+    alertKeysSecretArn: config.alertKeysSecretArn,
+    killSwitchParamName: config.killSwitchParamName,
+    killSwitchParamArn: config.killSwitchParamArn,
   });
   const ingest = new IngestStack(app, `ingest-${stage}`, {
     env,
@@ -29,8 +32,6 @@ export function synthAll(stage: 'dev' | 'prod' = 'dev') {
     db,
     deliveryQueueArn: delivery.queueArn,
     deliveryQueueUrl: delivery.queueUrl,
-    idempotencyTableName: delivery.idempotencyTableName,
-    idempotencyTableArn: delivery.idempotencyTableArn,
     tokenKeysSecretArn: config.tokenKeysSecretArn,
     alertKeysSecretArn: config.alertKeysSecretArn,
     killSwitchParamName: config.killSwitchParamName,

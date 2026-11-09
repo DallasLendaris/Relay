@@ -8,12 +8,15 @@ import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { Queue, QueueEncryption } from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
-import { dbEnv, grantDb, grantSecretRead, type DbRefs } from './grants.js';
+import { allow, dbEnv, grantDb, grantSecretRead, type DbRefs } from './grants.js';
 
 export interface DeliveryStackProps extends StackProps {
   stage: 'dev' | 'prod';
   db: DbRefs;
   expoSecretArn: string;
+  alertKeysSecretArn: string;
+  killSwitchParamName: string;
+  killSwitchParamArn: string;
 }
 
 const WORKER_TIMEOUT = Duration.seconds(30);
@@ -39,7 +42,7 @@ export class DeliveryStack extends Stack {
       encryption: QueueEncryption.SQS_MANAGED,
       // AWS advice: at least 6x the consumer's timeout, so a slow batch is not redelivered mid-run.
       visibilityTimeout: Duration.seconds(WORKER_TIMEOUT.toSeconds() * 6),
-      deadLetterQueue: { queue: dlq, maxReceiveCount: 5 },
+      deadLetterQueue: { queue: dlq, maxReceiveCount: 50 },
     });
 
     // One row per alert+device that was already sent; TTL cleans old rows.
@@ -68,6 +71,9 @@ export class DeliveryStack extends Stack {
       environment: {
         ...dbEnv(props.db),
         EXPO_ACCESS_TOKEN_SECRET_ARN: props.expoSecretArn,
+        IDEMPOTENCY_TABLE: idempotency.tableName,
+        ALERT_KEYS_SECRET_ARN: props.alertKeysSecretArn,
+        KILL_SWITCH_PARAM: props.killSwitchParamName,
       },
     });
 
@@ -77,6 +83,14 @@ export class DeliveryStack extends Stack {
     );
     grantDb(worker, props.db);
     grantSecretRead(worker, props.expoSecretArn);
+    grantSecretRead(worker, props.alertKeysSecretArn);
+    // Send-time dedupe: claim (PutItem), check (GetItem), release on failure (DeleteItem).
+    allow(
+      worker,
+      ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:DeleteItem'],
+      [idempotency.tableArn],
+    );
+    allow(worker, ['ssm:GetParameter'], [props.killSwitchParamArn]);
 
     new Alarm(this, 'DlqNotEmptyAlarm', {
       alarmDescription: 'Push jobs are failing repeatedly and landed in the DLQ',

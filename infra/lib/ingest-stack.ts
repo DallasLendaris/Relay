@@ -16,8 +16,6 @@ export interface IngestStackProps extends StackProps {
   db: DbRefs;
   deliveryQueueArn: string;
   deliveryQueueUrl: string;
-  idempotencyTableName: string;
-  idempotencyTableArn: string;
   tokenKeysSecretArn: string;
   alertKeysSecretArn: string;
   killSwitchParamName: string;
@@ -81,7 +79,6 @@ export class IngestStack extends Stack {
         POLLS_PER_INVOCATION: '5',
         ...dbEnv(props.db),
         DELIVERY_QUEUE_URL: props.deliveryQueueUrl,
-        IDEMPOTENCY_TABLE: props.idempotencyTableName,
         TOKEN_KEYS_SECRET_ARN: props.tokenKeysSecretArn,
         ALERT_KEYS_SECRET_ARN: props.alertKeysSecretArn,
         KILL_SWITCH_PARAM: props.killSwitchParamName,
@@ -93,20 +90,6 @@ export class IngestStack extends Stack {
     stateTable.grantReadWriteData(ingestFn);
     grantDb(ingestFn, props.db);
     allow(ingestFn, ['sqs:SendMessage'], [props.deliveryQueueArn]);
-    // Read/write on the idempotency table (it lives in DeliveryStack, so explicit ARN).
-    allow(
-      ingestFn,
-      [
-        'dynamodb:GetItem',
-        'dynamodb:BatchGetItem',
-        'dynamodb:Query',
-        'dynamodb:PutItem',
-        'dynamodb:UpdateItem',
-        'dynamodb:DeleteItem',
-        'dynamodb:BatchWriteItem',
-      ],
-      [props.idempotencyTableArn],
-    );
     grantSecretRead(ingestFn, props.tokenKeysSecretArn);
     grantSecretRead(ingestFn, props.alertKeysSecretArn);
     allow(ingestFn, ['ssm:GetParameter'], [props.killSwitchParamArn]);

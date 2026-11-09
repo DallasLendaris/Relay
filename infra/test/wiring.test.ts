@@ -22,12 +22,12 @@ function allActions(t: Template): string[] {
 describe('DeliveryStack', () => {
   const t = all.delivery;
 
-  it('wires the queue to a DLQ after 5 receives, with SSE and a 6x visibility timeout', () => {
+  it('wires the queue to a DLQ after 50 receives, with SSE and a 6x visibility timeout', () => {
     t.resourceCountIs('AWS::SQS::Queue', 2);
     t.hasResourceProperties('AWS::SQS::Queue', {
       VisibilityTimeout: 180, // 6 x 30 s worker timeout
       SqsManagedSseEnabled: true,
-      RedrivePolicy: { maxReceiveCount: 5, deadLetterTargetArn: Match.anyValue() },
+      RedrivePolicy: { maxReceiveCount: 50, deadLetterTargetArn: Match.anyValue() },
     });
   });
 
@@ -66,8 +66,31 @@ describe('DeliveryStack', () => {
 
   it('worker env has exactly the contract names', () => {
     expect(envOf(t, 'EXPO_ACCESS_TOKEN_SECRET_ARN')).toEqual(
-      ['DB_CLUSTER_ARN', 'DB_NAME', 'DB_SECRET_ARN', 'EXPO_ACCESS_TOKEN_SECRET_ARN'].sort(),
+      [
+        'DB_CLUSTER_ARN',
+        'DB_NAME',
+        'DB_SECRET_ARN',
+        'EXPO_ACCESS_TOKEN_SECRET_ARN',
+        'IDEMPOTENCY_TABLE',
+        'ALERT_KEYS_SECRET_ARN',
+        'KILL_SWITCH_PARAM',
+      ].sort(),
     );
+  });
+
+  it('worker can use the idempotency table, alert keys and kill switch (and nothing wider)', () => {
+    const actions = allActions(t);
+    for (const a of [
+      'dynamodb:GetItem',
+      'dynamodb:PutItem',
+      'dynamodb:DeleteItem',
+      'ssm:GetParameter',
+      'secretsmanager:GetSecretValue',
+      'sqs:ReceiveMessage',
+    ]) {
+      expect(actions).toContain(a);
+    }
+    expect(actions).not.toContain('dynamodb:Query');
   });
 });
 
@@ -98,7 +121,6 @@ describe('IngestStack wiring', () => {
         'DB_SECRET_ARN',
         'DB_NAME',
         'DELIVERY_QUEUE_URL',
-        'IDEMPOTENCY_TABLE',
         'TOKEN_KEYS_SECRET_ARN',
         'ALERT_KEYS_SECRET_ARN',
         'KILL_SWITCH_PARAM',
@@ -113,10 +135,13 @@ describe('IngestStack wiring', () => {
       'secretsmanager:GetSecretValue',
       'sqs:SendMessage',
       'ssm:GetParameter',
-      'dynamodb:PutItem',
     ]) {
       expect(actions).toContain(a);
     }
+  });
+
+  it('no longer touches the idempotency table', () => {
+    expect(JSON.stringify(t.toJSON())).not.toContain('Idempotency');
   });
 });
 

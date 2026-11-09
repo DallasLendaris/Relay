@@ -6,13 +6,13 @@ AWS CDK app (TypeScript) for Relay, deployed to us-west-2. The account comes fro
 
 Values move between stacks as plain props (ARNs and names) wired in `bin/relay.ts`. IAM grants use explicit ARNs and explicit action lists; no wildcard actions anywhere (a test enforces this).
 
-| Stack      | Creates                                                                                                                                                                                                                                                                                |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `data`     | Aurora Serverless v2 PostgreSQL (Data API, isolated VPC, no NAT) and its generated credentials secret.                                                                                                                                                                                 |
-| `config`   | Secrets Manager: `relay/<stage>/token-keys`, `relay/<stage>/alert-keys` (keyrings), `relay/<stage>/expo-access-token` (placeholder). SSM parameter `/relay/<stage>/delivery-kill-switch` (default `running`).                                                                          |
-| `delivery` | SQS delivery queue (SSE, visibility timeout 180 s) with DLQ (5 receives), CloudWatch alarm when the DLQ has any visible message, DynamoDB idempotency table (`pk`, TTL `ttl`), and the push worker Lambda (30 s, reserved concurrency 10, batch size 10, reports batch item failures). |
-| `ingest`   | Raw S3 bucket, `alerts-state` table (`sourceId`, TTL `expiresAt`), the ingest Lambda (70 s, reserved concurrency 1) on a 1-minute EventBridge rule, errors alarm.                                                                                                                      |
-| `api`      | HTTP API with a Lambda integration for every route in `packages/shared/openapi/relay.yaml` except `/agency/*`, `$default` stage throttled at 50 rps / burst 100, Amazon Location place index `relay-<stage>-places` (Esri, SingleUse). Outputs `ApiUrl`.                               |
+| Stack      | Creates                                                                                                                                                                                                                                                                                 |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `data`     | Aurora Serverless v2 PostgreSQL (Data API, isolated VPC, no NAT) and its generated credentials secret.                                                                                                                                                                                  |
+| `config`   | Secrets Manager: `relay/<stage>/token-keys`, `relay/<stage>/alert-keys` (keyrings), `relay/<stage>/expo-access-token` (placeholder). SSM parameter `/relay/<stage>/delivery-kill-switch` (default `running`).                                                                           |
+| `delivery` | SQS delivery queue (SSE, visibility timeout 180 s) with DLQ (50 receives), CloudWatch alarm when the DLQ has any visible message, DynamoDB idempotency table (`pk`, TTL `ttl`), and the push worker Lambda (30 s, reserved concurrency 10, batch size 10, reports batch item failures). |
+| `ingest`   | Raw S3 bucket, `alerts-state` table (`sourceId`, TTL `expiresAt`), the ingest Lambda (70 s, reserved concurrency 1) on a 1-minute EventBridge rule, errors alarm.                                                                                                                       |
+| `api`      | HTTP API with a Lambda integration for every route in `packages/shared/openapi/relay.yaml` except `/agency/*`, `$default` stage throttled at 50 rps / burst 100, Amazon Location place index `relay-<stage>-places` (Esri, SingleUse). Outputs `ApiUrl`.                                |
 
 Everything is tagged `project=relay`, `stage=<stage>`.
 
@@ -63,5 +63,7 @@ Stop all push delivery immediately (workers pick it up within about 30 seconds):
 
     aws ssm put-parameter --region us-west-2 --name /relay/<stage>/delivery-kill-switch \
       --type String --value paused --overwrite
+
+While paused the worker fails every record, so SQS keeps redelivering them (visibility timeout 180 s). The DLQ takes a job only after 50 receives, roughly 2.5 hours of pausing. For a longer pause, or if the DLQ alarm fires afterwards, redrive the DLQ back to the delivery queue once you resume.
 
 Resume by writing `running` the same way. Any value other than `paused` means running.
