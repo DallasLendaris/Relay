@@ -8,6 +8,8 @@ import { MemoryPushSender } from '../../src/adapters/memory/push-sender.js';
 import { ExpoPushSender } from '../../src/adapters/expo/expo-push-sender.js';
 import {
   LEASE_MS,
+  VISIBILITY_TIMEOUT_MS,
+  WORKER_TIMEOUT_MS,
   PUSH_POLICY,
   buildMessage,
   deliveryKey,
@@ -59,6 +61,13 @@ function setup() {
   return { state, alerts, sender, idempotency, deps, sleeps };
 }
 
+describe('timing constants', () => {
+  it('lease outlasts the worker timeout and stays under 2x the visibility timeout', () => {
+    expect(LEASE_MS).toBeGreaterThan(WORKER_TIMEOUT_MS);
+    expect(LEASE_MS).toBeLessThan(2 * VISIBILITY_TIMEOUT_MS);
+  });
+});
+
 describe('leases', () => {
   it('a crash after claiming is retried after the lease and sent exactly once', async () => {
     const t = setup();
@@ -82,7 +91,7 @@ describe('leases', () => {
     expect(t.sender.sent).toHaveLength(1);
   });
 
-  it('claims with a 2 minute lease and marks sent with the long expiry on success', async () => {
+  it('claims with a 45 second lease and marks sent with the long expiry on success', async () => {
     const t = setup();
     const calls: string[] = [];
     t.deps.idempotency = {
@@ -93,7 +102,7 @@ describe('leases', () => {
     const alert = signed();
     await t.alerts.save(alert);
     await deliveryWorker(event([job(alert, 0)]), t.deps);
-    expect(calls).toEqual(['claim 2026-11-10T10:07:00.000Z', 'sent 2026-11-11T14:00:00.000Z']);
+    expect(calls).toEqual(['claim 2026-11-10T10:05:45.000Z', 'sent 2026-11-11T14:00:00.000Z']);
   });
 
   it('a retryable failure releases, so the retry sends immediately', async () => {
@@ -256,16 +265,57 @@ describe('torn reads', () => {
     expect(t.sender.sent).toHaveLength(1);
   });
 
-  it('still refuses (and acks) when the second read is also tampered', async () => {
+  it('fails the record (SQS retries) when the second read is also bad, logging delivery.signature_failed', async () => {
     const t = setup();
+    const errors: Array<[string, unknown]> = [];
+    t.deps.logger = { ...silent, error: (m, f) => void errors.push([m, f]) };
     const good = signed();
     let reads = 0;
     t.deps.alerts = {
       get: async () => (reads++, { ...good, event: 'Evil' }),
     };
-    expect(failed(await deliveryWorker(event([job(good, 0)]), t.deps))).toEqual([]);
+    expect(failed(await deliveryWorker(event([job(good, 0)]), t.deps))).toEqual(['m0']);
     expect(reads).toBe(2);
     expect(t.sender.sent).toHaveLength(0);
+    expect(errors.map((e) => e[0])).toContain('delivery.signature_failed');
+  });
+
+  it('reloads the keyring once after a signature failure, and sends if a rotated key fixes it', async () => {
+    const t = setup();
+    const alert = signed();
+    await t.alerts.save(alert);
+    let keysLoaded = false;
+    let refreshes = 0;
+    t.deps.verifyAlert = (a) => keysLoaded && verifyAlert(a); // stale cache: key unknown
+    t.deps.refreshKeys = async () => {
+      refreshes++;
+      keysLoaded = true;
+    };
+    // Two jobs for the same alert still cause only one refresh.
+    expect(failed(await deliveryWorker(event([job(alert, 0), job(alert, 1)]), t.deps))).toEqual([]);
+    expect(refreshes).toBe(1);
+    expect(t.sender.sent).toHaveLength(2);
+  });
+
+  it('keeps failing the record when the refreshed keyring still cannot verify', async () => {
+    const t = setup();
+    const alert = signed();
+    await t.alerts.save(alert);
+    let refreshes = 0;
+    t.deps.verifyAlert = () => false;
+    t.deps.refreshKeys = async () => void refreshes++;
+    expect(failed(await deliveryWorker(event([job(alert, 0)]), t.deps))).toEqual(['m0']);
+    expect(refreshes).toBe(1);
+  });
+
+  it('does not refresh keys for other refusals, which stay final acks', async () => {
+    const t = setup();
+    let refreshes = 0;
+    t.deps.refreshKeys = async () => void refreshes++;
+    const cancelled = signed({ state: 'cancelled' });
+    await t.alerts.save(cancelled);
+    expect(failed(await deliveryWorker(event([job(cancelled, 0)]), t.deps))).toEqual([]);
+    expect(refreshes).toBe(0);
   });
 
   it('does not re-read for other refusals', async () => {

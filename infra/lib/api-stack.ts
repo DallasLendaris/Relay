@@ -51,11 +51,11 @@ export class ApiStack extends Stack {
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: isProd },
       removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
     };
-    // One row per check-in; the idempotency key makes a retried request a no-op.
+    // One row per device per alert, so a device counts once however many times it checks in.
     const checkins = new Table(this, 'CheckinsTable', {
       ...tableDefaults,
       partitionKey: { name: 'alertId', type: AttributeType.STRING },
-      sortKey: { name: 'idempotencyKey', type: AttributeType.STRING },
+      sortKey: { name: 'deviceId', type: AttributeType.STRING },
     });
     // Running count per alert and H3 cell. This is what agencies see (never the rows above).
     const checkinTotals = new Table(this, 'CheckinTotalsTable', {

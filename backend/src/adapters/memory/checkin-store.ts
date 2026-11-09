@@ -3,21 +3,21 @@ import type { CheckInStore } from '../../ports.js';
 
 /** In-memory CheckInStore for tests and local runs. Mirrors the DynamoDB version. */
 export class MemoryCheckInStore implements CheckInStore {
-  private readonly byKey = new Map<string, CheckIn>();
+  private readonly byDevice = new Map<string, CheckIn>();
   private readonly totalsByCell = new Map<string, number>();
 
   async save(checkIn: CheckIn): Promise<boolean> {
-    const key = this.keyOf(checkIn.alertId, checkIn.idempotencyKey);
-    if (this.byKey.has(key)) return false;
-    this.byKey.set(key, checkIn);
+    const key = this.keyOf(checkIn.alertId, checkIn.deviceId);
+    if (this.byDevice.has(key)) return false;
+    this.byDevice.set(key, checkIn);
     const cellKey = this.keyOf(checkIn.alertId, checkIn.h3Cell);
     this.totalsByCell.set(cellKey, (this.totalsByCell.get(cellKey) ?? 0) + 1);
     return true;
   }
 
-  /** The stored check-in for this alert and idempotency key, if any. Not part of the port. */
-  async get(alertId: string, idempotencyKey: string): Promise<CheckIn | null> {
-    return this.byKey.get(this.keyOf(alertId, idempotencyKey)) ?? null;
+  /** The device's stored check-in for this alert, if any. Not part of the port. */
+  async get(alertId: string, deviceId: string): Promise<CheckIn | null> {
+    return this.byDevice.get(this.keyOf(alertId, deviceId)) ?? null;
   }
 
   /** Check-in count for one alert and H3 cell (what CHECKIN_TOTALS_TABLE holds). */

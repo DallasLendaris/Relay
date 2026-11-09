@@ -100,30 +100,61 @@ describe('DynamoIdempotencyStore', () => {
     await expect(store.claim('k', NOW)).rejects.toThrow('boom');
   });
 
-  it('markSent sets state sent with the long ttl', async () => {
+  it('claim writes an attemptId that markSent conditions on', async () => {
     const d = doc();
     const mock = mockClient(d);
+    mock.on(PutCommand).resolves({});
     mock.on(UpdateCommand).resolves({});
-    await new DynamoIdempotencyStore(d, 'tbl').markSent('k', new Date('2026-11-11T14:00:00Z'));
+    const store = new DynamoIdempotencyStore(d, 'tbl', { now: () => NOW });
+    await store.claim('k', NOW);
+    const attemptId = mock.commandCalls(PutCommand)[0]?.args[0].input.Item?.['attemptId'];
+    expect(typeof attemptId).toBe('string');
+    await store.markSent('k', new Date('2026-11-11T14:00:00Z'));
     expect(mock.commandCalls(UpdateCommand)[0]?.args[0].input).toMatchObject({
       TableName: 'tbl',
       Key: { pk: 'k' },
+      ConditionExpression: 'attribute_not_exists(pk) OR #state <> :sent OR attemptId = :attempt',
       ExpressionAttributeValues: {
         ':sent': 'sent',
         ':ttl': Date.parse('2026-11-11T14:00:00Z') / 1000,
+        ':attempt': attemptId,
       },
     });
   });
 
-  it('release deletes the key', async () => {
+  it('markSent ignores a ConditionalCheckFailed (sent by a different attempt) but not other errors', async () => {
     const d = doc();
     const mock = mockClient(d);
+    const store = new DynamoIdempotencyStore(d, 'tbl');
+    mock.on(UpdateCommand).rejects(lost());
+    await expect(store.markSent('k', NOW)).resolves.toBeUndefined();
+    mock.on(UpdateCommand).rejects(new Error('boom'));
+    await expect(store.markSent('k', NOW)).rejects.toThrow('boom');
+  });
+
+  it('release is conditional on the lease being ours, and ignores ConditionalCheckFailed', async () => {
+    const d = doc();
+    const mock = mockClient(d);
+    mock.on(PutCommand).resolves({});
     mock.on(DeleteCommand).resolves({});
-    await new DynamoIdempotencyStore(d, 'tbl').release('k');
-    expect(mock.commandCalls(DeleteCommand)[0]?.args[0].input).toEqual({
+    const store = new DynamoIdempotencyStore(d, 'tbl', { now: () => NOW });
+    await store.claim('k', NOW);
+    const attemptId = mock.commandCalls(PutCommand)[0]?.args[0].input.Item?.['attemptId'];
+    await store.release('k');
+    expect(mock.commandCalls(DeleteCommand)[0]?.args[0].input).toMatchObject({
       TableName: 'tbl',
       Key: { pk: 'k' },
+      ConditionExpression: '#state = :leased AND attemptId = :attempt',
+      ExpressionAttributeValues: { ':leased': 'leased', ':attempt': attemptId },
     });
+    mock.on(DeleteCommand).rejects(lost());
+    await expect(store.release('k')).resolves.toBeUndefined();
+    // Without a remembered claim it still only deletes a leased item.
+    expect(mock.commandCalls(DeleteCommand)[1]?.args[0].input).toMatchObject({
+      ConditionExpression: '#state = :leased',
+    });
+    mock.on(DeleteCommand).rejects(new Error('boom'));
+    await expect(store.release('k')).rejects.toThrow('boom');
   });
 });
 
@@ -283,5 +314,27 @@ describe('ExpoPushSender', () => {
     }) as unknown as typeof fetch;
     await new ExpoPushSender({ fetch: fetchFn }).send([msg(0)]);
     expect(calls).toBe(1);
+  });
+});
+
+describe('MemoryIdempotencyStore attempts', () => {
+  const lease = new Date('2026-11-10T10:02:00Z');
+  const sentUntil = new Date('2026-11-11T10:00:00Z');
+
+  it('release never deletes a sent key', async () => {
+    const s = new MemoryIdempotencyStore({ now: () => new Date('2026-11-10T10:00:00Z') });
+    await s.claim('k', lease);
+    await s.markSent('k', sentUntil);
+    await s.release('k');
+    expect(await s.claim('k', lease)).toBe('sent');
+  });
+
+  it('markSent does not overwrite a key a different attempt already sent', async () => {
+    const s = new MemoryIdempotencyStore({ now: () => new Date('2026-11-10T10:00:00Z') });
+    await s.claim('k', lease);
+    await s.markSent('k', sentUntil);
+    // A second, unrelated markSent (no claim of its own) must not shorten the remembered time.
+    await s.markSent('k', new Date('2026-11-10T10:00:01Z'));
+    expect(await s.claim('k', lease)).toBe('sent');
   });
 });

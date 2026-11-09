@@ -9,7 +9,7 @@ import type { CheckInStore } from '../../ports.js';
 
 /**
  * CheckInStore on DynamoDB.
- * - checkinsTable: pk "alertId" (S), sk "idempotencyKey" (S). One item per check-in.
+ * - checkinsTable: pk "alertId" (S), sk "deviceId" (S). One item per device per alert; idempotencyKey is a plain attribute.
  * - totalsTable: pk "alertId" (S), sk "h3Cell" (S), numeric "checkedIn". The agency view reads it.
  */
 export class DynamoCheckInStore implements CheckInStore {
@@ -20,8 +20,8 @@ export class DynamoCheckInStore implements CheckInStore {
   ) {}
 
   /**
-   * One transaction: record the check-in (only if the key is new) and add 1 to the cell total.
-   * Doing both together means a retry can never count a check-in twice or lose a count.
+   * One transaction: record the check-in (only if this device has not checked in for this alert) and add 1 to the cell total.
+   * Doing both together means a device is counted at most once, and never half-recorded.
    */
   async save(checkIn: CheckIn): Promise<boolean> {
     try {
@@ -60,12 +60,12 @@ export class DynamoCheckInStore implements CheckInStore {
     }
   }
 
-  /** The stored check-in for this alert and idempotency key, if any. Not part of the port. */
-  async get(alertId: string, idempotencyKey: string): Promise<CheckIn | null> {
+  /** The device's stored check-in for this alert, if any. Not part of the port. */
+  async get(alertId: string, deviceId: string): Promise<CheckIn | null> {
     const out = await this.doc.send(
       new GetCommand({
         TableName: this.checkinsTable,
-        Key: { alertId, idempotencyKey },
+        Key: { alertId, deviceId },
         ConsistentRead: true, // the caller just lost a write race; it must see the winner
       }),
     );

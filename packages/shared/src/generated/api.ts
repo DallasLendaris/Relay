@@ -124,7 +124,10 @@ export interface paths {
         /**
          * Record an "I'm okay" check-in for an alert.
          * @description `token` is the signed check-in token delivered in the push notification.
-         *     Repeating a request with the same `idempotencyKey` returns the original result.
+         *     A device checks in at most once per alert, and only its first check-in counts toward
+         *     the totals. Any later request from the same device for the same alert returns 200 with
+         *     the original `checkedInAt`, whatever `idempotencyKey` it sends. `idempotencyKey` is
+         *     required so a client can safely retry; the server does not use it for uniqueness.
          *     `need_help` is reserved for the Pilot; the demo API rejects it with 400.
          */
         post: operations["createCheckIn"];
@@ -619,15 +622,6 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
-            /** @description The idempotencyKey was already used by a different device (`idempotency_conflict`). */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
         };
     };
     listAgencyAlerts: {

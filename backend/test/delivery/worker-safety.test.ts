@@ -145,10 +145,7 @@ describe('deliveryWorker', () => {
   });
 
   describe('refuses to send', () => {
-    const good = signed();
     const cases: Array<[string, Alert]> = [
-      ['a tampered row (signature mismatch)', tampered(good, { event: 'Evil' })],
-      ['an unsigned row', { ...good, signature: null }],
       ['status Test', signed({ status: 'Test' })],
       ['a cancelled alert', signed({ state: 'cancelled' })],
       ['an expired alert', signed({ state: 'expired' })],
@@ -165,6 +162,50 @@ describe('deliveryWorker', () => {
         expect(await t.idempotency.claim(key, new Date('2030-01-01'))).toBe('claimed');
       });
     }
+  });
+
+  describe('signature failures are retried, never acked', () => {
+    const good = signed();
+    const cases: Array<[string, Alert]> = [
+      ['a tampered row', tampered(good, { event: 'Evil' })],
+      ['an unsigned row', { ...good, signature: null }],
+    ];
+    for (const [name, alert] of cases) {
+      it(name, async () => {
+        const t = setup();
+        const errors: string[] = [];
+        t.workerDeps.logger = { ...logger, error: (m) => void errors.push(m) };
+        await t.alerts.save(alert);
+        expect(failed(await t.run([job(alert, 0)]))).toEqual(['m0']);
+        expect(t.sender.sent).toHaveLength(0);
+        expect(errors).toContain('delivery.signature_failed');
+      });
+    }
+  });
+
+  it('InvalidCredentials is a config problem: releases the claim and retries, keeps the token', async () => {
+    const t = setup();
+    const alert = signed();
+    await t.alerts.save(alert);
+    t.sender.failTokens.set('tok0', 'InvalidCredentials');
+    expect(failed(await t.run([job(alert, 0)]))).toEqual(['m0']);
+    expect(t.dead).toEqual([]);
+    // Fixed credentials: the retry sends, because the claim was released.
+    t.sender.failTokens.clear();
+    expect(failed(await t.run([job(alert, 0)]))).toEqual([]);
+    expect(t.sender.sent.map((m) => m.to)).toEqual(['tok0']);
+  });
+
+  it('MessageTooBig is permanent: acked, claim kept, token not cleared', async () => {
+    const t = setup();
+    const alert = signed();
+    await t.alerts.save(alert);
+    t.sender.failTokens.set('tok0', 'MessageTooBig');
+    expect(failed(await t.run([job(alert, 0)]))).toEqual([]);
+    t.sender.failTokens.clear();
+    expect(failed(await t.run([job(alert, 0)]))).toEqual([]);
+    expect(t.sender.sent).toHaveLength(0);
+    expect(t.dead).toEqual([]);
   });
 
   it('refuses while the kill switch is paused, then sends after resume', async () => {

@@ -378,7 +378,10 @@ describe('demo path', () => {
     };
     await s.alertStore.save(edited);
 
-    expect(await s.drain()).toEqual([]); // refused alerts are dropped, not retried forever
+    // A signature failure is retried (it could be a key rotation the worker hasn't loaded
+    // yet) and ends up in the DLQ if it never verifies. It is never sent.
+    expect(await s.drain()).toHaveLength(1);
+    expect(await s.drain()).toHaveLength(1);
     expect(s.sender.sent).toHaveLength(0);
   });
 

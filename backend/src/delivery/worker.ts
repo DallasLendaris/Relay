@@ -8,14 +8,20 @@ import { sendJobs } from './send-jobs.js';
 import type { Logger } from './types.js';
 
 /** Errors that will never succeed on retry. Keep the claim and don't make SQS retry these. */
-const PERMANENT = new Set(['DeviceNotRegistered', 'InvalidCredentials', 'MessageTooBig']);
+const PERMANENT = new Set(['DeviceNotRegistered', 'MessageTooBig']);
+// InvalidCredentials is deliberately NOT here: it means our Expo access token or project
+// setup is wrong. That is a configuration problem to fix and retry, not a dead device.
 
+/** Lambda timeout of the worker (infra tests check the stack uses the same number). */
+export const WORKER_TIMEOUT_MS = 20_000;
+/** SQS visibility timeout of the delivery queue (infra tests check the stack matches). */
+export const VISIBILITY_TIMEOUT_MS = 30_000;
 /**
- * How long a claim holds before another attempt may take over. Well above the Lambda
- * timeout plus the Expo timeout, so a live attempt is never doubled, yet short enough that
- * a crashed one is retried promptly.
+ * How long a claim holds before another attempt may take over. It must outlast the worker
+ * timeout (so a live attempt is never doubled) and stay under 2x the visibility timeout (so a
+ * crashed attempt is retried by the second redelivery at the latest).
  */
-export const LEASE_MS = 2 * 60 * 1000;
+export const LEASE_MS = 45_000;
 /** Wait before re-reading an alert whose signature failed (an update may have just committed). */
 const REREAD_DELAY_MS = 200;
 
@@ -27,6 +33,11 @@ export interface WorkerDeps {
   verifyAlert(alert: Alert): boolean;
   /** Kill switch. While paused, nothing is sent and every record is retried later. */
   isDeliveryPaused(): Promise<boolean>;
+  /**
+   * Drops the cached alert keyring and reloads it, so a newly rotated key is picked up.
+   * Called at most once per invocation, only after a signature failed.
+   */
+  refreshKeys?(): Promise<void>;
   /** Called when Expo says a token is dead (DeviceNotRegistered). */
   onDeadToken(token: string): Promise<void>;
   clock: Clock;
@@ -72,6 +83,7 @@ export async function deliveryWorker(event: SQSEvent, deps: WorkerDeps): Promise
   // Re-read each alert from the store and re-check it: a row edited after planning is never pushed.
   const now = deps.clock.now();
   const loaded = new Map<string, Loaded>();
+  let refreshing: Promise<void> | undefined;
   for (const id of new Set(parsed.map((p) => p.job.alertId))) {
     loaded.set(id, await loadAlert(id));
   }
@@ -85,6 +97,18 @@ export async function deliveryWorker(event: SQSEvent, deps: WorkerDeps): Promise
         await sleep(REREAD_DELAY_MS);
         alert = await deps.alerts.get(id);
         refusal = alert ? refusalFor(alert, now, deps.verifyAlert) : null;
+      }
+      if (alert && refusal === 'unsigned' && deps.refreshKeys) {
+        // Maybe our cached keyring lacks a newly rotated key. Reload it once and check again.
+        refreshing ??= deps.refreshKeys();
+        await refreshing;
+        refusal = refusalFor(alert, now, deps.verifyAlert);
+      }
+      if (refusal === 'unsigned') {
+        // Never ack this: a real alert signed with a key we don't know yet must not be lost.
+        // SQS retries, and a truly tampered row ends up in the DLQ for a human.
+        deps.logger.error('delivery.signature_failed', { alertId: id });
+        return 'error';
       }
       if (refusal) deps.logger.error('refusing to send alert', { alertId: id, reason: refusal });
       return !alert ? 'missing' : refusal ? 'refused' : alert;
@@ -102,8 +126,8 @@ export async function deliveryWorker(event: SQSEvent, deps: WorkerDeps): Promise
   for (const { messageId, job } of parsed) {
     const alert = loaded.get(job.alertId);
     if (!alert || typeof alert === 'string') {
-      // A refused alert is dropped for good (acknowledged). A missing one may be read lag, and a
-      // read error may be temporary: retry both.
+      // A refused alert (not actual, inactive, expired) is dropped for good (acknowledged). A
+      // missing one may be read lag, and a read or signature error may be temporary: retry those.
       if (alert !== 'refused') failures.push(messageId);
       continue;
     }

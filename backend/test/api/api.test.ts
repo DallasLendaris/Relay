@@ -46,8 +46,8 @@ function templateFor(path: string): string {
 }
 
 /**
- * The spec does not list 403 or 409 for check-ins yet (packages/shared is not ours to edit),
- * so those bodies are checked against the shared Error schema instead.
+ * The spec does not list 403 for some routes, so those bodies are checked against the shared
+ * Error schema instead.
  */
 function expectErrorBody(body: string): void {
   const schema = (spec as unknown as { components: { schemas: { Error: object } } }).components
@@ -182,7 +182,7 @@ function event(method: string, path: string, body?: unknown, credential?: string
 /** Calls the API, checks the response against the OpenAPI spec when the route is documented. */
 async function call(method: string, path: string, body?: unknown, credential?: string) {
   const res = await route(event(method, path, body, credential));
-  if (res.statusCode === 403 || res.statusCode === 409) expectErrorBody(res.body);
+  if (res.statusCode === 403) expectErrorBody(res.body);
   else expectMatchesSpec(method, path, res.statusCode, res.body);
   return {
     status: res.statusCode,
@@ -542,7 +542,7 @@ describe('check-ins', () => {
     const res = await post(s.alert.id, s.credential, body(s.token));
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ checkedInAt: '2026-11-09T12:00:00.000Z' });
-    expect(await checkins.get(s.alert.id, 'key-1')).toMatchObject({
+    expect(await checkins.get(s.alert.id, s.deviceId)).toMatchObject({
       deviceId: s.deviceId,
       status: 'ok',
       h3Cell: sjCell,
@@ -555,7 +555,7 @@ describe('check-ins', () => {
     await call('POST', '/places', { label: 'SF', ...SF }, s.credential);
     // Home (San Jose) was saved first, so it wins even though the alert lists SF first.
     await post(s.alert.id, s.credential, body(s.token));
-    expect((await checkins.get(s.alert.id, 'key-1'))?.h3Cell).toBe(sjCell);
+    expect((await checkins.get(s.alert.id, s.deviceId))?.h3Cell).toBe(sjCell);
   });
 
   it('rejects a token made for another device with 403 invalid_token', async () => {
@@ -611,41 +611,69 @@ describe('check-ins', () => {
     expect(checkins.total(s.alert.id, sjCell)).toBe(0);
   });
 
-  it('returns the original time for a repeated idempotencyKey and counts once', async () => {
-    const s = await setup();
-    const first = await post(s.alert.id, s.credential, body(s.token));
-    const later = createApi({
+  /** An API whose clock reads `iso`, sharing the same stores. */
+  const apiAt = (iso: string) =>
+    createApi({
       devices,
       places,
       alerts,
       geocoder: fakeGeocoder,
       checkins,
       tokenKeys: TOKEN_KEYS,
-      clock: { now: () => new Date('2026-11-09T12:05:00Z') },
+      clock: { now: () => new Date(iso) },
       newId: randomUUID,
     });
-    const res = await later(
-      event('POST', `/alerts/${s.alert.id}/checkins`, body(s.token), s.credential),
-    );
-    expectMatchesSpec('POST', `/alerts/${s.alert.id}/checkins`, res.statusCode, res.body);
-    expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toEqual(first.body);
+
+  it('counts a device once, whatever idempotencyKey it sends, and returns the first time', async () => {
+    const s = await setup();
+    const first = await post(s.alert.id, s.credential, body(s.token));
+    const path = `/alerts/${s.alert.id}/checkins`;
+    for (const [i, key] of ['key-2', 'key-3'].entries()) {
+      const later = apiAt(`2026-11-09T12:0${i + 5}:00Z`);
+      const res = await later(
+        event('POST', path, body(s.token, { idempotencyKey: key }), s.credential),
+      );
+      expectMatchesSpec('POST', path, res.statusCode, res.body);
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual(first.body);
+    }
+    // The same key again is also harmless.
+    const same = await post(s.alert.id, s.credential, body(s.token));
+    expect(same.body).toEqual(first.body);
     expect(checkins.total(s.alert.id, sjCell)).toBe(1);
   });
 
-  it('does not let another device reuse an idempotencyKey (409)', async () => {
+  it('counts two devices in the same cell as two', async () => {
     const s = await setup();
-    await post(s.alert.id, s.credential, body(s.token));
     const other = await register();
     await call('POST', '/places', { label: 'Home', ...SAN_JOSE }, other.credential);
     const res = await post(
       s.alert.id,
       other.credential,
+      body(s.tokenFor(s.alert.id, other.deviceId), { idempotencyKey: 'key-2' }),
+    );
+    expect(res.status).toBe(200);
+    await post(s.alert.id, s.credential, body(s.token));
+    expect(checkins.total(s.alert.id, sjCell)).toBe(2);
+  });
+
+  it('lets one device reuse another device idempotencyKey without interfering', async () => {
+    const s = await setup();
+    const other = await register();
+    await call('POST', '/places', { label: 'Home', ...SAN_JOSE }, other.credential);
+    // Device B claims the key first; device A's genuine check-in with the same key still works.
+    const b = await post(
+      s.alert.id,
+      other.credential,
       body(s.tokenFor(s.alert.id, other.deviceId)),
     );
-    expect(res.status).toBe(409);
-    expect(res.body?.['code']).toBe('idempotency_conflict');
-    expect(res.body?.['checkedInAt']).toBeUndefined();
+    const a = await apiAt('2026-11-09T12:05:00Z')(
+      event('POST', `/alerts/${s.alert.id}/checkins`, body(s.token), s.credential),
+    );
+    expect(b.status).toBe(200);
+    expect(a.statusCode).toBe(200);
+    expect(JSON.parse(a.body)).toEqual({ checkedInAt: '2026-11-09T12:05:00.000Z' });
+    expect(checkins.total(s.alert.id, sjCell)).toBe(2);
   });
 
   it('rejects need_help with 400 (reserved for the Pilot)', async () => {

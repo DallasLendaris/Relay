@@ -1,5 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { Match, type Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
+import { MAX_RECEIVE_COUNT } from '../lib/delivery-stack.js';
 import { envNamesRead } from './handler-env.js';
 import { synthAll } from './helpers.js';
 
@@ -18,6 +21,40 @@ function allActions(t: Template): string[] {
   return policies
     .flatMap((p) => p.Properties.PolicyDocument.Statement)
     .flatMap((s) => (Array.isArray(s.Action) ? s.Action : [s.Action]));
+}
+
+/**
+ * Reads an exported numeric constant (like `export const LEASE_MS = 45_000;`) from a backend
+ * source file. The infra project cannot import backend code (separate tsconfig rootDir).
+ */
+function backendConstant(backendPath: string, name: string): number {
+  const src = readFileSync(
+    fileURLToPath(new URL(`../../backend/src/${backendPath}`, import.meta.url)),
+    'utf8',
+  );
+  const m = new RegExp(`export const ${name} = ([\\d_]+);`).exec(src);
+  if (!m) throw new Error(`${name} not found in ${backendPath}`);
+  return Number((m[1] as string).replaceAll('_', ''));
+}
+
+/** DynamoDB document-client commands -> the IAM action each one needs. */
+const DYNAMO_ACTION: Record<string, string> = {
+  GetCommand: 'dynamodb:GetItem',
+  PutCommand: 'dynamodb:PutItem',
+  UpdateCommand: 'dynamodb:UpdateItem',
+  DeleteCommand: 'dynamodb:DeleteItem',
+  QueryCommand: 'dynamodb:Query',
+  ScanCommand: 'dynamodb:Scan',
+};
+
+/** The IAM actions a source file needs, read from the SDK commands it constructs. */
+function dynamoActionsUsed(backendPath: string): string[] {
+  const src = readFileSync(
+    fileURLToPath(new URL(`../../backend/src/${backendPath}`, import.meta.url)),
+    'utf8',
+  );
+  const commands = [...src.matchAll(/new (\w+Command)\(/g)].map((m) => m[1] as string);
+  return [...new Set(commands.map((c) => DYNAMO_ACTION[c] ?? `UNMAPPED:${c}`))].sort();
 }
 
 /**
@@ -57,13 +94,27 @@ function checkEnvContract(
 describe('DeliveryStack', () => {
   const t = all.delivery;
 
-  it('wires the queue to a DLQ after 50 receives, with SSE and a 6x visibility timeout', () => {
+  it('wires the queue to a DLQ after 100 receives, with SSE and a 30 s visibility timeout', () => {
     t.resourceCountIs('AWS::SQS::Queue', 2);
     t.hasResourceProperties('AWS::SQS::Queue', {
-      VisibilityTimeout: 120, // 6 x 20 s worker timeout
+      VisibilityTimeout: 30,
       SqsManagedSseEnabled: true,
-      RedrivePolicy: { maxReceiveCount: 50, deadLetterTargetArn: Match.anyValue() },
+      RedrivePolicy: { maxReceiveCount: 100, deadLetterTargetArn: Match.anyValue() },
     });
+    // 100 receives x 30 s is about 50 minutes of kill-switch pause before the DLQ.
+    expect(MAX_RECEIVE_COUNT * 30).toBe(3000);
+  });
+
+  it('keeps the worker lease between the worker timeout and 2x the visibility timeout', () => {
+    const LEASE_MS = backendConstant('delivery/worker.ts', 'LEASE_MS');
+    const WORKER_TIMEOUT_MS = backendConstant('delivery/worker.ts', 'WORKER_TIMEOUT_MS');
+    const VISIBILITY_TIMEOUT_MS = backendConstant('delivery/worker.ts', 'VISIBILITY_TIMEOUT_MS');
+    // The numbers in the stack and the worker must agree...
+    t.hasResourceProperties('AWS::Lambda::Function', { Timeout: WORKER_TIMEOUT_MS / 1000 });
+    t.hasResourceProperties('AWS::SQS::Queue', { VisibilityTimeout: VISIBILITY_TIMEOUT_MS / 1000 });
+    // ...so a live attempt is never doubled and a crashed one is retried at the second redelivery.
+    expect(LEASE_MS).toBeGreaterThan(WORKER_TIMEOUT_MS);
+    expect(LEASE_MS).toBeLessThan(2 * VISIBILITY_TIMEOUT_MS);
   });
 
   it('alarms when the DLQ has any visible message', () => {
@@ -103,10 +154,20 @@ describe('DeliveryStack', () => {
 
   it('worker can use the idempotency table, alert keys and kill switch (and nothing wider)', () => {
     const actions = allActions(t);
+    // Derived from the SDK commands in the store, so a new call without a grant fails here.
+    const used = dynamoActionsUsed('adapters/aws/dynamo-idempotency-store.ts');
+    expect(used.filter((a) => a.startsWith('UNMAPPED'))).toEqual([]);
+    expect(used).toEqual(
+      expect.arrayContaining([
+        'dynamodb:DeleteItem',
+        'dynamodb:GetItem',
+        'dynamodb:PutItem',
+        'dynamodb:UpdateItem',
+      ]),
+    );
+    for (const a of used) expect(actions).toContain(a);
     for (const a of [
-      'dynamodb:GetItem',
-      'dynamodb:PutItem',
-      'dynamodb:DeleteItem',
+      'dynamodb:UpdateItem', // markSent
       'ssm:GetParameter',
       'secretsmanager:GetSecretValue',
       'sqs:ReceiveMessage',
@@ -171,7 +232,7 @@ describe('ApiStack', () => {
       BillingMode: 'PAY_PER_REQUEST',
       KeySchema: [
         { AttributeName: 'alertId', KeyType: 'HASH' },
-        { AttributeName: 'idempotencyKey', KeyType: 'RANGE' },
+        { AttributeName: 'deviceId', KeyType: 'RANGE' },
       ],
     });
     t.hasResourceProperties('AWS::DynamoDB::Table', {

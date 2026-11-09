@@ -20,8 +20,8 @@ import type { Request } from './router.js';
 export type { ApiEvent, ApiResult } from './router.js';
 
 export interface CheckInLookup {
-  /** The stored check-in for this alert and idempotency key, or null. */
-  get(alertId: string, idempotencyKey: string): Promise<CheckIn | null>;
+  /** The device's stored check-in for this alert, or null. */
+  get(alertId: string, deviceId: string): Promise<CheckIn | null>;
 }
 
 export interface ApiDeps {
@@ -29,7 +29,7 @@ export interface ApiDeps {
   places: PlaceStore;
   alerts: AlertStore;
   geocoder: Geocoder;
-  /** The port plus a lookup by idempotency key (adapter classes have it; the port does not). */
+  /** The port plus a lookup by device (adapter classes have it; the port does not). */
   checkins: CheckInStore & CheckInLookup;
   /** Check-in token keys by key id (kid -> secret). */
   tokenKeys: Map<string, string>;
@@ -304,12 +304,10 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     };
     if (await deps.checkins.save(checkIn)) return json(200, { checkedInAt: checkIn.checkedInAt });
 
-    // Repeat key: answer with the original time, so retries after a lost response are harmless.
-    const original = await deps.checkins.get(alert.id, idempotencyKey);
+    // This device already checked in for this alert (a retry, or a new idempotencyKey).
+    // Only the first check-in counts; answer with its original time.
+    const original = await deps.checkins.get(alert.id, device.id);
     if (!original) throw new Error('Repeated check-in could not be read back');
-    if (original.deviceId !== device.id) {
-      throw new HttpError(409, 'idempotency_conflict', 'idempotencyKey is already in use');
-    }
     return json(200, { checkedInAt: original.checkedInAt });
   });
 

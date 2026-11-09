@@ -4,7 +4,9 @@ Last updated: 2026-11-09 (overnight build session). Branch: `s-05-restructure-mo
 
 Everything below is built and tested **offline**. Nothing has been deployed to AWS yet, because the AWS accounts (S-06) don't exist yet.
 
-Checks: `npm run lint && npm run typecheck && npm test` gives 355 tests passing. `cd infra && npx cdk synth -c stage=dev` (and `stage=prod`) succeeds and produces 5 stacks.
+Checks: `npm run lint && npm run typecheck && npm test` gives 457 tests passing. `cd infra && npx cdk synth -c stage=dev` (and `stage=prod`) succeeds and produces 5 stacks.
+
+The engine went through three independent safety reviews. Every confirmed finding was fixed and has a test.
 
 ## Tickets
 
@@ -29,6 +31,7 @@ Checks: `npm run lint && npm run typecheck && npm test` gives 355 tests passing.
 | AE-11 | Saved places endpoints          | Done                                           | `backend/src/api/`                                                                 |
 | AE-12 | Alert endpoints for the app     | Done                                           | `backend/src/api/`                                                                 |
 | AE-13 | EN/ES plain-language summaries  | Done; Spanish should get a native-speaker read | `backend/src/summaries/`                                                           |
+| AG-09 | Check-in endpoint (agency area) | Done; one check-in per device per alert        | `backend/src/api/`, `backend/src/adapters/aws/dynamo-checkin-store.ts`             |
 | AG-10 | Kill switch (agency area)       | Engine side done                               | SSM `/relay/<stage>/delivery-kill-switch`                                          |
 
 ## How an alert flows
@@ -39,9 +42,12 @@ Checks: `npm run lint && npm run typecheck && npm test` gives 355 tests passing.
 4. The alert area becomes H3 cells (resolution 7).
 5. The lifecycle step merges updates and cancels.
 6. The alert gets EN/ES summaries, is signed, and is saved to Aurora.
-7. Delivery is planned: matched devices get jobs on SQS.
-8. The delivery worker re-checks everything (signed, Actual, active, not ended, kill switch), then claims `alertId:severity:deviceId`, sends through Expo, and releases the claim on a retryable failure.
-9. An alert is marked "seen" only after planning succeeds, so a failure is retried on the next poll.
+7. Delivery is planned: matched devices get jobs on SQS. Statements are in-app only, with no push.
+8. The delivery worker re-checks everything (signed, Actual, active, not ended, kill switch). It then takes a 45-second lease on `alertId:severity:deviceId`, sends through Expo (8-second timeout), and marks the key sent. Retryable failures release the lease and SQS retries after 30 seconds.
+9. An alert is marked "seen" only after planning succeeds. A failure, an outage, or a paused kill switch leaves it unseen, so the next poll retries it.
+10. The phone's "I'm okay" calls `POST /alerts/{id}/checkins` with the signed token. Each device counts once per alert in the per-H3-cell totals.
+
+Push policy: emergencies and warnings are loud and high-priority, watches and advisories are quiet, and statements get no push (`backend/src/delivery/policy.ts`).
 
 ## Before the first deploy (in order)
 
@@ -57,7 +63,9 @@ Checks: `npm run lint && npm run typecheck && npm test` gives 355 tests passing.
 - **NWS fixtures are constructed**, not recorded, because api.weather.gov was unreachable from the build environment.
 - **Cancellations aren't pushed yet.** A cancelled alert stops further pushes and shows as cancelled in the app.
 - **NWS Updates re-notify only on a severity increase** or for newly covered devices.
-- **A Lambda killed after a claim but before the send** strands that one push. The claim lasts until the alert ends plus one day. A short in-flight claim that is extended after a successful send would close this gap.
+- **A Lambda killed after Expo accepted a push but before it was marked sent** re-sends that one push once, after the 45-second lease. This is an accepted trade-off: a rare duplicate rather than a missed alert.
+- **Push-token reassignment:** a device that knows another phone's Expo token could take it over. Tokens are never logged or returned, so the risk is low, but it should be revisited before the Pilot.
+- **The OpenAPI spec changed tonight** (check-in 403 responses, and the once-per-device rule). It needs all-three approval like the other shared formats.
 - **The California boundary** used for coordinate checks is a rough outline (demo only).
 - **SAME codes** for Red Flag, Fire Weather and heat products don't exist. Those summaries match on event name.
 - **Data API instead of a VPC** for Lambdas: this avoids about $32/month of NAT Gateway cost.

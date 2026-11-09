@@ -12,7 +12,7 @@ import { DynamoIdempotencyStore } from '../adapters/aws/dynamo-idempotency-store
 import { PostgresAlertStore } from '../adapters/postgres/alert-store.js';
 import { PostgresDeviceStore } from '../adapters/postgres/device-store.js';
 import { createKillSwitch } from '../config/kill-switch.js';
-import { loadKeyring, loadSecretString } from '../config/secrets.js';
+import { clearKeyringCache, loadKeyring, loadSecretString } from '../config/secrets.js';
 import { createAlertVerifier } from '../signing/index.js';
 import { DataApiExecutor } from '../db/sql.js';
 import type { Logger } from './types.js';
@@ -93,6 +93,14 @@ export const handler = async (event: SQSEvent): Promise<SQSBatchResponse> => {
   });
   const built = await deps;
   // Loaded per invocation (cached 5 minutes inside loadKeyring) so key rotation is picked up.
-  const keys = await loadKeyring(built.alertKeysArn);
-  return deliveryWorker(event, { ...built, verifyAlert: createAlertVerifier(keys.all) });
+  let verify = createAlertVerifier((await loadKeyring(built.alertKeysArn)).all);
+  return deliveryWorker(event, {
+    ...built,
+    verifyAlert: (alert) => verify(alert),
+    // A signature failure may just mean a key was rotated in after our cache filled.
+    refreshKeys: async () => {
+      clearKeyringCache();
+      verify = createAlertVerifier((await loadKeyring(built.alertKeysArn)).all);
+    },
+  });
 };

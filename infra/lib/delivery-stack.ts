@@ -19,8 +19,17 @@ export interface DeliveryStackProps extends StackProps {
   killSwitchParamArn: string;
 }
 
-// The worker uses 2-minute leases and an 8 s Expo timeout, so 20 s is plenty.
-const WORKER_TIMEOUT = Duration.seconds(20);
+// The worker uses 45 s leases and an 8 s Expo timeout, so 20 s is plenty.
+export const WORKER_TIMEOUT_SECONDS = 20;
+// AWS advises 6x the consumer timeout so a slow batch is not redelivered mid-run. We go well
+// below that on purpose: every push is claimed in DynamoDB before it is sent, so an early
+// redelivery of a still-running job just sees a live lease and retries. A short timeout means a
+// crashed attempt is retried within seconds. Keep the worker's LEASE_MS between the worker
+// timeout and 2x this value (checked in tests) so redelivery after a crash finds the lease expired.
+export const VISIBILITY_TIMEOUT_SECONDS = 30;
+// With 30 s per receive, 100 receives is about 50 minutes of kill-switch pause before the DLQ.
+export const MAX_RECEIVE_COUNT = 100;
+const WORKER_TIMEOUT = Duration.seconds(WORKER_TIMEOUT_SECONDS);
 
 /** Delivery queue, its dead-letter queue, the idempotency table and the push worker. */
 export class DeliveryStack extends Stack {
@@ -41,9 +50,8 @@ export class DeliveryStack extends Stack {
 
     const queue = new Queue(this, 'DeliveryQueue', {
       encryption: QueueEncryption.SQS_MANAGED,
-      // AWS advice: at least 6x the consumer's timeout, so a slow batch is not redelivered mid-run.
-      visibilityTimeout: Duration.seconds(WORKER_TIMEOUT.toSeconds() * 6),
-      deadLetterQueue: { queue: dlq, maxReceiveCount: 50 },
+      visibilityTimeout: Duration.seconds(VISIBILITY_TIMEOUT_SECONDS),
+      deadLetterQueue: { queue: dlq, maxReceiveCount: MAX_RECEIVE_COUNT },
     });
 
     // One row per alert+device that was already sent; TTL cleans old rows.
@@ -85,10 +93,11 @@ export class DeliveryStack extends Stack {
     grantDb(worker, props.db);
     grantSecretRead(worker, props.expoSecretArn);
     grantSecretRead(worker, props.alertKeysSecretArn);
-    // Send-time dedupe: claim (PutItem), check (GetItem), release on failure (DeleteItem).
+    // Send-time dedupe: claim (PutItem), check (GetItem), markSent (UpdateItem), release on
+    // failure (DeleteItem). wiring.test.ts derives this list from the SDK commands in the store.
     allow(
       worker,
-      ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:DeleteItem'],
+      ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem'],
       [idempotency.tableArn],
     );
     allow(worker, ['ssm:GetParameter'], [props.killSwitchParamArn]);
