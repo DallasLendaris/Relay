@@ -4,14 +4,7 @@ import type { Keyring } from '../config/secrets.js';
 import { planDelivery } from '../delivery/plan-delivery.js';
 import type { Logger } from '../delivery/types.js';
 import { NwsZoneProvider, cellsForAlertArea } from '../geo/index.js';
-import type {
-  AlertStore,
-  Clock,
-  DeliveryQueue,
-  DeviceStore,
-  IdempotencyStore,
-  PlaceStore,
-} from '../ports.js';
+import type { AlertStore, Clock, DeliveryQueue, DeviceStore, PlaceStore } from '../ports.js';
 import { createAlertVerifier } from '../signing/index.js';
 import { parseFeed } from './feed.js';
 import type { EngineDeps } from './handler.js';
@@ -23,7 +16,6 @@ export interface PipelineDeps {
   alertStore: AlertStore;
   places: PlaceStore;
   devices: DeviceStore;
-  idempotency: IdempotencyStore;
   queue: DeliveryQueue;
   alertKeys: Keyring;
   tokenKeys: Keyring;
@@ -54,9 +46,10 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
   );
 
   return {
-    normalize: (feature) => normalizeFeature(feature, { newId: randomUUID }),
+    normalize: (feature) =>
+      normalizeFeature(feature, { newId: randomUUID, warn: (m, f) => logger.warn(m, f) }),
     parseFeed,
-    cellsFor: (area) => cellsForAlertArea(area, zones),
+    cellsFor: (area) => cellsForAlertArea(area, zones, { warn: (m, f) => logger.warn(m, f) }),
     apply: (alert) => applyMessage(alert, { store, clock }),
     async onApplied(result) {
       if (result.action !== 'created' && result.action !== 'updated') return;
@@ -64,13 +57,13 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
         // Reload so delivery sees exactly what was stored: signed, with summaries.
         const saved = await store.get(result.alert.id);
         if (!saved) {
-          logger.error('saved alert not found', { alertId: result.alert.id });
-          return;
+          throw new Error(`saved alert ${result.alert.id} not found for delivery planning`);
         }
+        // Re-planning is safe: dedupe happens in the delivery worker at send time
+        // (claim alert:severity:device), so a retried plan never double-notifies.
         const plan = await planDelivery(saved, {
           places: deps.places,
           devices: deps.devices,
-          idempotency: deps.idempotency,
           queue: deps.queue,
           tokenKey: deps.tokenKeys.current,
           verifyAlert,
@@ -80,8 +73,10 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
         });
         logger.info('plan result', { alertId: saved.id, ...plan });
       } catch (err) {
-        // A delivery problem must not break polling; the alert is already stored.
+        // Log, then re-throw: pollOnce counts the error and does NOT mark the alert seen, so
+        // the next poll plans delivery again.
         logger.error('delivery planning failed', { alertId: result.alert.id, error: String(err) });
+        throw err;
       }
     },
   };

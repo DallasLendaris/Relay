@@ -4,7 +4,6 @@ import type { Alert } from '@relay/shared';
 import { InMemoryAlertStore } from '../../src/adapters/memory/alert-store.js';
 import { MemoryDeliveryQueue } from '../../src/adapters/memory/delivery-queue.js';
 import { MemoryDeviceStore } from '../../src/adapters/memory/device-store.js';
-import { MemoryIdempotencyStore } from '../../src/adapters/memory/idempotency-store.js';
 import { MemoryPlaceStore } from '../../src/adapters/memory/place-store.js';
 import { SigningAlertStore } from '../../src/adapters/signing-alert-store.js';
 import { noopLogger } from '../../src/delivery/index.js';
@@ -29,7 +28,6 @@ async function applyFirst(places: PlaceStore, log = vi.fn()) {
     alertStore: store,
     places,
     devices: new MemoryDeviceStore(),
-    idempotency: new MemoryIdempotencyStore(),
     queue: new MemoryDeliveryQueue(),
     alertKeys: ring('a1', 'alert-secret'),
     tokenKeys: ring('t1', 'token-secret'),
@@ -75,7 +73,7 @@ describe('createIngestPipeline', () => {
     expect(saved && verifyAlertSignature(saved, keys)).toEqual({ ok: true });
   });
 
-  it('logs and swallows a delivery error instead of throwing out of the poll', async () => {
+  it('logs and RE-THROWS a delivery error so pollOnce does not mark the alert seen', async () => {
     const log = vi.fn();
     const failing: PlaceStore = {
       add: async () => {},
@@ -89,7 +87,7 @@ describe('createIngestPipeline', () => {
       },
     };
     const { engine, result } = await applyFirst(failing, log);
-    await expect(engine.onApplied?.(result)).resolves.toBeUndefined();
+    await expect(engine.onApplied?.(result)).rejects.toThrow('db down');
     expect(log).toHaveBeenCalledWith(
       'delivery planning failed',
       expect.objectContaining({ error: expect.stringContaining('db down') as string }),

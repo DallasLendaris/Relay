@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { CfnOutput, Duration, RemovalPolicy, Stack, StackProps, Tags } from 'aws-cdk-lib';
-import { Alarm, ComparisonOperator, TreatMissingData } from 'aws-cdk-lib/aws-cloudwatch';
+import { Alarm, ComparisonOperator, Metric, TreatMissingData } from 'aws-cdk-lib/aws-cloudwatch';
 import { AttributeType, BillingMode, Table } from 'aws-cdk-lib/aws-dynamodb';
 import { Rule, Schedule } from 'aws-cdk-lib/aws-events';
 import { LambdaFunction } from 'aws-cdk-lib/aws-events-targets';
@@ -123,6 +123,36 @@ export class IngestStack extends Stack {
       evaluationPeriods: 1,
       comparisonOperator: ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       treatMissingData: TreatMissingData.NOT_BREACHING,
+    });
+
+    // The Lambda catches per-feature errors, so its own Errors metric stays 0 during an NWS,
+    // DB or SQS outage. The handler emits these custom metrics (EMF) once per invocation.
+    const custom = (metricName: string) =>
+      new Metric({
+        namespace: 'Relay/Ingest',
+        metricName,
+        statistic: 'Sum',
+        period: Duration.minutes(5),
+      });
+
+    new Alarm(this, 'IngestFeatureErrorsAlarm', {
+      alarmDescription: 'Ingest hit >= 3 errors in 5 minutes (NWS, DB, SQS or geo failures).',
+      metric: custom('Errors'),
+      threshold: 3,
+      evaluationPeriods: 1,
+      comparisonOperator: ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: TreatMissingData.NOT_BREACHING,
+    });
+
+    // FetchFailed is emitted every invocation (0 when fine), so a missing metric means the
+    // Lambda is not running or not reporting: treat that as breaching.
+    new Alarm(this, 'IngestNoSuccessfulFetchAlarm', {
+      alarmDescription: 'NWS fetch failed >= 5 times in 5 minutes, or ingest is not reporting.',
+      metric: custom('FetchFailed'),
+      threshold: 5,
+      evaluationPeriods: 1,
+      comparisonOperator: ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: TreatMissingData.BREACHING,
     });
 
     new CfnOutput(this, 'RawBucketName', { value: rawBucket.bucketName });

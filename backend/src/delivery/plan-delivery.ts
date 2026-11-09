@@ -1,12 +1,5 @@
 import type { Alert } from '@relay/shared';
-import type {
-  Clock,
-  DeliveryJob,
-  DeliveryQueue,
-  DeviceStore,
-  IdempotencyStore,
-  PlaceStore,
-} from '../ports.js';
+import type { Clock, DeliveryJob, DeliveryQueue, DeviceStore, PlaceStore } from '../ports.js';
 import { createCheckInToken, type TokenKey } from '../tokens/index.js';
 import { refusalFor, type Refusal } from './eligibility.js';
 import type { Logger } from './types.js';
@@ -15,7 +8,6 @@ export interface PlanDeps {
   places: PlaceStore;
   devices: DeviceStore;
   /** Ignored. Dedupe now happens in the worker at send time. Remove from callers. */
-  idempotency?: IdempotencyStore;
   queue: DeliveryQueue;
   tokenKey: TokenKey;
   /** True only if the alert's signature is valid. */

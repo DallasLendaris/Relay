@@ -14,6 +14,7 @@ import {
   type NormalizeResult,
   type PollDeps,
 } from '../../src/ingest/poll.js';
+import { NoCellsError, TooManyCellsError } from '../../src/geo/index.js';
 import type { SeenStore } from '../../src/ports.js';
 
 const fixture = (name: string): string =>
@@ -47,9 +48,13 @@ class FakeSeen implements SeenStore {
   }
 }
 
-function clientReturning(...results: NwsFetchResult[]): NwsClient {
+function clientReturning(...results: NwsFetchResult[]): NwsClient & { commits: number } {
   let i = 0;
   return {
+    commits: 0,
+    commit() {
+      this.commits += 1;
+    },
     fetchActiveCalifornia: async () =>
       results[Math.min(i++, results.length - 1)] ?? { status: 'error', message: 'none' },
   };
@@ -99,6 +104,7 @@ describe('pollOnce', () => {
       skippedSeen: 0,
       applied: 4,
       errors: 0,
+      fetchFailed: 0,
     });
     expect(archive.items).toHaveLength(1);
     expect(seen.ids.size).toBe(4);
@@ -124,6 +130,7 @@ describe('pollOnce', () => {
       skippedSeen: 0,
       applied: 0,
       errors: 0,
+      fetchFailed: 0,
     });
   });
 
@@ -185,6 +192,7 @@ describe('pollOnce', () => {
     const { deps } = makeDeps(clientReturning({ status: 'error', httpStatus: 503, message: 'x' }));
     const counts = await pollOnce(deps);
     expect(counts.errors).toBe(1);
+    expect(counts.fetchFailed).toBe(1);
     expect(counts.applied).toBe(0);
   });
 
@@ -207,6 +215,153 @@ describe('pollOnce', () => {
     );
     const counts = await pollOnce(deps);
     expect(counts.errors).toBe(1);
+  });
+});
+
+describe('pollOnce reliability', () => {
+  /** One Actual feature, so each test follows a single alert. */
+  const one: NwsFetchResult = {
+    status: 'ok',
+    body: JSON.stringify({
+      features: [
+        { properties: { id: 'urn:oid:1', status: 'Actual', sent: '2026-11-09T00:00:00Z' } },
+      ],
+    }),
+    fetchedAt: new Date('2026-11-09T10:00:00Z'),
+  };
+
+  /** onApplied that fails the first `failures` times, recording every call. */
+  const flakyHook = (failures: number) => {
+    const calls: ApplyResult[] = [];
+    return {
+      calls,
+      onApplied: async (r: ApplyResult) => {
+        calls.push(r);
+        if (calls.length <= failures) throw new Error('sqs down');
+      },
+    };
+  };
+
+  /** Fake lifecycle: the first call saves, later calls report a replay of the stored copy. */
+  const replayingApply = () => {
+    const stored = new Map<string, Alert>();
+    return async (alert: Alert): Promise<ApplyResult> => {
+      const known = stored.get(alert.sourceId);
+      if (known) return { action: 'ignored', alert: known, reason: 'already applied (replay)' };
+      const saved = { ...alert, state: 'active' } as Alert;
+      stored.set(alert.sourceId, saved);
+      return { action: 'created', alert: saved };
+    };
+  };
+
+  it('onApplied fails on poll 1: not marked seen; poll 2 re-runs it and only then marks seen', async () => {
+    const hook = flakyHook(1);
+    const { deps, seen } = makeDeps(clientReturning(one), hook);
+    const first = await pollOnce(deps);
+    expect(first.errors).toBe(1);
+    expect(seen.ids.size).toBe(0);
+
+    const second = await pollOnce(deps);
+    expect(second.errors).toBe(0);
+    expect(hook.calls).toHaveLength(2);
+    expect(seen.ids.size).toBe(1);
+
+    const third = await pollOnce(deps);
+    expect(third.skippedSeen).toBe(1);
+    expect(hook.calls).toHaveLength(2);
+  });
+
+  it('alert saved but not planned: the retry sees "ignored" yet onApplied still runs', async () => {
+    const hook = flakyHook(1);
+    const { deps, seen } = makeDeps(clientReturning(one), { ...hook, apply: replayingApply() });
+    await pollOnce(deps);
+    expect(seen.ids.size).toBe(0);
+    const second = await pollOnce(deps);
+    expect(second.errors).toBe(0);
+    expect(hook.calls).toHaveLength(2);
+    expect(hook.calls[1]?.alert.state).toBe('active');
+    expect(seen.ids.size).toBe(1);
+  });
+
+  it('does not re-plan when the ignored result is a different (older) stored message', async () => {
+    const { deps, seen, applied } = makeDeps(clientReturning(one), {
+      apply: async (alert) => ({
+        action: 'ignored',
+        alert: { ...alert, sourceId: 'urn:other', state: 'active' } as Alert,
+        reason: 'message is older than stored data',
+      }),
+    });
+    await pollOnce(deps);
+    expect(applied).toHaveLength(0);
+    expect(seen.ids.size).toBe(1);
+  });
+
+  it('seen.mark throws after a successful apply: next poll calls onApplied once via the replay path', async () => {
+    const calls: ApplyResult[] = [];
+    const { deps, seen } = makeDeps(clientReturning(one), {
+      apply: replayingApply(),
+      onApplied: (r) => {
+        calls.push(r);
+      },
+    });
+    const realMark = seen.mark.bind(seen);
+    let failMark = true;
+    seen.mark = async (id: string) => {
+      if (failMark) throw new Error('dynamo down');
+      await realMark(id);
+    };
+    const first = await pollOnce(deps);
+    expect(first.errors).toBe(1);
+    expect(calls).toHaveLength(1);
+
+    failMark = false;
+    const second = await pollOnce(deps);
+    expect(second.errors).toBe(0);
+    expect(calls).toHaveLength(2); // the replay path planned again
+    expect(seen.ids.size).toBe(1);
+    await pollOnce(deps);
+    expect(calls).toHaveLength(2); // and now it is seen: no more planning
+  });
+
+  it('commits the client validators only when the poll had no errors', async () => {
+    const client = clientReturning(one);
+    const { deps } = makeDeps(client, flakyHook(1));
+    await pollOnce(deps);
+    expect(client.commits).toBe(0);
+    await pollOnce(deps);
+    expect(client.commits).toBe(1);
+
+    const failing = clientReturning({ status: 'error', message: 'x' });
+    await pollOnce(makeDeps(failing).deps);
+    expect(failing.commits).toBe(0);
+  });
+
+  it('a TooManyCellsError is a permanent rejection: error log, counted rejected, marked seen', async () => {
+    const entries: Record<string, unknown>[] = [];
+    const { deps, seen } = makeDeps(clientReturning(one), {
+      cellsFor: async () => {
+        throw new TooManyCellsError();
+      },
+      log: (e) => entries.push(e),
+    });
+    const counts = await pollOnce(deps);
+    expect(counts.rejected).toBe(1);
+    expect(counts.errors).toBe(0);
+    expect(seen.ids.size).toBe(1);
+    expect(entries.find((e) => e.event === 'poll.rejected_permanent')).toMatchObject({
+      level: 'error',
+    });
+  });
+
+  it('a zero-cell area (NoCellsError) is retried, not marked seen', async () => {
+    const { deps, seen } = makeDeps(clientReturning(one), {
+      cellsFor: async () => {
+        throw new NoCellsError(['CAZ404']);
+      },
+    });
+    const counts = await pollOnce(deps);
+    expect(counts.errors).toBe(1);
+    expect(seen.ids.size).toBe(0);
   });
 });
 
@@ -255,6 +410,7 @@ describe('createNwsClient', () => {
 
     const client = createNwsClient({ fetch: fakeFetch, userAgent: 'Relay test' });
     const first = await client.fetchActiveCalifornia();
+    client.commit();
     const second = await client.fetchActiveCalifornia();
 
     expect(first.status).toBe('ok');
@@ -265,6 +421,21 @@ describe('createNwsClient', () => {
     expect(calls[0]?.headers['If-None-Match']).toBeUndefined();
     expect(calls[1]?.headers['If-None-Match']).toBe('"abc"');
     expect(calls[1]?.headers['If-Modified-Since']).toBe('Mon, 09 Nov 2026 10:00:00 GMT');
+  });
+
+  it('keeps the ETag only after commit(): a failed poll gets the full body again', async () => {
+    const sent: Array<string | undefined> = [];
+    const fakeFetch = (async (_url: string, init: RequestInit) => {
+      const h = init.headers as Record<string, string>;
+      sent.push(h['If-None-Match']);
+      return new Response('{"features":[]}', { status: 200, headers: { ETag: '"v1"' } });
+    }) as unknown as typeof fetch;
+    const client = createNwsClient({ fetch: fakeFetch, userAgent: 'u' });
+    await client.fetchActiveCalifornia(); // processing "fails": no commit
+    await client.fetchActiveCalifornia();
+    client.commit(); // this one worked
+    await client.fetchActiveCalifornia();
+    expect(sent).toEqual([undefined, undefined, '"v1"']);
   });
 
   it('returns an error result for HTTP errors and thrown errors', async () => {

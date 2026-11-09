@@ -13,6 +13,12 @@ export type NwsFetchResult =
 
 export interface NwsClient {
   fetchActiveCalifornia(): Promise<NwsFetchResult>;
+  /**
+   * Keep the ETag / Last-Modified of the last "ok" response, so the next fetch can get a 304.
+   * Call it only after the response was fully processed. If it is not called (processing
+   * failed), the next fetch re-sends the older validators and gets the full body again.
+   */
+  commit(): void;
 }
 
 export interface NwsClientOptions {
@@ -26,8 +32,14 @@ export function createNwsClient(opts: NwsClientOptions): NwsClient {
   const baseUrl = opts.baseUrl ?? NWS_BASE_URL;
   let lastModified: string | null = null;
   let etag: string | null = null;
+  // Validators of the latest response, not trusted until commit().
+  let pending: { lastModified: string | null; etag: string | null } | null = null;
 
   return {
+    commit() {
+      if (pending) ({ lastModified, etag } = pending);
+      pending = null;
+    },
     async fetchActiveCalifornia() {
       const headers: Record<string, string> = {
         'User-Agent': opts.userAgent,
@@ -53,9 +65,8 @@ export function createNwsClient(opts: NwsClientOptions): NwsClient {
           };
         }
         const body = await res.text();
-        // Only remember validators once the body was read successfully.
-        lastModified = res.headers.get('Last-Modified');
-        etag = res.headers.get('ETag');
+        // Held back until the caller commits: a failed poll must not turn into a 304 next time.
+        pending = { lastModified: res.headers.get('Last-Modified'), etag: res.headers.get('ETag') };
         return { status: 'ok', body, fetchedAt: new Date() };
       } catch (err) {
         return {

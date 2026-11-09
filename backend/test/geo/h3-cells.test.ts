@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { booleanIntersects, destination, point, polygon as turfPolygon } from '@turf/turf';
 import { cellToBoundary, gridDisk } from 'h3-js';
 import type { MultiPolygon, Polygon } from 'geojson';
@@ -7,6 +7,9 @@ import {
   MAX_CELLS_PER_AREA,
   cellForPoint,
   cellsForAlertArea,
+  NoCellsError,
+  TooManyCellsError,
+  ZoneLookupError,
   type ZoneGeometryProvider,
 } from '../../src/geo/index.js';
 
@@ -132,8 +135,48 @@ describe('cellsForAlertArea', () => {
     expect(cells).toEqual(await cellsFor(square));
   });
 
-  it('returns an empty list when nothing can be resolved', async () => {
-    expect(await cellsForAlertArea({ geometry: null, ugcCodes: ['CAZ404'] }, none)).toEqual([]);
+  it('throws NoCellsError when every zone is unknown (404), so nothing is saved silently', async () => {
+    await expect(
+      cellsForAlertArea({ geometry: null, ugcCodes: ['CAZ404'] }, none),
+    ).rejects.toBeInstanceOf(NoCellsError);
+    await expect(cellsForAlertArea({ geometry: null, ugcCodes: [] }, none)).rejects.toThrow(
+      '0 H3 cells',
+    );
+  });
+
+  it('skips an unknown (404) zone with a warning when other zones resolve', async () => {
+    const warn = vi.fn();
+    const cells = await cellsForAlertArea(
+      { geometry: null, ugcCodes: ['CAZ001', 'CAZ404'] },
+      fakeZones({ CAZ001: square }),
+      { warn },
+    );
+    expect(cells).toEqual(await cellsFor(square));
+    expect(warn).toHaveBeenCalledWith('unknown UGC zone, skipped', { ugc: 'CAZ404' });
+  });
+
+  it('throws ZoneLookupError on a network error, even if other zones resolved', async () => {
+    const flaky: ZoneGeometryProvider = {
+      getZoneGeometry: async (ugc) => {
+        if (ugc === 'CAZ002') throw new Error('network down');
+        return square;
+      },
+    };
+    const err = await cellsForAlertArea({ geometry: null, ugcCodes: ['CAZ001', 'CAZ002'] }, flaky)
+      .then(() => null)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ZoneLookupError);
+    expect((err as ZoneLookupError).message).toContain('network down');
+    expect((err as ZoneLookupError).ugc).toBe('CAZ002');
+  });
+
+  it('throws NoCellsError when the alert geometry yields no polygon', async () => {
+    await expect(
+      cellsForAlertArea(
+        { geometry: { type: 'MultiPolygon', coordinates: [] }, ugcCodes: [] },
+        none,
+      ),
+    ).rejects.toBeInstanceOf(NoCellsError);
   });
 
   it('includes a point inside the area and excludes a point well outside', async () => {
@@ -189,6 +232,7 @@ describe('cellsForAlertArea', () => {
       ],
     };
     await expect(cellsFor(huge)).rejects.toThrow(String(MAX_CELLS_PER_AREA));
+    await expect(cellsFor(huge)).rejects.toBeInstanceOf(TooManyCellsError);
   });
 
   it('uses resolution 7', () => {

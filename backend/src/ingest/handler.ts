@@ -9,7 +9,6 @@ import { S3Client } from '@aws-sdk/client-s3';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import { DynamoIdempotencyStore } from '../adapters/aws/dynamo-idempotency-store.js';
 import { DynamoSeenStore } from '../adapters/aws/dynamo-seen-store.js';
 import { S3RawArchive } from '../adapters/aws/s3-raw-archive.js';
 import { SqsDeliveryQueue } from '../adapters/aws/sqs-delivery-queue.js';
@@ -48,11 +47,57 @@ export interface HandlerOverrides {
   sleep?(ms: number): Promise<void>;
 }
 
+/** Read a positive number from an env var; empty or invalid falls back to the default. */
+export function positiveNumber(
+  raw: string | undefined,
+  fallback: number,
+  name: string,
+  integer: boolean,
+): number {
+  if (raw === undefined) return fallback;
+  const n = raw.trim() === '' ? NaN : Number(raw);
+  if (Number.isFinite(n) && n > 0 && (!integer || Number.isInteger(n))) return n;
+  console.warn(
+    JSON.stringify({ level: 'warn', msg: 'invalid env var, using default', name, raw, fallback }),
+  );
+  return fallback;
+}
+
+const METRICS = ['Accepted', 'Rejected', 'Applied', 'Errors', 'FetchFailed'] as const;
+
+/**
+ * One CloudWatch Embedded Metric Format line for a whole invocation (all its polls summed).
+ * CloudWatch turns it into custom metrics in "Relay/Ingest" with no dimensions. It is emitted
+ * even when every value is 0, so alarms always have data to evaluate.
+ */
+export function buildEmf(polls: PollCounts[], now: Date = new Date()): Record<string, unknown> {
+  const sum = (pick: (c: PollCounts) => number): number =>
+    polls.reduce((total, c) => total + pick(c), 0);
+  return {
+    _aws: {
+      Timestamp: now.getTime(),
+      CloudWatchMetrics: [
+        {
+          Namespace: 'Relay/Ingest',
+          Dimensions: [[]],
+          Metrics: METRICS.map((Name) => ({ Name, Unit: 'Count' })),
+        },
+      ],
+    },
+    Accepted: sum((c) => c.accepted),
+    Rejected: sum((c) => c.rejected),
+    Applied: sum((c) => c.applied),
+    Errors: sum((c) => c.errors),
+    FetchFailed: sum((c) => c.fetchFailed),
+  };
+}
+
 export function buildHandler(engine: EngineDeps, overrides: HandlerOverrides = {}) {
   return async (_event: unknown, context: LambdaContext): Promise<{ polls: PollCounts[] }> => {
     const env: HandlerEnv = overrides.env ?? process.env;
-    const intervalMs = Number(env.POLL_INTERVAL_SECONDS ?? '12') * 1000;
-    const polls = Number(env.POLLS_PER_INVOCATION ?? '5');
+    const intervalMs =
+      positiveNumber(env.POLL_INTERVAL_SECONDS, 12, 'POLL_INTERVAL_SECONDS', false) * 1000;
+    const polls = positiveNumber(env.POLLS_PER_INVOCATION, 5, 'POLLS_PER_INVOCATION', true);
 
     let base = overrides.base;
     if (!base) {
@@ -78,6 +123,9 @@ export function buildHandler(engine: EngineDeps, overrides: HandlerOverrides = {
       },
     );
     console.log(JSON.stringify({ event: 'invocation.done', polls: results }));
+    // pollOnce swallows per-feature errors so the Lambda "Errors" metric stays quiet during
+    // an outage; these custom metrics are what the alarms watch instead.
+    console.log(JSON.stringify(buildEmf(results)));
     return { polls: results };
   };
 }
@@ -87,7 +135,6 @@ const REQUIRED_ENV = [
   'DB_SECRET_ARN',
   'DB_NAME',
   'DELIVERY_QUEUE_URL',
-  'IDEMPOTENCY_TABLE',
   'TOKEN_KEYS_SECRET_ARN',
   'ALERT_KEYS_SECRET_ARN',
   'KILL_SWITCH_PARAM',
@@ -97,10 +144,7 @@ const REQUIRED_ENV = [
 /** The real AWS-backed dependencies. Built once, on the first invocation, and reused while warm. */
 interface Runtime {
   env: Record<(typeof REQUIRED_ENV)[number], string>;
-  stores: Pick<
-    PipelineDeps,
-    'alertStore' | 'places' | 'devices' | 'idempotency' | 'queue' | 'isDeliveryPaused'
-  >;
+  stores: Pick<PipelineDeps, 'alertStore' | 'places' | 'devices' | 'queue' | 'isDeliveryPaused'>;
   secrets: SecretsManagerClient;
 }
 
@@ -115,7 +159,6 @@ function buildRuntime(source: Record<string, string | undefined>): Runtime {
     env.DB_SECRET_ARN,
     env.DB_NAME,
   );
-  const doc = DynamoDBDocumentClient.from(new DynamoDBClient({}));
   return {
     env,
     secrets: new SecretsManagerClient({}),
@@ -123,7 +166,6 @@ function buildRuntime(source: Record<string, string | undefined>): Runtime {
       alertStore: new PostgresAlertStore(db),
       places: new PostgresPlaceStore(db),
       devices: new PostgresDeviceStore(db),
-      idempotency: new DynamoIdempotencyStore(doc, env.IDEMPOTENCY_TABLE),
       queue: new SqsDeliveryQueue(new SQSClient({}), env.DELIVERY_QUEUE_URL),
       isDeliveryPaused: createKillSwitch(env.KILL_SWITCH_PARAM),
     },

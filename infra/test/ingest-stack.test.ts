@@ -67,6 +67,29 @@ describe('IngestStack', () => {
     });
   });
 
+  it('alarms on the custom Relay/Ingest metrics, which keep working during an outage', () => {
+    t.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      Namespace: 'Relay/Ingest',
+      MetricName: 'Errors',
+      Statistic: 'Sum',
+      Threshold: 3,
+      Period: 300,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+    });
+    // FetchFailed is emitted every invocation, so missing data means ingest stopped: breaching.
+    t.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      Namespace: 'Relay/Ingest',
+      MetricName: 'FetchFailed',
+      Statistic: 'Sum',
+      Threshold: 5,
+      Period: 300,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'breaching',
+    });
+    t.resourceCountIs('AWS::CloudWatch::Alarm', 3); // the original Lambda Errors alarm stays
+  });
+
   it('retains data and enables PITR on prod, destroys on dev', () => {
     const prod = synth('prod');
     prod.hasResource('AWS::S3::Bucket', { DeletionPolicy: 'Retain' });

@@ -3,7 +3,6 @@ import type { Alert } from '@relay/shared';
 import { gridDisk, latLngToCell } from 'h3-js';
 import { planDelivery, type PlanDeps } from '../../src/delivery/index.js';
 import { MemoryDeliveryQueue } from '../../src/adapters/memory/delivery-queue.js';
-import { MemoryIdempotencyStore } from '../../src/adapters/memory/idempotency-store.js';
 import { verifyCheckInToken } from '../../src/tokens/index.js';
 import {
   FakeDevices,
@@ -28,7 +27,6 @@ function setup(over: Partial<PlanDeps> = {}) {
     places,
     devices,
     queue,
-    idempotency: new MemoryIdempotencyStore(clock),
     tokenKey,
     verifyAlert,
     isDeliveryPaused: async () => false,

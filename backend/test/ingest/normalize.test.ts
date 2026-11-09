@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AlertSchema } from '@relay/shared';
 import { normalizeFeature } from '../../src/ingest/normalize.js';
 import { parseFeed } from '../../src/ingest/feed.js';
@@ -102,6 +102,28 @@ describe('sourceId normalization', () => {
       { sourceId: bare, sent: '2026-11-09T06:10:00-08:00' },
       { sourceId: 'urn:oid:other', sent: '2026-11-09T07:00:00-08:00' },
     ]);
+  });
+});
+
+describe('bad references', () => {
+  it('drops a bad reference, keeps the alert and warns', () => {
+    const warn = vi.fn();
+    const r = normalizeFeature(
+      tweak((f) => {
+        f.properties.references = [
+          { identifier: 'urn:oid:good', sent: '2026-11-09T07:00:00-08:00' },
+          { identifier: 'urn:oid:no-date' },
+          'garbage',
+        ];
+      }),
+      { ...opts, warn },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.alert.references).toEqual([
+      { sourceId: 'urn:oid:good', sent: '2026-11-09T07:00:00-08:00' },
+    ]);
+    expect(warn).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -33,7 +33,10 @@ const STATE = { Alert: 'active', Update: 'updated', Cancel: 'cancelled' } as con
  * Validates one GeoJSON feature from NWS and converts it to a Relay Alert.
  * Never throws: any problem comes back as { ok: false, reason }.
  */
-export function normalizeFeature(feature: unknown, opts: { newId(): string }): NormalizeResult {
+export function normalizeFeature(
+  feature: unknown,
+  opts: { newId(): string; warn?(msg: string, fields: Record<string, unknown>): void },
+): NormalizeResult {
   let sourceId: string | null = null;
   const fail = (reason: string): NormalizeResult => ({ ok: false, reason, sourceId });
   try {
@@ -83,7 +86,11 @@ export function normalizeFeature(feature: unknown, opts: { newId(): string }): N
         const ref = isObj(r) ? r : {};
         const refId = bareId(ref['identifier']) ?? bareId(ref['@id']);
         const refSent = date(ref['sent']);
-        if (refId === null || refSent === null) return fail('invalid reference');
+        if (refId === null || refSent === null) {
+          // One bad reference must not throw away a real warning: drop it and keep the alert.
+          opts.warn?.('dropped invalid reference', { sourceId, reference: r });
+          continue;
+        }
         references.push({ sourceId: refId, sent: refSent });
       }
     }

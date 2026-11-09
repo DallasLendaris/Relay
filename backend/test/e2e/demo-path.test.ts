@@ -37,7 +37,25 @@ const ring = (id: string, secret: string): Keyring => ({
 const alertKeys = ring('a1', 'alert-secret');
 const tokenKeys = ring('t1', 'token-secret');
 
-/** Serves the fixture for the alerts feed and 404 for zone lookups. */
+/**
+ * Serves the fixture for the alerts feed and a small zone polygon near Fresno for zone lookups
+ * (two fixture alerts have no geometry of their own). An alert with an unknown zone and no
+ * geometry would now fail with "0 cells" instead of being saved silently.
+ */
+const zoneBody = JSON.stringify({
+  geometry: {
+    type: 'Polygon',
+    coordinates: [
+      [
+        [-119.9, 36.6],
+        [-119.7, 36.6],
+        [-119.7, 36.8],
+        [-119.9, 36.8],
+        [-119.9, 36.6],
+      ],
+    ],
+  },
+});
 const fakeFetch = (async (input: string | URL | Request) => {
   const url = String(input);
   if (url.includes('/alerts/active')) {
@@ -46,21 +64,33 @@ const fakeFetch = (async (input: string | URL | Request) => {
       headers: { 'content-type': 'application/geo+json' },
     });
   }
+  if (url.includes('/zones/')) return new Response(zoneBody, { status: 200 });
   return new Response('{}', { status: 404 });
 }) as typeof fetch;
 
-function setup(paused = false) {
+/** A queue whose first `failures` enqueue calls throw (SQS outage), then behaves normally. */
+class FlakyQueue extends MemoryDeliveryQueue {
+  attempts = 0;
+  constructor(private failures: number) {
+    super();
+  }
+  override async enqueue(jobs: Parameters<MemoryDeliveryQueue['enqueue']>[0]): Promise<void> {
+    this.attempts += 1;
+    if (this.attempts <= this.failures) throw new Error('sqs unavailable');
+    await super.enqueue(jobs);
+  }
+}
+
+function setup(paused = false, queue: MemoryDeliveryQueue = new MemoryDeliveryQueue()) {
   const alertStore = new InMemoryAlertStore();
   const places = new MemoryPlaceStore();
   const devices = new MemoryDeviceStore();
-  const queue = new MemoryDeliveryQueue();
   const idempotency = new MemoryIdempotencyStore(clock);
   const seen = new InMemorySeenStore();
   const engine = createIngestPipeline({
     alertStore,
     places,
     devices,
-    idempotency,
     queue,
     alertKeys,
     tokenKeys,
@@ -147,6 +177,27 @@ describe('demo path', () => {
     expect(s.queue.jobs).toHaveLength(1);
   });
 
+  it('retries a failed fan-out: poll 1 has the queue throwing, poll 2 delivers exactly once', async () => {
+    const s = setup(false, new FlakyQueue(1));
+    await s.addDevice('inside', 37.35, -121.9);
+
+    const first = await s.poll();
+    expect(first.errors).toBe(1); // the failed fan-out is counted, not swallowed
+    expect(s.queue.jobs).toHaveLength(0);
+
+    // Not marked seen, so the next poll plans it again. The failed attempt's idempotency
+    // claim was released, so the device is not skipped as a duplicate.
+    const second = await s.poll();
+    expect(second.errors).toBe(0);
+    expect(s.queue.jobs).toHaveLength(1);
+    expect(s.queue.jobs[0]?.deviceId).toBe('inside');
+
+    // Now it is marked seen: a third poll sends nothing more.
+    const third = await s.poll();
+    expect(third.errors).toBe(0);
+    expect(s.queue.jobs).toHaveLength(1);
+  });
+
   it('enqueues nothing while the kill switch is paused', async () => {
     const s = setup(true);
     await s.addDevice('inside', 37.35, -121.9);
@@ -169,7 +220,6 @@ describe('demo path', () => {
     const plan = await planDelivery(stored, {
       places: s.places,
       devices: s.devices,
-      idempotency: s.idempotency,
       queue: s.queue,
       tokenKey: tokenKeys.current,
       verifyAlert: createAlertVerifier(alertKeys.all),

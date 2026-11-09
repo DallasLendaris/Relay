@@ -50,4 +50,20 @@ describe('NwsZoneProvider', () => {
     await expect(p.getZoneGeometry('CAC001')).rejects.toThrow('HTTP 500');
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
+
+  it('a 404 means "unknown zone" (null, cached) while a network error rejects (not cached)', async () => {
+    const missing = vi.fn(async (_url: string) => notFound);
+    const p404 = new NwsZoneProvider(missing);
+    expect(await p404.getZoneGeometry('CAC999')).toBeNull();
+    expect(await p404.getZoneGeometry('CAC999')).toBeNull();
+    expect(missing).toHaveBeenCalledTimes(1);
+
+    const down = vi.fn(async (_url: string): Promise<never> => {
+      throw new Error('ECONNRESET');
+    });
+    const pDown = new NwsZoneProvider(down);
+    await expect(pDown.getZoneGeometry('CAC001')).rejects.toThrow('ECONNRESET');
+    await expect(pDown.getZoneGeometry('CAC001')).rejects.toThrow('ECONNRESET');
+    expect(down).toHaveBeenCalledTimes(2);
+  });
 });

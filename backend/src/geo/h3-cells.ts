@@ -16,6 +16,41 @@ export interface AlertArea {
   ugcCodes: string[];
 }
 
+/** A zone lookup failed (network, timeout, HTTP 5xx). Transient: retry on the next poll. */
+export class ZoneLookupError extends Error {
+  constructor(
+    readonly ugc: string,
+    cause: unknown,
+  ) {
+    super(
+      `zone lookup failed for ${ugc}: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+    this.name = 'ZoneLookupError';
+  }
+}
+
+/** The area resolved to no cells at all, so the alert would reach nobody. Never save it silently. */
+export class NoCellsError extends Error {
+  constructor(readonly unknownUgcs: string[]) {
+    super(
+      `alert area resolved to 0 H3 cells (unknown zones: ${unknownUgcs.join(', ') || 'none'}); ` +
+        'refusing to save an alert that reaches nobody',
+    );
+    this.name = 'NoCellsError';
+  }
+}
+
+/** The geometry is broken (huge). Permanent: retrying can never help. */
+export class TooManyCellsError extends Error {
+  constructor() {
+    super(
+      `Alert area covers more than ${MAX_CELLS_PER_AREA} H3 cells at resolution ${H3_RESOLUTION}; ` +
+        'the geometry is probably broken, refusing to fan it out',
+    );
+    this.name = 'TooManyCellsError';
+  }
+}
+
 /** H3 cell for a saved place. */
 export function cellForPoint(lat: number, lng: number): string {
   return latLngToCell(lat, lng, H3_RESOLUTION);
@@ -24,18 +59,35 @@ export function cellForPoint(lat: number, lng: number): string {
 /**
  * All H3 cells covering an alert area, sorted and deduplicated.
  * Uses the alert's own geometry when present; otherwise unions the geometry of each UGC zone.
+ *
+ * Failure rules (an alert must never silently reach nobody):
+ * - a zone lookup that fails (network error) throws ZoneLookupError, so the feature is retried;
+ * - a zone the provider reports as unknown (404 -> null) is skipped with a warning, because
+ *   retrying can never fix it, but if that leaves 0 cells in total we throw NoCellsError.
  */
 export async function cellsForAlertArea(
   area: AlertArea,
   zones: ZoneGeometryProvider,
+  opts: { warn?(msg: string, fields: Record<string, unknown>): void } = {},
 ): Promise<string[]> {
   const polygons: Position[][][] = [];
+  const unknownUgcs: string[] = [];
   if (area.geometry) {
     polygons.push(...toPolygons(area.geometry));
   } else {
     for (const ugc of area.ugcCodes) {
-      const geometry = await zones.getZoneGeometry(ugc);
-      if (geometry) polygons.push(...toPolygons(geometry));
+      let geometry: Polygon | MultiPolygon | null;
+      try {
+        geometry = await zones.getZoneGeometry(ugc);
+      } catch (err) {
+        throw new ZoneLookupError(ugc, err);
+      }
+      if (geometry) {
+        polygons.push(...toPolygons(geometry));
+      } else {
+        unknownUgcs.push(ugc);
+        opts.warn?.('unknown UGC zone, skipped', { ugc });
+      }
     }
   }
 
@@ -48,6 +100,7 @@ export async function cellsForAlertArea(
     for (const cell of cellsForPolygon(rings)) cells.add(cell);
     if (cells.size > MAX_CELLS_PER_AREA) throw tooManyCells();
   }
+  if (cells.size === 0) throw new NoCellsError(unknownUgcs);
   return [...cells].sort();
 }
 
@@ -115,8 +168,5 @@ function estimateCellCount(outer: Position[]): number {
 }
 
 function tooManyCells(): Error {
-  return new Error(
-    `Alert area covers more than ${MAX_CELLS_PER_AREA} H3 cells at resolution ${H3_RESOLUTION}; ` +
-      'the geometry is probably broken, refusing to fan it out',
-  );
+  return new TooManyCellsError();
 }
