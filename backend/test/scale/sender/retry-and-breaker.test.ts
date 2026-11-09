@@ -150,42 +150,62 @@ describe('retry backoff', () => {
 });
 
 describe('PermanentBreaker', () => {
-  it('opens on a batch only above 2% AND with at least 5 permanents', () => {
+  it('opens on a batch only above 25% AND with at least 20 permanents', () => {
     const open = (total: number, perm: number) => new PermanentBreaker().record(total, perm).open;
-    expect(open(100, 4)).toBe(false); // 4%, but fewer than 5
-    expect(open(100, 5)).toBe(true);
-    expect(open(300, 5)).toBe(false); // 1.67%
-    expect(open(300, 6)).toBe(false); // exactly 2%: not "more than"
-    expect(open(300, 7)).toBe(true);
+    expect(open(60, 19)).toBe(false); // 31%, but fewer than 20
+    expect(open(60, 20)).toBe(true);
+    expect(open(200, 24)).toBe(false); // 12%
+    expect(open(100, 20)).toBe(false); // 20%
+    expect(open(80, 20)).toBe(false); // exactly 25%: not "more than"
+    expect(open(79, 20)).toBe(true);
   });
 
   it('opens on the rolling rate over the last 1,000 results when no single batch trips', () => {
     const b = new PermanentBreaker();
-    let opened = false;
-    // 3 of every 50 = 6%: each batch has <5 permanents, so only the rolling rate can trip.
-    for (let i = 0; i < 20; i++) {
-      const v = b.record(50, 3);
-      if (v.open) {
-        opened = true;
-        expect(v.reason).toBe('rolling_rate');
-      }
-    }
-    expect(opened).toBe(true);
-    // 4% never trips (2 of 50).
-    const calm = new PermanentBreaker();
-    for (let i = 0; i < 40; i++) expect(calm.record(50, 2).open).toBe(false);
+    const verdicts = [];
+    // 15 of every 50 = 30%: each batch has <20 permanents, so only the rolling rate can trip.
+    for (let i = 0; i < 20; i++) verdicts.push(b.record(50, 15));
+    // Not before the window holds 200 results (batches 1-3 = 150 results).
+    expect(verdicts.slice(0, 3).some((v) => v.open)).toBe(false);
+    const first = verdicts.find((v) => v.open);
+    expect(first?.reason).toBe('rolling_rate');
+    expect(verdicts.at(-1)?.open).toBe(true);
+    // Exactly 20% never trips (10 of 50): the rule is "more than".
+    const edge = new PermanentBreaker();
+    for (let i = 0; i < 40; i++) expect(edge.record(50, 10).open).toBe(false);
   });
 
   it('really is a rolling window: old failures age out after 1,000 more results', () => {
     const b = new PermanentBreaker();
-    for (let i = 0; i < 20; i++) b.record(50, 3);
-    expect(b.record(50, 3).open).toBe(true);
+    for (let i = 0; i < 20; i++) b.record(50, 15);
+    expect(b.record(50, 15).open).toBe(true);
     for (let i = 0; i < ROLLING_WINDOW / 50; i++) b.record(50, 0);
     expect(b.record(50, 0).open).toBe(false);
   });
 
-  it('does not trip on a tiny first batch with one dead token', () => {
+  it('does not trip on a small first batch with a few dead tokens', () => {
     expect(new PermanentBreaker().record(3, 1).open).toBe(false);
+    expect(new PermanentBreaker().record(19, 19).open).toBe(false); // 100%, but under 20 permanents and 200 samples
+  });
+
+  it('a steady 5% dead-token rate over 10,000 results never opens the breaker', () => {
+    const b = new PermanentBreaker();
+    let total = 0;
+    let maxRolling = 0;
+    for (let i = 0; total < 10_000; i++) {
+      const size = 50 + ((i * 37) % 200); // batches of 50-249
+      const v = b.record(size, Math.round(size * 0.05));
+      total += size;
+      maxRolling = Math.max(maxRolling, v.rollingRate);
+      expect(v.open).toBe(false);
+    }
+    expect(total).toBeGreaterThanOrEqual(10_000);
+    expect(maxRolling).toBeLessThan(0.1);
+  });
+
+  it('a 100% permanent misconfiguration opens in the first batch of 50', () => {
+    const v = new PermanentBreaker().record(50, 50);
+    expect(v).toMatchObject({ open: true, reason: 'batch_rate', batchRate: 1 });
   });
 });
 
@@ -196,7 +216,7 @@ describe('circuit breaker in processBatch', () => {
     error: 'Apns400:BadDeviceToken',
   });
 
-  it('opens when more than 2% (and 5+) of a batch is permanent: nothing is cleared, all are retried', async () => {
+  it('opens when more than 25% (and 20+) of a batch is permanent: nothing is cleared, all are retried', async () => {
     const { lines, logger } = recordingLogger();
     const metrics: string[] = [];
     const cleared: string[] = [];
@@ -228,7 +248,7 @@ describe('circuit breaker in processBatch', () => {
       onDeadTarget: async (id) => void cleared.push(id),
     });
     await seedAlert(t.alerts);
-    await processBatch(makeBatch({}, 20), t.deps); // 1 permanent: under the 5 minimum
+    await processBatch(makeBatch({}, 20), t.deps); // 1 permanent: under the 20 minimum
     await waitFor(() => cleared.length === 1);
     expect(cleared).toEqual(['dev0']);
   });
@@ -239,20 +259,24 @@ describe('circuit breaker in processBatch', () => {
     const t = makeDeps({
       logger,
       writeMetric: () => {},
-      // 1 permanent per 5 recipients = 20%: each batch is far under the 5-permanent minimum.
-      push: new FakePush((m) => (m.data['checkInToken'] === 'ct0' ? dead(m) : { ok: true })),
+      // 2 permanent per 5 recipients = 40%: each batch is far under the 20-permanent minimum.
+      push: new FakePush((m) =>
+        m.data['checkInToken'] === 'ct0' || m.data['checkInToken'] === 'ct1'
+          ? dead(m)
+          : { ok: true },
+      ),
       onDeadTarget: async (id) => void cleared.push(id),
     });
     await seedAlert(t.alerts);
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 60; i++) {
       const b = makeBatch({ batchKey: `k:${i}` }, 5);
       await processBatch(b, t.deps);
     }
     await new Promise((r) => setTimeout(r, 20));
-    // The window reaches 100 results at batch 20; from then on nothing is cleared.
-    expect(cleared).toHaveLength(19);
+    // The window reaches 200 results at batch 40; from then on nothing is cleared.
+    expect(cleared).toHaveLength(39 * 2);
     const opened = lines.filter((l) => l.msg === 'delivery.permanent_breaker_open');
-    expect(opened).toHaveLength(21);
+    expect(opened).toHaveLength(21); // batches 40-60
     expect(opened[0]?.fields).toMatchObject({ reason: 'rolling_rate' });
   });
 
