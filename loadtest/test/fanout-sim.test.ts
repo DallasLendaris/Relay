@@ -32,6 +32,9 @@ describe('fan-out simulation (20,000 devices)', () => {
     expect(r.pass1.permanentFailed).toBeGreaterThan(0);
     expect(r.pass1.retried).toBeGreaterThan(0);
     expect(r.pass1.gaveUp).toBe(0);
+    // Retries were delayed (backoff), and a 0.5% dead-token rate never trips the breaker.
+    expect(r.retryDelays.delayedMessages).toBeGreaterThan(0);
+    expect(r.breakerOpened).toBe(false);
     expect(r.timing.lastPushMs).not.toBeNull();
 
     // Re-planning the same alert sends nothing: every batch is already marked sent.

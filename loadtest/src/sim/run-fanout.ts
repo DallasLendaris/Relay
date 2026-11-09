@@ -95,6 +95,12 @@ export function renderMarkdown(
   lines.push(`| Gave up (still failing after 5 attempts) | ${f(r.pass1.gaveUp)} |`);
   lines.push(`| Message redeliveries (batch not acked) | ${f(r.pass1.redeliveries)} |`);
   lines.push(
+    `| Retry messages delayed (longest delay) | ${f(r.retryDelays.delayedMessages)} (${r.retryDelays.maxDelaySeconds.toFixed(1)} s) |`,
+  );
+  lines.push(
+    `| Permanent-failure breaker opened | ${r.breakerOpened ? 'YES' : 'no'} (sender log events: ${JSON.stringify(r.senderLogEvents)}; first events: ${JSON.stringify(r.breakerEvents.slice(0, 5))}) |`,
+  );
+  lines.push(
     `| FCM requests rate-limited by the quota bucket (429) | ${f(r.deliveries.fcmRateLimited)} |`,
   );
   lines.push(`| Peak heap / peak RSS | ${r.peakHeapMb} MB / ${r.peakRssMb} MB |`);
@@ -136,8 +142,8 @@ export function renderMarkdown(
       `excused as permanent failures (mock answered unregistered): ${f(r.exactlyOnce.excusedPermanent)}; missing: ${f(r.exactlyOnce.missing)}.`,
   );
   lines.push(
-    `- Known two-cells duplicates (a device with places in two alert cells gets one push per cell, documented gap in \`shard-worker.ts\`): ` +
-      `${f(r.exactlyOnce.knownTwoCellDuplicates)} of ${f(r.counts.devicesInTwoOrMoreCells)} such devices.`,
+    `- Cross-cell duplicates (a device with places in several alert cells pushed more than once; the primary-cell rule should make this 0): ` +
+      `${f(r.exactlyOnce.knownTwoCellDuplicates)} of ${f(r.counts.devicesInTwoOrMoreCells)} multi-cell devices (${f(r.counts.skippedNonPrimary)} non-primary entries skipped by the planner).`,
   );
   lines.push(
     `- Any other duplicate: ${f(r.exactlyOnce.unexpectedDuplicates)}, of which ${f(r.exactlyOnce.duplicatesAfterLostResponse)} followed a timeout or connection error on the first push ` +
@@ -147,7 +153,7 @@ export function renderMarkdown(
     `- Devices the mock accepted but whose success the sender never saw: ${f(r.exactlyOnce.deliveredWithoutAck)} (they get no check-in token in the burst below).`,
   );
   lines.push(
-    `- Verdict: **${r.exactlyOnce.ok ? 'PASS' : 'FAIL'}** (known two-cells duplicates are not counted as failures; any other duplicate is).`,
+    `- Verdict: **${r.exactlyOnce.ok ? 'PASS' : 'FAIL'}** (any duplicate, cross-cell or after a lost response, is a failure).`,
   );
   lines.push('');
   lines.push('## Re-plan of the same alert');

@@ -109,6 +109,8 @@ export interface FanoutSimResult {
     plannedRecipients: number;
     skippedNoTarget: number;
     sameCellDuplicates: number;
+    /** Entries skipped because the device is sent from another of its cells (primary-cell rule). */
+    skippedNonPrimary: number;
   };
   timing: {
     planMs: number;
@@ -125,6 +127,12 @@ export interface FanoutSimResult {
   /** Failed push attempts by error label, first pass and re-plan together. */
   pushErrors: Record<string, number>;
   pass1: PassCounts;
+  retryDelays: { delayedMessages: number; maxDelaySeconds: number };
+  /** Sender log events by name (warnings and errors), e.g. delivery.permanent_breaker_open. */
+  senderLogEvents: Record<string, number>;
+  breakerOpened: boolean;
+  /** Fields of the first breaker-open events (no tokens, ids or keys). */
+  breakerEvents: Array<Record<string, unknown>>;
   deliveries: {
     totalOkPushes: number;
     apnsAccepted: number;
@@ -145,7 +153,7 @@ export interface FanoutSimResult {
     /** Devices with places in two alert cells delivered once per cell (the documented gap). */
     knownTwoCellDuplicates: number;
     /** Any other duplicate: a failure. */
-    /** Any duplicate other than the known two-cells case (the two numbers below add up to it). */
+    /** Any duplicate other than the cross-cell case (the two numbers below add up to it). */
     unexpectedDuplicates: number;
     /** Duplicates of a device whose first push got a timeout or connection error (answer lost). */
     duplicatesAfterLostResponse: number;
@@ -213,8 +221,13 @@ class SimQueue {
   private readonly heads: Record<SendQueueName, number> = { urgent: 0, standard: 0 };
   private waiters: Array<() => void> = [];
   private spaceWaiters: Array<() => void> = [];
+  /** Messages hidden until `at` (performance.now ms): SQS DelaySeconds / visibility timeout. */
+  private delayed: Array<{ at: number; lane: SendQueueName; body: string }> = [];
   closed = false;
   active = 0;
+  /** Messages enqueued with a delay, and the longest delay seen (seconds). */
+  delayedCount = 0;
+  maxDelaySeconds = 0;
 
   constructor(private readonly maxQueued: number) {}
 
@@ -222,8 +235,28 @@ class SimQueue {
     return (
       this.lanes.urgent.length -
       this.heads.urgent +
-      (this.lanes.standard.length - this.heads.standard)
+      (this.lanes.standard.length - this.heads.standard) +
+      this.delayed.length
     );
+  }
+
+  /** Enqueue a message that consumers cannot see for `delaySeconds`. */
+  pushDelayed(queue: SendQueueName, body: string, delaySeconds: number): void {
+    this.delayedCount++;
+    this.maxDelaySeconds = Math.max(this.maxDelaySeconds, delaySeconds);
+    this.delayed.push({ at: performance.now() + delaySeconds * 1000, lane: queue, body });
+    setTimeout(() => this.wake(), delaySeconds * 1000 + 5).unref();
+  }
+
+  private promoteDue(): void {
+    if (this.delayed.length === 0) return;
+    const t = performance.now();
+    const still: typeof this.delayed = [];
+    for (const d of this.delayed) {
+      if (d.at <= t) this.lanes[d.lane].push(d.body);
+      else still.push(d);
+    }
+    this.delayed = still;
   }
 
   private wake(): void {
@@ -238,6 +271,7 @@ class SimQueue {
   }
 
   take(): string | undefined {
+    this.promoteDue();
     for (const lane of ['urgent', 'standard'] as const) {
       const list = this.lanes[lane];
       const h = this.heads[lane];
@@ -575,18 +609,29 @@ export async function runFanoutSim(options: FanoutSimOptions): Promise<FanoutSim
 
   // ----- wiring -----
   const logCounts = new Map<string, number>();
+  const breakerEvents: Array<Record<string, unknown>> = [];
   const logger: Logger = {
     info: () => {},
     warn: (msg) => void logCounts.set(msg, (logCounts.get(msg) ?? 0) + 1),
-    error: (msg) => void logCounts.set(msg, (logCounts.get(msg) ?? 0) + 1),
+    error: (msg, f) => {
+      logCounts.set(msg, (logCounts.get(msg) ?? 0) + 1);
+      if (msg === 'delivery.permanent_breaker_open' && breakerEvents.length < 20) {
+        const { alertId: _a, batchKey: _b, ...rest } = f ?? {};
+        breakerEvents.push(rest);
+      }
+    },
   };
   const idempotency = new MemoryIdempotencyStore();
   const queue = new SimQueue(300);
   let tally = emptyCounts();
 
   const rawQueue: SendQueue = {
-    async enqueue(name, batches) {
-      for (const m of packBatches(batches)) queue.push(name, serializeMessage(m));
+    async enqueue(name, batches, opts) {
+      const delay = opts?.delaySeconds ?? 0;
+      for (const m of packBatches(batches)) {
+        if (delay > 0) queue.pushDelayed(name, serializeMessage(m), delay);
+        else queue.push(name, serializeMessage(m));
+      }
     },
   };
   // Shard workers wait when the queue is full (stands in for SQS being effectively unbounded
@@ -631,6 +676,7 @@ export async function runFanoutSim(options: FanoutSimOptions): Promise<FanoutSim
   let plannedRecipients = 0;
   let skippedNoTarget = 0;
   let sameCellDuplicates = 0;
+  let skippedNonPrimary = 0;
   let shardError: unknown;
   let shardsDone: Promise<void> = Promise.resolve();
   let passIsFirst = true;
@@ -651,6 +697,7 @@ export async function runFanoutSim(options: FanoutSimOptions): Promise<FanoutSim
             plannedRecipients += r.recipients;
             skippedNoTarget += r.skippedNoTarget;
             sameCellDuplicates += r.duplicates;
+            skippedNonPrimary += r.skippedNonPrimary;
           }
         }
       };
@@ -777,22 +824,27 @@ export async function runFanoutSim(options: FanoutSimOptions): Promise<FanoutSim
   for (const t of delivered.keys()) if (!rec.okTokens.has(t)) deliveredWithoutAck++;
   for (const d of eo.duplicates) {
     const cells = expectedCount.get(d.token) ?? 1;
-    if (cells > 1 && d.count <= cells) knownTwoCell++;
+    if (rec.lostResponseTokens.has(d.token)) {
+      unexpectedDuplicates++;
+      duplicatesAfterLostResponse++;
+    } else if (cells > 1 && d.count <= cells) knownTwoCell++;
     else {
       unexpectedDuplicates++;
-      if (rec.lostResponseTokens.has(d.token)) duplicatesAfterLostResponse++;
-      else duplicatesUnexplained++;
+      duplicatesUnexplained++;
     }
   }
   // Devices in two cells delivered only once are fine too (checkExactlyOnce counts them as once).
   const exactlyOnceOk =
-    eo.missing.length === 0 && unexpectedDuplicates === 0 && eo.unexpected.length === 0;
-  // checkExactlyOnce counts the known two-cells deliveries as duplicates; the verdict here
+    eo.missing.length === 0 &&
+    knownTwoCell === 0 &&
+    unexpectedDuplicates === 0 &&
+    eo.unexpected.length === 0;
+  // checkExactlyOnce counts the cross-cell deliveries as duplicates; the verdict here
   // excludes them (they are reported separately) and keeps its raw output for the record.
   const eoSummary =
-    `exactly-once (two-cells excluded): ${exactlyOnceOk ? 'PASS' : 'FAIL'} ` +
+    `exactly-once: ${exactlyOnceOk ? 'PASS' : 'FAIL'} ` +
     `(expected ${eo.expected}, once ${eo.deliveredOnce}, excused ${eo.excused}, missing ${eo.missing.length}, ` +
-    `known two-cells ${knownTwoCell}, other duplicates ${unexpectedDuplicates} (after a lost response ${duplicatesAfterLostResponse}, unexplained ${duplicatesUnexplained}), unexpected ${eo.unexpected.length})\n` +
+    `cross-cell ${knownTwoCell}, other duplicates ${unexpectedDuplicates} (after a lost response ${duplicatesAfterLostResponse}, unexplained ${duplicatesUnexplained}), unexpected ${eo.unexpected.length})\n` +
     `raw checkExactlyOnce: ${formatExactlyOnce(eo, 0).split('\n')[0]}`;
   log(eoSummary);
   log(`known two-cell duplicates ${knownTwoCell}; unexpected duplicates ${unexpectedDuplicates}`);
@@ -852,6 +904,7 @@ export async function runFanoutSim(options: FanoutSimOptions): Promise<FanoutSim
       plannedRecipients,
       skippedNoTarget,
       sameCellDuplicates,
+      skippedNonPrimary,
     },
     timing: {
       planMs: Math.round(p1.planMs),
@@ -867,6 +920,10 @@ export async function runFanoutSim(options: FanoutSimOptions): Promise<FanoutSim
     pushLatency: rec.latency.summary(),
     pushErrors: Object.fromEntries(rec.errors),
     pass1,
+    retryDelays: { delayedMessages: queue.delayedCount, maxDelaySeconds: queue.maxDelaySeconds },
+    senderLogEvents: Object.fromEntries(logCounts),
+    breakerEvents,
+    breakerOpened: (logCounts.get('delivery.permanent_breaker_open') ?? 0) > 0,
     deliveries: {
       totalOkPushes: okAfterPass1,
       apnsAccepted: apnsStats.ok,
