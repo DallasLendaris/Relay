@@ -37,8 +37,11 @@ export interface AlertStore {
   findBySourceId(sourceId: string): Promise<Alert | null>;
   /** Insert or replace by Alert.id. */
   save(alert: Alert): Promise<void>;
-  /** Alerts with state active or updated whose h3Cells include any of these cells. */
-  listActiveForCells(cells: string[]): Promise<Alert[]>;
+  /**
+   * Alerts with state active or updated whose h3Cells include any of these cells,
+   * and that have not ended yet (now is before the later of expires and ends).
+   */
+  listActiveForCells(cells: string[], now: Date): Promise<Alert[]>;
 }
 
 // ---------- Devices and places ----------
@@ -67,6 +70,13 @@ export interface DeviceStore {
   create(device: Device): Promise<void>;
   get(id: string): Promise<Device | null>;
   update(device: Device): Promise<void>;
+  /**
+   * Give this push token to this device and remove it from any other device that had it,
+   * so a reinstalled app never makes one phone receive two pushes.
+   */
+  assignPushToken(deviceId: string, token: string, language: 'en' | 'es'): Promise<void>;
+  /** Forget a push token Expo reported as dead (DeviceNotRegistered). */
+  clearPushToken(token: string): Promise<void>;
 }
 
 export interface PlaceStore {
@@ -76,6 +86,11 @@ export interface PlaceStore {
   remove(deviceId: string, placeId: string): Promise<boolean>;
   /** Every place whose h3Cell is in the list. Used to match an alert to devices. */
   listForCells(cells: string[]): Promise<Place[]>;
+  /**
+   * Lightweight version of listForCells for delivery fan-out: only the ids, so large
+   * matches stay well under the Data API's response size limit.
+   */
+  listMatchesForCells(cells: string[]): Promise<Array<{ placeId: string; deviceId: string }>>;
 }
 
 /** Address to coordinates (Amazon Location Service in AWS). */
@@ -111,6 +126,8 @@ export interface DeliveryQueue {
 export interface IdempotencyStore {
   /** Atomically claim a key. Returns false if it was already claimed. */
   claim(key: string, expiresAt: Date): Promise<boolean>;
+  /** Give a claim back after a retryable failure, so the next attempt can send. */
+  release(key: string): Promise<void>;
 }
 
 export interface PushMessage {

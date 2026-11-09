@@ -45,4 +45,14 @@ export class PostgresDeviceStore implements DeviceStore {
       [device.id, device.credentialHash, device.expoPushToken, device.language],
     );
   }
+
+  async assignPushToken(_deviceId: string, _token: string, _language: 'en' | 'es'): Promise<void> {
+    // TODO(wave 4): implemented by the Postgres follow-up; the stub keeps the port contract compiling.
+    throw new Error('not implemented yet');
+  }
+
+  async clearPushToken(_token: string): Promise<void> {
+    // TODO(wave 4): implemented by the Postgres follow-up; the stub keeps the port contract compiling.
+    throw new Error('not implemented yet');
+  }
 }

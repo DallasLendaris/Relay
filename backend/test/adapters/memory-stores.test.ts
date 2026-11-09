@@ -76,9 +76,11 @@ describe('InMemoryAlertStore', () => {
     await s.save(
       alert({ id: 'e', state: 'active', area: { ...alert({}).area, h3Cells: ['other'] } }),
     );
-    const ids = (await s.listActiveForCells(['c1', 'zzz'])).map((a) => a.id).sort();
+    const ids = (await s.listActiveForCells(['c1', 'zzz'], new Date('2000-01-01T00:00:00Z')))
+      .map((a) => a.id)
+      .sort();
     expect(ids).toEqual(['a', 'b']);
-    expect(await s.listActiveForCells([])).toEqual([]);
+    expect(await s.listActiveForCells([], new Date('2000-01-01T00:00:00Z'))).toEqual([]);
   });
 });
 

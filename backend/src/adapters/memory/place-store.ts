@@ -25,4 +25,10 @@ export class MemoryPlaceStore implements PlaceStore {
     const wanted = new Set(cells);
     return [...this.places.values()].filter((p) => wanted.has(p.h3Cell)).map((p) => ({ ...p }));
   }
+
+  async listMatchesForCells(
+    cells: string[],
+  ): Promise<Array<{ placeId: string; deviceId: string }>> {
+    return (await this.listForCells(cells)).map((p) => ({ placeId: p.id, deviceId: p.deviceId }));
+  }
 }

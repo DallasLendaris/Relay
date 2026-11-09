@@ -81,6 +81,9 @@ describe('createIngestPipeline', () => {
       add: async () => {},
       listForDevice: async () => [],
       remove: async () => false,
+      listMatchesForCells: async () => {
+        throw new Error('db down');
+      },
       listForCells: async () => {
         throw new Error('db down');
       },

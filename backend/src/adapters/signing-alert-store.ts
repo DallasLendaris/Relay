@@ -20,8 +20,8 @@ export class SigningAlertStore implements AlertStore {
   findBySourceId(sourceId: string) {
     return this.inner.findBySourceId(sourceId);
   }
-  listActiveForCells(cells: string[]) {
-    return this.inner.listActiveForCells(cells);
+  listActiveForCells(cells: string[], now: Date) {
+    return this.inner.listActiveForCells(cells, now);
   }
 
   async save(alert: Alert): Promise<void> {

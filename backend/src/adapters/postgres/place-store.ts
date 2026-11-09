@@ -74,4 +74,11 @@ export class PostgresPlaceStore implements PlaceStore {
     }
     return [...found.values()];
   }
+
+  async listMatchesForCells(
+    _cells: string[],
+  ): Promise<Array<{ placeId: string; deviceId: string }>> {
+    // TODO(wave 4): implemented by the Postgres follow-up; the stub keeps the port contract compiling.
+    throw new Error('not implemented yet');
+  }
 }

@@ -18,4 +18,19 @@ export class MemoryDeviceStore implements DeviceStore {
     if (!this.devices.has(device.id)) throw new Error(`device ${device.id} not found`);
     this.devices.set(device.id, { ...device });
   }
+
+  async assignPushToken(deviceId: string, token: string, language: 'en' | 'es'): Promise<void> {
+    const device = this.devices.get(deviceId);
+    if (!device) throw new Error(`device ${deviceId} not found`);
+    for (const other of this.devices.values()) {
+      if (other.id !== deviceId && other.expoPushToken === token) other.expoPushToken = null;
+    }
+    this.devices.set(deviceId, { ...device, expoPushToken: token, language });
+  }
+
+  async clearPushToken(token: string): Promise<void> {
+    for (const device of this.devices.values()) {
+      if (device.expoPushToken === token) device.expoPushToken = null;
+    }
+  }
 }

@@ -28,4 +28,9 @@ export class DynamoIdempotencyStore implements IdempotencyStore {
       throw err;
     }
   }
+
+  async release(_key: string): Promise<void> {
+    // TODO(wave 4): implemented by the Postgres follow-up; the stub keeps the port contract compiling.
+    throw new Error('not implemented yet');
+  }
 }

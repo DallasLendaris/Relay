@@ -12,4 +12,8 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
     this.claims.set(key, expiresAt);
     return true;
   }
+
+  async release(key: string): Promise<void> {
+    this.claims.delete(key);
+  }
 }

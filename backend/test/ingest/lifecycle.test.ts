@@ -96,7 +96,7 @@ describe('applyMessage', () => {
     expect(r.alert.state).toBe('cancelled');
     expect(r.alert.sourceId).toBe(cancel.sourceId);
     expect(r.alert.references.map((x) => x.sourceId)).toEqual([original.sourceId, update.sourceId]);
-    expect(await store.listActiveForCells(['cellA'])).toEqual([]);
+    expect(await store.listActiveForCells(['cellA'], new Date('2000-01-01T00:00:00Z'))).toEqual([]);
   });
 
   it('ignores a cancel for an unknown alert', async () => {

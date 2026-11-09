@@ -213,7 +213,7 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     const places = await deps.places.listForDevice(device.id);
     const cells = [...new Set(places.map((p) => p.h3Cell))];
     if (cells.length === 0) return json(200, { alerts: [] });
-    const alerts = await deps.alerts.listActiveForCells(cells);
+    const alerts = await deps.alerts.listActiveForCells(cells, deps.clock.now());
     const summaries = alerts.map((a): AlertSummary => {
       const areaCells = new Set(a.area.h3Cells);
       return {

@@ -24,10 +24,12 @@ export class InMemoryAlertStore implements AlertStore {
     this.alerts.set(alert.id, structuredClone(alert));
   }
 
-  async listActiveForCells(cells: string[]): Promise<Alert[]> {
+  async listActiveForCells(cells: string[], now: Date): Promise<Alert[]> {
     const wanted = new Set(cells);
+    const endsAt = (a: Alert) => Math.max(Date.parse(a.expires), a.ends ? Date.parse(a.ends) : 0);
     return [...this.alerts.values()]
       .filter((a) => a.state === 'active' || a.state === 'updated')
+      .filter((a) => endsAt(a) > now.getTime())
       .filter((a) => a.area.h3Cells.some((c) => wanted.has(c)))
       .map((a) => structuredClone(a));
   }

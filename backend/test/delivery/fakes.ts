@@ -21,6 +21,9 @@ export class FakePlaces implements PlaceStore {
     this.queries.push(cells.length);
     return cells.flatMap((c) => this.byCell.get(c) ?? []);
   }
+  async listMatchesForCells(cells: string[]) {
+    return (await this.listForCells(cells)).map((p) => ({ placeId: p.id, deviceId: p.deviceId }));
+  }
 }
 
 export class FakeDevices implements DeviceStore {
@@ -33,6 +36,13 @@ export class FakeDevices implements DeviceStore {
   }
   async update(d: Device) {
     this.map.set(d.id, d);
+  }
+  async assignPushToken(id: string, token: string, language: 'en' | 'es') {
+    const d = this.map.get(id);
+    if (d) this.map.set(id, { ...d, expoPushToken: token, language });
+  }
+  async clearPushToken(token: string) {
+    for (const d of this.map.values()) if (d.expoPushToken === token) d.expoPushToken = null;
   }
 }
 
