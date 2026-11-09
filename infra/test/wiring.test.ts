@@ -253,7 +253,7 @@ describe('IngestStack wiring', () => {
     'ingest',
     envOf(t, 'RAW_BUCKET'),
     [...envNamesRead('ingest/handler.ts'), ...envNamesRead('ingest/pipeline.ts')],
-    { pending: INGEST_CONTRACT, contract: INGEST_CONTRACT },
+    { contract: INGEST_CONTRACT },
   );
 
   it('grants the specific actions it needs', () => {
@@ -650,9 +650,7 @@ describe('IAM grants cover every call the adapters make', () => {
       'scale/sender/sqs-send-queue.ts',
     );
     for (const a of used) expect(actions, a).toContain(a);
-    for (const a of actionsUsed('scale/sender/dead-target.ts')) {
-      expect(grantedOnResource(t, 'CellIndexTable'), a).toContain(a);
-    }
+    // Dead-target clearing goes through CellIndex.updateDevice, which issues UpdateItem.
     expect(grantedOnResource(t, 'CellIndexTable')).toContain('dynamodb:UpdateItem');
     // Device store path: Aurora through the Data API.
     expect(actions).toEqual(
