@@ -42,6 +42,15 @@ export class FakeDevices implements DeviceStore {
     const d = this.map.get(id);
     if (d) this.map.set(id, { ...d, expoPushToken: token, language });
   }
+  async assignPushTarget(
+    id: string,
+    target: { platform: string; token: string },
+    language: 'en' | 'es',
+  ) {
+    const d = this.map.get(id);
+    if (d) this.map.set(id, { ...d, expoPushToken: target.token, language });
+    return { displaced: [] };
+  }
   async clearPushToken(token: string) {
     for (const d of this.map.values()) if (d.expoPushToken === token) d.expoPushToken = null;
   }

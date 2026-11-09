@@ -8,6 +8,7 @@
  * implementation in the same pull request.
  */
 import type { Alert, CheckIn } from '@relay/shared';
+import type { PushPlatform, PushTarget } from './scale/contracts.js';
 
 /** Injectable clock so tests control time. */
 export interface Clock {
@@ -50,7 +51,14 @@ export interface Device {
   id: string;
   /** SHA-256 hex of the device credential. The credential itself is never stored. */
   credentialHash: string;
+  /** Legacy Expo path. Equals pushToken whenever pushPlatform is 'expo', otherwise null. */
   expoPushToken: string | null;
+  /**
+   * Native push target (APNs, FCM, or Expo). Both are null, or both set. Optional so code
+   * that predates native push keeps compiling; absent means "derive from expoPushToken".
+   */
+  pushPlatform?: PushPlatform | null;
+  pushToken?: string | null;
   language: 'en' | 'es';
   createdAt: string;
 }
@@ -75,7 +83,17 @@ export interface DeviceStore {
    * so a reinstalled app never makes one phone receive two pushes.
    */
   assignPushToken(deviceId: string, token: string, language: 'en' | 'es'): Promise<void>;
-  /** Forget a push token Expo reported as dead (DeviceNotRegistered). */
+  /**
+   * Give this push target to this device and remove it from any other device that held it.
+   * For platform 'expo' this also sets expoPushToken, so the Expo path keeps working.
+   * Returns the ids of the devices that lost the target (their cell index entries are stale).
+   */
+  assignPushTarget(
+    deviceId: string,
+    target: PushTarget,
+    language: 'en' | 'es',
+  ): Promise<{ displaced: string[] }>;
+  /** Forget a push token reported as dead (Expo DeviceNotRegistered, or APNs/FCM unregistered). */
   clearPushToken(token: string): Promise<void>;
 }
 

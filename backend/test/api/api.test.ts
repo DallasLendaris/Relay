@@ -11,6 +11,7 @@ import { createHandler } from '../../src/api/handler.js';
 import { MemoryCheckInStore } from '../../src/adapters/memory/checkin-store.js';
 import { MemoryDeviceStore } from '../../src/adapters/memory/device-store.js';
 import { MemoryPlaceStore } from '../../src/adapters/memory/place-store.js';
+import { MemoryCellIndex } from '../../src/scale/cell-index/index.js';
 import { cellForPoint } from '../../src/geo/index.js';
 import { createCheckInToken } from '../../src/tokens/index.js';
 import type { AlertStore, Geocoder } from '../../src/ports.js';
@@ -167,6 +168,7 @@ let devices: MemoryDeviceStore;
 let alerts: FakeAlertStore;
 let places: MemoryPlaceStore;
 let checkins: MemoryCheckInStore;
+let cellIndex: MemoryCellIndex;
 const TOKEN_KEYS = new Map([['k1', 'test-secret-one']]);
 let route: ReturnType<typeof createApi>;
 
@@ -200,12 +202,14 @@ beforeEach(() => {
   alerts = new FakeAlertStore();
   places = new MemoryPlaceStore();
   checkins = new MemoryCheckInStore();
+  cellIndex = new MemoryCellIndex();
   route = createApi({
     devices,
     places,
     alerts,
     geocoder: fakeGeocoder,
     checkins,
+    cellIndex,
     tokenKeys: TOKEN_KEYS,
     clock: { now: () => new Date('2026-11-09T12:00:00Z') },
     newId: randomUUID,
@@ -619,6 +623,7 @@ describe('check-ins', () => {
       alerts,
       geocoder: fakeGeocoder,
       checkins,
+      cellIndex,
       tokenKeys: TOKEN_KEYS,
       clock: { now: () => new Date(iso) },
       newId: randomUUID,
@@ -730,6 +735,7 @@ describe('Lambda handler', () => {
         alerts: new FakeAlertStore(),
         geocoder: fakeGeocoder,
         checkins: new MemoryCheckInStore(),
+        cellIndex: new MemoryCellIndex(),
         loadTokenKeys: async () => TOKEN_KEYS,
       };
     });

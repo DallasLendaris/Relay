@@ -1,6 +1,8 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Alert, CheckIn, components } from '@relay/shared';
 import { cellForPoint } from '../geo/index.js';
+import type { CellIndex, CellIndexEntry, PushTarget } from '../scale/contracts.js';
+import { targetOf } from '../scale/cell-index/util.js';
 import { verifyCheckInToken } from '../tokens/index.js';
 import { effectiveState } from '../ingest/lifecycle.js';
 import type {
@@ -33,6 +35,8 @@ export interface ApiDeps {
   checkins: CheckInStore & CheckInLookup;
   /** Check-in token keys by key id (kid -> secret). */
   tokenKeys: Map<string, string>;
+  /** DynamoDB cell index, written through from here. Aurora stays the record. */
+  cellIndex: CellIndex;
   clock: Clock;
   /** Returns a new UUID. Injected so tests are deterministic. */
   newId: () => string;
@@ -45,6 +49,8 @@ type PlaceBody = components['schemas']['Place'];
 type AlertSummary = components['schemas']['AlertSummary'];
 
 const PUSH_TOKEN = /^Expo(nent)?PushToken\[[^\]\s]+\]$/;
+const APNS_TOKEN = /^[0-9a-fA-F]{64,200}$/;
+const FCM_TOKEN = /^[A-Za-z0-9_:-]{100,4096}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const sha256Hex = (s: string): string => createHash('sha256').update(s).digest('hex');
@@ -76,9 +82,78 @@ function toPlaceBody(p: Place): PlaceBody {
   };
 }
 
+/** Reads the old {expoPushToken} or the new {platform, token} body. Throws 400 when invalid. */
+function parsePushTarget(body: Record<string, unknown>): PushTarget {
+  const legacy = body['expoPushToken'] !== undefined;
+  const native = body['platform'] !== undefined || body['token'] !== undefined;
+  if (legacy === native) {
+    throw new HttpError(
+      400,
+      'invalid_request',
+      'Provide either expoPushToken, or platform and token',
+    );
+  }
+  const bad = (message: string) => new HttpError(400, 'invalid_push_token', message);
+  if (legacy) {
+    const token = body['expoPushToken'];
+    if (typeof token !== 'string' || !PUSH_TOKEN.test(token)) {
+      throw bad('expoPushToken must look like ExponentPushToken[...]');
+    }
+    return { platform: 'expo', token };
+  }
+  const platform = body['platform'];
+  const token = body['token'];
+  if (platform !== 'ios' && platform !== 'android' && platform !== 'expo') {
+    throw new HttpError(400, 'invalid_request', 'platform must be "ios", "android" or "expo"');
+  }
+  if (typeof token !== 'string') throw bad('token must be a string');
+  if (platform === 'ios') {
+    if (!APNS_TOKEN.test(token)) throw bad('ios token must be 64 to 200 hex characters');
+    return { platform, token: token.toLowerCase() }; // hex is case-insensitive; one spelling
+  }
+  if (platform === 'android') {
+    if (!FCM_TOKEN.test(token)) throw bad('android token must be 100 to 4096 token characters');
+    return { platform, token };
+  }
+  if (!PUSH_TOKEN.test(token)) throw bad('expo token must look like ExponentPushToken[...]');
+  return { platform, token };
+}
+
 /** Builds the route function: `route(event) -> {statusCode, headers, body}`. */
 export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult> {
   const router = new Router();
+
+  /** Runs a cell index write. Failure is logged and swallowed; the backfill reconciles. */
+  async function writeThrough(op: string, fn: () => Promise<void>): Promise<void> {
+    try {
+      await fn();
+    } catch (err) {
+      // Never log tokens or coordinates: only the operation and the error's class.
+      console.warn(
+        JSON.stringify({
+          level: 'warn',
+          msg: 'cellindex.write_failed',
+          op,
+          error: err instanceof Error ? err.name : 'UnknownError',
+        }),
+      );
+    }
+  }
+
+  /** Points every cell index entry of this device at a new target. */
+  async function syncDevice(
+    deviceId: string,
+    target: PushTarget | null,
+    language: 'en' | 'es',
+  ): Promise<void> {
+    const places = await deps.places.listForDevice(deviceId);
+    if (places.length === 0) return;
+    await deps.cellIndex.updateDevice(
+      deviceId,
+      places.map((p) => ({ h3Cell: p.h3Cell, placeId: p.id })),
+      { target, language },
+    );
+  }
 
   /** Reads `Authorization: Bearer <deviceId>.<secret>` and returns the device, or throws 401. */
   async function authenticate(req: Request): Promise<Device> {
@@ -121,20 +196,22 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
   router.add('PUT', '/devices/me/push-token', async (req) => {
     const device = await authenticate(req);
     const body = requireObject(req.body);
-    const token = body['expoPushToken'];
     const language = body['language'];
-    if (typeof token !== 'string' || !PUSH_TOKEN.test(token)) {
-      throw new HttpError(
-        400,
-        'invalid_push_token',
-        'expoPushToken must look like ExponentPushToken[...]',
-      );
-    }
     if (language !== 'en' && language !== 'es') {
       throw new HttpError(400, 'invalid_request', 'language must be "en" or "es"');
     }
-    // Moves the token here if another (reinstalled) device still holds it.
-    await deps.devices.assignPushToken(device.id, token, language);
+    const target = parsePushTarget(body);
+    // Moves the target here if another (reinstalled) device still holds it.
+    const { displaced } = await deps.devices.assignPushTarget(device.id, target, language);
+    // Keep the cell index in step. A failure here never fails the request (Aurora is the
+    // record); the backfill script reconciles.
+    await writeThrough('update_device', async () => {
+      await syncDevice(device.id, target, language);
+      for (const otherId of displaced) {
+        const other = await deps.devices.get(otherId);
+        if (other) await syncDevice(otherId, null, other.language);
+      }
+    });
     return noContent();
   });
 
@@ -204,6 +281,14 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       createdAt: deps.clock.now().toISOString(),
     };
     await deps.places.add(place);
+    const entry: CellIndexEntry = {
+      h3Cell: place.h3Cell,
+      deviceId: device.id,
+      placeId: place.id,
+      target: targetOf(device),
+      language: device.language,
+    };
+    await writeThrough('put', () => deps.cellIndex.put([entry]));
     return json(201, toPlaceBody(place));
   });
 
@@ -217,9 +302,13 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     const device = await authenticate(req);
     const placeId = req.params['placeId'] ?? '';
     // A malformed id can never match, so it is the same 404 as an unknown one.
-    if (!UUID.test(placeId) || !(await deps.places.remove(device.id, placeId))) {
+    const place = UUID.test(placeId)
+      ? (await deps.places.listForDevice(device.id)).find((p) => p.id === placeId)
+      : undefined;
+    if (!place || !(await deps.places.remove(device.id, placeId))) {
       throw new HttpError(404, 'not_found', 'Place not found');
     }
+    await writeThrough('remove', () => deps.cellIndex.remove(place.h3Cell, device.id, place.id));
     return noContent();
   });
 
