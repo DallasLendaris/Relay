@@ -6,13 +6,24 @@ SJSU Software Engineering senior capstone (CMPE 195A/B), 2026–2027.
 
 ## Repo layout
 
-| Folder | Area | What lives here |
-|---|---|---|
-| `engine/` | Alert engine | Feed ingestion (NWS, USGS, FEMA), location matching, delivery, retries |
-| `app/` | Public app | React Native app: places, alerts, check-ins, family circle |
-| `agency/` | Agency side | Response-cluster map, local alert tool, agency accounts |
-| `db/` | Shared | Database migrations. All schema changes go here, never by hand in the dashboard |
-| `docs/` | Shared | Shared formats (alert, check-in) and design notes |
+| Folder                | Area           | What lives here                                                                                       |
+| --------------------- | -------------- | ----------------------------------------------------------------------------------------------------- |
+| `packages/shared`     | Shared         | `@relay/shared`: shared formats (alert, check-in) and the OpenAPI contract                            |
+| `backend/`            | Backend        | `@relay/backend`: Lambda handlers and engine logic (ingest, match, deliver, check-in)                 |
+| `backend/migrations/` | Backend        | SQL migrations for Aurora PostgreSQL + PostGIS, run from CI, never by hand in the AWS console         |
+| `infra/`              | Infrastructure | `@relay/infra`: AWS CDK (TypeScript) app for Lambda, DynamoDB, Aurora Serverless v2, SQS, API Gateway |
+| `app/`                | Public app     | React Native app: places, alerts, check-ins, family circle                                            |
+| `agency/`             | Agency side    | React (Vite) SPA: response-cluster map, local alert tool, agency accounts                             |
+| `docs/`               | Shared         | Design notes and team docs                                                                            |
+
+## Development
+
+Requires Node 22. From the repo root:
+
+```
+npm ci
+npm run lint && npm run typecheck && npm test
+```
 
 ## How we work
 

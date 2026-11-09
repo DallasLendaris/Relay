@@ -1,0 +1,4502 @@
+[
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "5af430dc-2cc7-4209-9de3-bf319954080f",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:31:46.460Z",
+    "token": "fake-token-c3d6b3359876422287b47facfc3ab56f9d40533d",
+    "idempotencyKey": "beddc861-a875-4f4a-9f3a-0a111f019779",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "811db96d-2cce-44e1-bfe5-2b6854251875",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:59:09.226Z",
+    "token": "fake-token-f190931544bfd463682fbdfe0e067977e7143175",
+    "idempotencyKey": "ea1fa382-f717-4200-8407-fa5ab0013064",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "56394802-8933-480a-9a53-e7713a2e18ab",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:27:24.646Z",
+    "token": "fake-token-ab5051766f93cdc96d3bdecbcc6ed70d46185bcd",
+    "idempotencyKey": "cf57268e-6eef-42b2-99da-4b0bbe593891",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "f5ece58b-4d11-49e8-b776-0427908eea53",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:26:52.584Z",
+    "token": "fake-token-aba3760343115ad0ee115ac96544fe8d645025b6",
+    "idempotencyKey": "002c5c54-bf7a-4912-a819-535f5ce301ca",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "6ebacd52-fdc3-4080-ab7f-70163577e024",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:45:45.242Z",
+    "token": "fake-token-e4bf429b357dc75fbaf327578a6f6b0a4e6f1471",
+    "idempotencyKey": "3bf3acd3-0e3d-4215-8857-a10db518b985",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "cef792b2-9354-43f8-8f0a-e54c446e401f",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:04:28.966Z",
+    "token": "fake-token-fbc2166294d0ca3cfe53ad534af2dce56da69c1f",
+    "idempotencyKey": "21c86389-2d10-42d4-b255-f7f95ff10cac",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "18017a2f-703c-445a-b07c-74866bdba5da",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:04:19.042Z",
+    "token": "fake-token-235af38a809256f6be75f0afbba82e715e8f4580",
+    "idempotencyKey": "ef45ffb7-f4ce-4be5-9b0e-1540138bda6f",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "1aabccf2-ee03-4e7a-94df-9401b8135b80",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:57:04.627Z",
+    "token": "fake-token-0224a258d224786787aec8abaa58d0be286ba0e8",
+    "idempotencyKey": "9187b363-854f-4387-9820-3491484c7a52",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "a62ced54-ae2e-4d7c-af59-4da357436f74",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:29:47.972Z",
+    "token": "fake-token-6a22383800f56ccdd2ba35658c9ee1d67ef191ce",
+    "idempotencyKey": "14a1df17-5104-4109-b283-cfc9890ecd6c",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "f04e8328-dd74-408d-95b1-c5d48b31fcda",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:23:18.299Z",
+    "token": "fake-token-e0b5c31bcab7e1c5f6dcdf76ef214a4c5fe420aa",
+    "idempotencyKey": "b1afbf0a-7d4f-4f0e-957c-314bc2c62188",
+    "h3Cell": "872834456ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "538af45f-ed33-4513-8f05-415782147e7e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:39:05.621Z",
+    "token": "fake-token-286f8fdf3541a546e3e0b9fe763f83e75583b22c",
+    "idempotencyKey": "1c66d60f-bcf7-4adc-b9b9-ad6931b867d4",
+    "h3Cell": "872834454ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "45ce4892-d082-4f91-8160-3f946b78074a",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:57:12.954Z",
+    "token": "fake-token-b6514f66979ee0e33c4ed57ab2e8712a2f9d45dc",
+    "idempotencyKey": "5e41ef1f-8abc-4c3a-8d56-c1834ac84387",
+    "h3Cell": "872834454ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "a07b4041-8dfc-424c-8302-51e6ef8ceff8",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:52:21.453Z",
+    "token": "fake-token-f8e10e8b04ccb51d7f148be534e20a051d50d7bb",
+    "idempotencyKey": "ab49a87f-0d51-44d3-a786-2a5f8bd882c3",
+    "h3Cell": "872834454ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "1bd11288-e5f4-43cb-be40-b9a1c238ffd0",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:52:08.225Z",
+    "token": "fake-token-9af9b5ecd96f2cab7d97c5f39d86c3559f36cf42",
+    "idempotencyKey": "cc5b7055-2c29-4e72-8f86-a85677ea52bb",
+    "h3Cell": "872834454ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "b91955dc-0846-4fac-a87d-55743314fb99",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:55:45.294Z",
+    "token": "fake-token-77fd14c9f0812bb9f75a5d2892a94e227bfc8ee3",
+    "idempotencyKey": "768171fc-4c58-43e5-b4d0-fc32d6ceb58d",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "b72283a0-655e-44a5-a00f-71cc181e622d",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:51:50.967Z",
+    "token": "fake-token-e1985dd6145db02f8840dcab56e1f805fa486a74",
+    "idempotencyKey": "f8733058-dc90-45a0-9ac7-431b4c3dec3b",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "ce01f34c-ebca-4588-8cab-6e9199fe5d82",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:50:47.983Z",
+    "token": "fake-token-11a3efb3647fa3e5e7964fb27153c59994cf9de5",
+    "idempotencyKey": "43a2d33c-e27e-4d6b-9ed2-18f8f0e08ab8",
+    "h3Cell": "872834454ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "5b2788a8-d3cb-4bd1-828f-5fbc6621d7ac",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:15:39.665Z",
+    "token": "fake-token-f09a0e0c09b3a4db9b4058123db76e56eb91ae6b",
+    "idempotencyKey": "89be99f2-505d-4c88-8f02-5a778a4996d0",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "da5e2a7e-8c66-4c25-a1c7-81100a2c0dde",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:17:21.180Z",
+    "token": "fake-token-b20d3680440bfa6d36b12af526ad09a94fb606a4",
+    "idempotencyKey": "65aa0714-40ab-48bb-9e92-e875d0e4e905",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "7ae10fc3-e69d-4f36-b37e-eec1d50ef598",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:43:59.898Z",
+    "token": "fake-token-ebd5bafbe2b664cd8e12cf9f50a964443ff2f3fd",
+    "idempotencyKey": "377ec142-898a-489a-bc99-c5ca91f0c3de",
+    "h3Cell": "872834473ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "76d28017-f3bf-477d-bc26-52eb3bc3d8ae",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:47:56.325Z",
+    "token": "fake-token-5a593cf7eacbbcef068649fe385f07140c251056",
+    "idempotencyKey": "2556131a-7240-4da8-ade8-22b49d8865c5",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "130e88ad-d89d-4327-a94b-a067f9d08967",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:08:13.009Z",
+    "token": "fake-token-236e53e1c291e629c2eddb0a2ba78665d00618ed",
+    "idempotencyKey": "d6426cdb-adb8-474f-9928-3735566f6bba",
+    "h3Cell": "872834473ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "e00e08b4-f79f-444d-93ee-01eb9cc840f6",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:04:18.517Z",
+    "token": "fake-token-42220b3a2321273f517a13ddd27d1b64eb55f6da",
+    "idempotencyKey": "be84dc10-8d02-4194-b92a-5a47d06f08af",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "3df1977f-b861-41b5-845e-09acd847979e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:33:51.339Z",
+    "token": "fake-token-cea6597af5d066c23fa0c9fcdc7532c19ee1a95f",
+    "idempotencyKey": "6c8bfd9b-95da-4141-9830-1ae3bb96b916",
+    "h3Cell": "872834456ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "3bc54e3c-0afd-415d-bf9c-ff2ee876734d",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:54:21.032Z",
+    "token": "fake-token-425fbbdc8769c508ef81c753db729a5394423edb",
+    "idempotencyKey": "7e65d8db-5448-46a9-87b0-23af8416e4fc",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "d508d95f-9154-46a0-bf24-c7d3df41d1b0",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:24:16.804Z",
+    "token": "fake-token-94b5fb825b9ffe4ac36ba04a911e21a3619f20bc",
+    "idempotencyKey": "bbf34e6c-3eaf-4e07-ad7b-52d7b28f5a13",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "a9c41ce3-e29d-4d4d-a01c-608f916439eb",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:29:29.248Z",
+    "token": "fake-token-a4ff5d95adfa6d854c4d90a8d9b2570b9f3c9045",
+    "idempotencyKey": "9e50e02f-7584-4f6d-a09b-c75204f29edd",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "dfc00d61-fc8b-4662-bd75-e257a396b724",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:32:31.104Z",
+    "token": "fake-token-3a080eb68d9e2a099e7c210fc49500dcf799ab23",
+    "idempotencyKey": "b6ff5341-517b-4864-b0ac-1e02c563ccf8",
+    "h3Cell": "872834454ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "bba14799-2698-4abf-a870-c20b1101a5ce",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:57:02.139Z",
+    "token": "fake-token-1d8032be5f2525960fcb8ec9816d7ee3f7453af1",
+    "idempotencyKey": "61e8bebf-5f3d-4e56-9130-c40672dc8e3a",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "31fba21f-92d2-474a-8493-51887efb6931",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:12:57.373Z",
+    "token": "fake-token-81b4c2095de549bde6f247908ac6b0c93883a815",
+    "idempotencyKey": "11b57e68-04f4-460a-a3b8-f8b266b1b0b2",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "867cae08-9c77-445d-b213-40e72aebd29c",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:57:21.562Z",
+    "token": "fake-token-fb52be3ece3c748f7a9e02022436eb6f0f3a35bd",
+    "idempotencyKey": "e3915cb9-a1e1-4fed-8ec2-9f35269ee6b9",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "a9276a82-2096-4af1-b263-d827b948172d",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:52:57.206Z",
+    "token": "fake-token-91c63946837ff55e659a38cf430e56337757f994",
+    "idempotencyKey": "57e44709-ed51-41f9-b616-42206ca4f8d6",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "a60176ac-7e8e-4400-84cf-bf7e2eaf66ab",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:12:03.884Z",
+    "token": "fake-token-accbd0be8c134c7e9fea4d47175ff2ae929cd9f8",
+    "idempotencyKey": "45533f51-0c57-4bf7-adb7-e8ece48d297e",
+    "h3Cell": "872834454ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "5ea04ece-91f6-4c04-8850-532029611a62",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:28:02.772Z",
+    "token": "fake-token-1d2bdaa6d036a09768a201765e8301371b932dd5",
+    "idempotencyKey": "57668687-6deb-4bab-a9f5-96ba306a04d9",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "2a1b194a-ae61-46dd-8c98-734179ea5c37",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:04:51.200Z",
+    "token": "fake-token-d48def2a5b62ba7b0550a3e71a57af7acc3a4e28",
+    "idempotencyKey": "26dc6251-a31d-4a8e-882c-5104e1e828e0",
+    "h3Cell": "872834456ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "e12d7fb3-afd8-4126-a128-a806e5e35a11",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:24:10.463Z",
+    "token": "fake-token-b22da74ade1ce4ce442c4096e29da7a9eb40ac62",
+    "idempotencyKey": "db13404c-25e9-48eb-b756-e370868ded27",
+    "h3Cell": "872834473ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "d86b6b48-5e30-4c9e-acd4-9721c246d236",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:13:15.298Z",
+    "token": "fake-token-d2a491d30973d910a2f46a2c6ffbc7573ba50e02",
+    "idempotencyKey": "68ab3fc4-b35c-4f04-95b8-6c63561a1038",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "0d05c59e-af56-4405-9825-3416c09b7b47",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:48:29.371Z",
+    "token": "fake-token-e969a7c6fd355d5a37d7f2e30d287505d44710fb",
+    "idempotencyKey": "7ebac192-06f7-4ac9-9cb1-e1db322e21c3",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "10693555-a71c-444f-83d7-f3826e8953fb",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:19:27.039Z",
+    "token": "fake-token-ef082b5a623044cfd986e49852c02c28a93e5d66",
+    "idempotencyKey": "dd8798a8-85e2-4d72-bac5-99df8ef51dab",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "95070481-e763-4c04-98f8-2cff331590bf",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:32:51.028Z",
+    "token": "fake-token-b3363e5143fc173d4c530e08fb0ae8b3d1f86887",
+    "idempotencyKey": "458a6983-0757-41f7-9ab7-2f7092f6e483",
+    "h3Cell": "872834456ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "20c2880f-bf47-4e52-b225-729fda4e9815",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:13:36.452Z",
+    "token": "fake-token-3d71b1da7a1e7e351f38ad9d7b09ad7c44e53c39",
+    "idempotencyKey": "72c697b2-a8f1-4e60-8122-0a070136d2be",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "5b714465-133e-4a63-82a2-d24e55684cfc",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:29:37.355Z",
+    "token": "fake-token-e7a064452eb29698050399fd106ccdbd996cb458",
+    "idempotencyKey": "b50f1604-e27d-476f-810b-dae57a4cbdc3",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "42835240-9796-4628-a3c0-b4cfeb8ad435",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:21:08.840Z",
+    "token": "fake-token-230c7a65c7e2115226a748d9d90504de23e45580",
+    "idempotencyKey": "43e70df8-16a2-474f-bc76-eae5765173c8",
+    "h3Cell": "872834456ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "363abf47-fe28-42c2-9bfe-2452c24900a1",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:02:52.196Z",
+    "token": "fake-token-ab5838c9d414bf0cde612e97fc88664dcc365c4e",
+    "idempotencyKey": "041210c2-3589-4aff-9c8b-f5c4edd7ea7e",
+    "h3Cell": "872834454ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "3430b01d-8221-484f-bd20-b75becdab4fa",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:16:16.026Z",
+    "token": "fake-token-2e921bf1111cb782f9cfd7634d99b9e4edf7e14e",
+    "idempotencyKey": "c861a74f-d1a3-4b15-9596-f76d0e8546fb",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "90b9cadf-cede-4e15-8983-1d235f2562b6",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:04:19.356Z",
+    "token": "fake-token-2df7813328217060e7d65cb8cf55a2566eb4a791",
+    "idempotencyKey": "cfa5fbd2-6741-4e54-8e89-75586a04d40a",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "a9b074e5-74f7-446f-8329-915b09357d85",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:05:16.620Z",
+    "token": "fake-token-351ea9222bfb6fc6fe0d6cd498220840ecc02f3d",
+    "idempotencyKey": "2b2b8dbe-2632-4bb3-a3ea-74005a889ff9",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "203ccd25-7302-4236-90e5-80c53ab17438",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:48:58.716Z",
+    "token": "fake-token-924a3ba38a534374ef1dba6a07657f9d9fc24f8d",
+    "idempotencyKey": "8ffc1028-1699-456d-b9a1-d1582f4fdcef",
+    "h3Cell": "872834454ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "f12cda66-d5ac-424f-a46f-d70ee50b6b79",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:07:55.445Z",
+    "token": "fake-token-9f9f10ad8dd237174a8e60e0b600d2099737a584",
+    "idempotencyKey": "95ccbcf6-9178-46ea-a977-14aa6cec1291",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "c0d86758-2164-4ca1-bd76-f034936c128c",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:14:06.560Z",
+    "token": "fake-token-270b4e984dcae2aa88cb4eefb13ef6dfcf23d32b",
+    "idempotencyKey": "5a30bdde-2953-4008-b370-7f8f13b1e342",
+    "h3Cell": "872834456ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "cf4758d5-9ef0-4d31-92c9-428425f46851",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:37:09.809Z",
+    "token": "fake-token-8777df95914a28d1ac765290b8a77006c56e48d3",
+    "idempotencyKey": "02515f48-8929-4c56-b4e2-2b7aeda7fe99",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "4d2c548e-02d3-4ee6-b7f4-c24a6a69236f",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:06:20.080Z",
+    "token": "fake-token-5ec817b5efbbc71aa5302e5da85bea182c30b894",
+    "idempotencyKey": "e717db3d-36fa-4557-8a50-0887115e2c48",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "75439a35-edeb-49dd-b1c6-03f58aaaac24",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:06:58.126Z",
+    "token": "fake-token-d9361c8cf9f11aafef85fdf2beb2322a531dffc1",
+    "idempotencyKey": "5c68f8fe-3b83-479f-92f6-12c990bfe649",
+    "h3Cell": "872834454ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "2f538241-e941-4d52-b6f7-8d95bfe16387",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:14:47.133Z",
+    "token": "fake-token-f6a9d2d45c3b8fcebbca5c29007d50005840bacf",
+    "idempotencyKey": "1b74590c-16f2-4804-a386-ee116f5e4a8a",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "f2f22953-145d-4c93-ac11-08baab991f27",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:26:37.998Z",
+    "token": "fake-token-e5a8d258c9a1f6cc5574669b06a29dc2353954ee",
+    "idempotencyKey": "5af291f6-5862-4351-98cc-a4eb33bc7f5c",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "1dca3c8f-e73d-4810-b690-e50208b2bdaf",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:42:25.385Z",
+    "token": "fake-token-2d4a780f4e228d87afbbd308952979de68f89ecf",
+    "idempotencyKey": "c450b2a7-8040-4706-b5c8-0f93eadedc0c",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "7023befc-a141-4bd4-bdec-67879c3fbd1e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:35:51.754Z",
+    "token": "fake-token-d5e8f56c2ec3a183668dfb489854d9965e9b5863",
+    "idempotencyKey": "b6b17d0b-986f-4dcc-a5d3-6d5eba930e99",
+    "h3Cell": "872834473ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "db4c033f-766e-4511-bb23-f84dd625b544",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:45:55.612Z",
+    "token": "fake-token-61ce0bbd33b39b5bf9df84cc344ed8ed8267a5ee",
+    "idempotencyKey": "f2502177-8f3b-46b5-98ca-156157f9b847",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "a9655960-2343-4f02-adf2-345b0ed3d036",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:08:36.775Z",
+    "token": "fake-token-0fd27d0598d988bab0332500017400ebfcebdac9",
+    "idempotencyKey": "3f817049-c11c-4abe-a098-0ea3e102406a",
+    "h3Cell": "872834454ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "67886a2e-53d3-448c-99e4-0ae4c5ca0274",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:15:22.384Z",
+    "token": "fake-token-df4557cd2c4eacb368bfcb17ca4812daddaf360e",
+    "idempotencyKey": "5b9e9fc1-c0ba-4f36-bb62-7aa4db19188b",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "69ea3693-c23d-44fe-b2be-d592fba4e907",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:36:58.764Z",
+    "token": "fake-token-6bdcd64cafbde57d0b08b7f64d602f9ac53aa9f7",
+    "idempotencyKey": "25646ead-e7c0-46fd-b927-9027ba48af0e",
+    "h3Cell": "872834473ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "0e816100-78a4-481b-827c-72388038a826",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:58:33.262Z",
+    "token": "fake-token-b28221df7d01391329cf1b81141fa11068730c0b",
+    "idempotencyKey": "c0d0f5bd-1324-453f-a5f3-bf180c6764a0",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "408cdfb3-184a-42a5-870f-8d1a7ebd4464",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:49:53.161Z",
+    "token": "fake-token-0e2d25e94f59e270448e7575db8799f87efe456d",
+    "idempotencyKey": "a53bab5c-4c8d-4c85-9397-772f1e586f05",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "321ce51b-b472-411b-9382-35e5e91c55fe",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:42:32.513Z",
+    "token": "fake-token-209d5c4b21bed36ab03d7fcd52fd2345b49c4898",
+    "idempotencyKey": "e7dd40e9-26e9-4cde-b9f1-148014e6cc23",
+    "h3Cell": "872834454ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "d9fd11ba-bc3c-4ca9-9a87-62c53cfcea54",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:22:18.918Z",
+    "token": "fake-token-400ca26801b338229d30bd33248fde6acf836aeb",
+    "idempotencyKey": "cd975e5c-fc6e-4472-a782-b8211dd5577a",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "8e16cb03-dbfc-4a60-9797-4a26365b0cf8",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:35:05.842Z",
+    "token": "fake-token-aedccc6dd259d5efe7e114c2d52b1402f9b44eee",
+    "idempotencyKey": "1ae7a683-d563-4a21-a5b4-22cfcc03070d",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "59cecfb1-4231-4c4c-9421-493ddd4e9cdd",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:16:03.500Z",
+    "token": "fake-token-a8e0c438d1f23c2b5cba126910d710e25dfffdf0",
+    "idempotencyKey": "46d8d579-98fd-461d-8e46-d2c776b1f99f",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "764a6a47-daea-416e-8afa-6298b84b4007",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:45:19.543Z",
+    "token": "fake-token-d785e34c3578cddee2ee396975525cb7b3c09080",
+    "idempotencyKey": "fe6c9fb6-c518-40f8-9636-263d19c58911",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "8f89578c-a735-4b2d-abad-01ce19ceba05",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:04:53.812Z",
+    "token": "fake-token-df5bb72c7bd105cc323afcdd4ee14ad6394400c1",
+    "idempotencyKey": "0b7a7ed3-f00b-4516-86f4-c89975f3c720",
+    "h3Cell": "872834456ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "db942545-bef2-49a4-8753-bf4b50c4b04b",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:12:47.650Z",
+    "token": "fake-token-5dc6896996ccbc62b7ff80eb67d8d18c296ced50",
+    "idempotencyKey": "89d88a37-6ee6-4305-838d-ca12792ea5f6",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "5c2b177d-2410-4ff9-ad65-b96844f23049",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:24:44.790Z",
+    "token": "fake-token-fde08d9b04fba51d986e4c5f2065ac7b38592930",
+    "idempotencyKey": "78c174f7-fabc-4e8c-bf22-3b440a53a9de",
+    "h3Cell": "872834473ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "7dec9eb1-4981-4bad-9858-63dabcd63a11",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:32:47.220Z",
+    "token": "fake-token-248f1f5ce8f2b4efa9180e18dfa217cc77306c60",
+    "idempotencyKey": "504a89df-51a5-4a61-81e4-7b6e86cfde23",
+    "h3Cell": "872834454ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "bd03b310-7c7b-4261-b6bb-7977f9369bf1",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:34:26.590Z",
+    "token": "fake-token-fd337a8492fd99a1e6403d5a3a4c78c17294b74e",
+    "idempotencyKey": "ba7d9173-e5be-4b12-90d5-d088e32fe252",
+    "h3Cell": "872834454ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "afc4473b-a17a-4cd1-89b3-f0276c82bc78",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:30:08.548Z",
+    "token": "fake-token-26cdf3aef140b04ee144f51ead9401316bec693e",
+    "idempotencyKey": "c737f362-7030-427f-b937-e5748e3f93cc",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "38871d5e-5454-4f96-8272-0bb73da9d76a",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:28:29.032Z",
+    "token": "fake-token-815883514158d6f8c476ef96ab68854f48ae1223",
+    "idempotencyKey": "9827df06-67d3-41be-945a-ef5f98af2d1d",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "edb0ed6b-3a73-49db-8eaf-fd4d223d4e18",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:35:10.880Z",
+    "token": "fake-token-cac063ac56d993417e0d61967c30b9ac244740fc",
+    "idempotencyKey": "236c7351-2b76-4b6d-86bf-07ad224215ca",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "fdfb684d-6621-462a-aaea-3fb7973e91c8",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:50:40.525Z",
+    "token": "fake-token-f1b91f2145ca35a6267e2b7737b7d5cea7a6be36",
+    "idempotencyKey": "5aae3f78-87e3-407e-bac7-0bc4abb507e0",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "8908a4d0-4590-4979-8b6d-91cfddbfca94",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:44:44.906Z",
+    "token": "fake-token-0c1ca489241c54cdf0343b8769bd1f76c218bce3",
+    "idempotencyKey": "2ccbb0e9-5bc3-4583-a4a4-f9609d533ebf",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "38c1d1b3-305d-425e-ab9b-efa465afbb6f",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:54:42.154Z",
+    "token": "fake-token-890b11e2fe20b7ac3970487b138ccc68b380d565",
+    "idempotencyKey": "c54297b5-3fa4-43f0-934d-238b9d827181",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "a714a2db-c832-4c7b-b513-5e300b927d95",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:01:33.968Z",
+    "token": "fake-token-c1076bf4af44e13f1533250d5fb1dab8428cd05a",
+    "idempotencyKey": "df190300-6494-49a2-9e2b-51b5c55162b7",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "9c614a32-ede0-49d4-9439-b3ed1a08ff6b",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:12:55.251Z",
+    "token": "fake-token-da813bd19a4fe055ea2c2b0cd81371b87874bbb5",
+    "idempotencyKey": "2baaa910-fa49-435a-99ee-3b49cf4767ba",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "6c4fc8ec-e844-4384-b55e-66d40a7f6825",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:58:53.137Z",
+    "token": "fake-token-2a07bf02c9a4fc78aa5973127cde4cf6f5afa468",
+    "idempotencyKey": "d3572921-9be6-46bc-aaa5-bccc35783183",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "00a088e4-061c-4e50-af20-7867612807be",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:40:04.320Z",
+    "token": "fake-token-2dd6a16ed6eef81d480b8bdea33bf090f9feac19",
+    "idempotencyKey": "7209e557-7a2a-45ce-bd32-5f2e6691994a",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "deviceId": "7e5503cc-55f0-42f5-8878-721a1f0461d5",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:16:34.959Z",
+    "token": "fake-token-95fa4e6bec56b4ac59a7d5c4d9d776f4c5d65e3a",
+    "idempotencyKey": "183f3994-1e18-4a74-8e0d-4c13e2af1a57",
+    "h3Cell": "872834472ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "0bfaf4f7-9e9b-4066-be50-26aa8603cbb3",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:17:51.546Z",
+    "token": "fake-token-8f303b232cbabf5852a2a8cef5be17cde05da323",
+    "idempotencyKey": "3713838c-2efc-49ab-b76e-517c2fe13d55",
+    "h3Cell": "87283440affffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "75257755-ea77-487c-9088-311dfcbcf1b4",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:35:14.953Z",
+    "token": "fake-token-e8cbfc6913999ad187fe005ef181978e98e92f1f",
+    "idempotencyKey": "e32f0674-fcd3-4c59-8d37-74dde626bdf4",
+    "h3Cell": "87283440affffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "39eb323c-c10f-4ccd-826b-afdd3c7f487a",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:49:00.003Z",
+    "token": "fake-token-25900affa1df1241426270d07727a0445b9eb0f3",
+    "idempotencyKey": "785341e6-01bd-47d1-8261-5a95de6131bc",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "c53dc1d9-4e1c-419b-b735-2ea9b47d83a2",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:32:48.907Z",
+    "token": "fake-token-022b2d4002f96f1bc04a1efaceacc9598858602c",
+    "idempotencyKey": "38b29e20-0bba-4d99-8b07-c1f4781ea09f",
+    "h3Cell": "87283440effffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "5e6bccdb-355e-4f8f-a03d-8c84a5b35bc9",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:31:27.073Z",
+    "token": "fake-token-c42cb62490afe210bfeb3076a97c5087c366468b",
+    "idempotencyKey": "c64ec09b-9d98-4b1b-9d3f-b2ab55b3b3ad",
+    "h3Cell": "87283440affffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "5559998c-f2ce-4713-a32e-2c2f9ba20238",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:39:19.504Z",
+    "token": "fake-token-418a6a78b7eec39add331f0dd11dec4d6445e848",
+    "idempotencyKey": "ce3eaab3-d376-4f99-80f2-3a9d31e94005",
+    "h3Cell": "87283440effffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "dff5d817-4f0e-4c48-927d-040fef7d47ae",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:39:27.394Z",
+    "token": "fake-token-bc42a45d8fd8a23ec7a27a140648b5426ea2a9b5",
+    "idempotencyKey": "261c38fa-12ab-486c-80ca-14aeabad2c4d",
+    "h3Cell": "87283440affffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "22a95697-b9e1-4408-9a70-0d2d4ebb5ee3",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:48:48.583Z",
+    "token": "fake-token-62f53da3e68de2f40b93a0f9049bf5d96af0a2ca",
+    "idempotencyKey": "796f169c-8681-40b4-8b9e-b56bbcd6d85d",
+    "h3Cell": "872834408ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "fce64478-ffca-4f56-a3e5-e9e4875e8797",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:12:59.814Z",
+    "token": "fake-token-6237dd0dcf792dd029f0552277df3779ca769f7e",
+    "idempotencyKey": "71319b9f-1aae-4cac-95aa-1887c9c5ff9e",
+    "h3Cell": "87283440effffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "f32827c8-9189-4b9b-b3a9-df93a495bb58",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:33:08.111Z",
+    "token": "fake-token-2b4b3c655cf5b2f7dfc520f13ecfebee5c3fe9f7",
+    "idempotencyKey": "29f6dea0-683f-4666-b871-12e9d7edd6e0",
+    "h3Cell": "87283440effffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "5159cb12-6f7f-40f0-961d-064abf417473",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:33:03.843Z",
+    "token": "fake-token-e4102c2451301ac49a1713983df96335e62c38a0",
+    "idempotencyKey": "a9879a76-7975-49ca-92ad-0d327bfb5fa0",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "49c5cb20-b20b-44b3-b693-82f6af7a2495",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:12:28.498Z",
+    "token": "fake-token-548fa318115eafbb1684cf1c10f85536419e4175",
+    "idempotencyKey": "10038c72-cb52-4ee9-84c1-1753c4ce9215",
+    "h3Cell": "87283440effffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "7bc9af6f-eaeb-43a7-a86c-14c925d5fd42",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:25:33.024Z",
+    "token": "fake-token-1b510f3ce9346b791dbfaf441d692103e10bf448",
+    "idempotencyKey": "023eb4c2-d20c-4cc3-b248-310e907cea83",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "92fbb66c-9601-4321-b5f2-5809031f746d",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:56:14.430Z",
+    "token": "fake-token-b93c66385ff7752ca27d7b34e96bfe88ed7be763",
+    "idempotencyKey": "95107a1a-6506-4183-b487-d53622756664",
+    "h3Cell": "87283440effffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "8f8c719f-07ee-41ef-99b6-87efc239969f",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:52:18.479Z",
+    "token": "fake-token-a75656859239c1e25c08f9d41fc973c15635c12f",
+    "idempotencyKey": "4dbc326c-4180-49a1-a752-f86ff11cf9bb",
+    "h3Cell": "87283441dffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "27b27a63-1e6c-4de2-89d3-6348b10c50c2",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:56:03.297Z",
+    "token": "fake-token-56b1e7a2a571091277115e0cea768710968a7d62",
+    "idempotencyKey": "dd559c94-73c4-4655-9493-d5a3b9052650",
+    "h3Cell": "87283440effffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "b6b917e0-1577-4498-975e-ad3b08f1c0d2",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:06:14.731Z",
+    "token": "fake-token-3e4f4d4e4c22036656fd7f358b0ec508a0865d05",
+    "idempotencyKey": "f131483c-94c5-452c-8a89-72071bf2afcc",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "bb4de6fd-0864-4dc2-9bd5-87c9a3dc6e5c",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:33:59.285Z",
+    "token": "fake-token-8c6b5b4f8985dabe545b8dc65ea25a4128bc19b0",
+    "idempotencyKey": "59cece1a-076f-4559-8ac6-78d68a971b7f",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "63b98c9f-3161-4ab1-836c-6619892130ab",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:32:03.807Z",
+    "token": "fake-token-83fafa1a71e224c6d60b0d8d8ac75e592ac8931f",
+    "idempotencyKey": "95ca35e4-66c3-428d-8177-c785d5f0ff63",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "5e45c79d-4d8b-4073-b1c7-64536c339b15",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:19:39.946Z",
+    "token": "fake-token-c089461191d4c97e52ac3d0eabac1273e85c3d9b",
+    "idempotencyKey": "3468d564-3510-49dc-805f-ec5bc00841aa",
+    "h3Cell": "872834408ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "90f01d92-295b-4ca5-85d9-caeec97a172f",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:51:35.912Z",
+    "token": "fake-token-d1363963843d1df82a4c497df755723c297752a5",
+    "idempotencyKey": "02889f27-4d8b-4f54-99fb-3270ddc606d3",
+    "h3Cell": "872834456ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "78e8753e-8d68-47ac-8dd9-061dcc652bff",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:30:29.171Z",
+    "token": "fake-token-a8af74a52958f77e9ab75d8267313eb2c810f3a3",
+    "idempotencyKey": "4f24d514-f11c-445d-b77f-aba6359f4207",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "980e96fc-bea2-443e-a01d-9db9b3bbac83",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:08:05.703Z",
+    "token": "fake-token-9012e5771e60544e5b6226e84422eeba244bdc9c",
+    "idempotencyKey": "ab56f3db-1cba-465e-9fff-4445c7fceed8",
+    "h3Cell": "872834456ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "183d7a51-2486-4a53-8c7c-8f3c743f4118",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:50:06.615Z",
+    "token": "fake-token-a0f42e803b1ebfc535fc428ddfeb5c9ddcb1d805",
+    "idempotencyKey": "a901a49f-4de0-4908-8579-32df5b14b3b1",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "d0160b90-e950-42b2-8862-ca5dfe140244",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:48:28.091Z",
+    "token": "fake-token-5ba5ec6f3b55e0e733c30b78065a179886188980",
+    "idempotencyKey": "3aaf3cbc-3004-48b3-9d96-a6e9aa958f11",
+    "h3Cell": "87283440cffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "fdec836e-0658-421e-95b5-053cf76d0e21",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:09:24.618Z",
+    "token": "fake-token-cb3168370518d6bb13eee173f368e7d3291f898e",
+    "idempotencyKey": "f60e7362-760d-4b8b-9736-8c3852ed3dc9",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "18cb3867-567d-4960-8cae-16d3ace451ef",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:58:29.840Z",
+    "token": "fake-token-26f0ebedcbe1bf55708136554ab0c62fe986a59d",
+    "idempotencyKey": "f3ecc98a-5d50-4905-93bf-f339e80be5ba",
+    "h3Cell": "87283440effffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "5f812fc1-a903-4ae7-8a7a-bdca59061a03",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:55:45.565Z",
+    "token": "fake-token-7c5a2ac8be8af601b57cccc446b32a1492ca3329",
+    "idempotencyKey": "925b47ec-9946-41b2-85f4-c37db27f5203",
+    "h3Cell": "87283440bffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "5518e9be-2ee5-4fc0-8ce8-1255953e9b8c",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:54:29.682Z",
+    "token": "fake-token-a8bee2d90e4a41642fdd194a81100180a11424ff",
+    "idempotencyKey": "de99855e-fb4c-4c21-99cf-41da593f58e1",
+    "h3Cell": "87283440cffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "2d70acf3-362c-4963-84c2-30eb801aa065",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:06:21.916Z",
+    "token": "fake-token-dda44c8f7922525e1914ac9d357ede44b5ea5dc6",
+    "idempotencyKey": "bf1b058b-b3ea-4e0e-a826-39cf12f5d59d",
+    "h3Cell": "872834456ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "13f8af27-7fe2-4eed-814a-23b67a1a144f",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:51:08.584Z",
+    "token": "fake-token-b533254798fa0fe0e130b625150f54909f409982",
+    "idempotencyKey": "bf5aa873-3654-4486-943f-a800fcb9de81",
+    "h3Cell": "87283440effffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "5bd49493-3de4-4e04-8e95-ba5bec0d8e09",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:03:02.058Z",
+    "token": "fake-token-42793ef7d7bcea7a18fe9b9989bc1633ac0631ab",
+    "idempotencyKey": "3867b277-7005-4c3a-a37f-5616111d7f95",
+    "h3Cell": "872834408ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "31570053-759f-4827-8afd-600bdccbb79d",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:47:12.233Z",
+    "token": "fake-token-1e4920d0abe09f1fac7444bfe00cf4334b69484d",
+    "idempotencyKey": "45bd67b1-d962-49c9-a407-a4350610b9b5",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "4d3189c9-4a86-4310-88e0-bf4f28dc6369",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:20:01.603Z",
+    "token": "fake-token-c6ed7fa183ea66af806d906900beefa03e77d2cb",
+    "idempotencyKey": "f5b38349-e536-454d-81e4-94f0afde6470",
+    "h3Cell": "872834408ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "d22228d9-70ba-4166-9825-bfac48b9273d",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:25:29.523Z",
+    "token": "fake-token-cb5f437d5ad24a73f95f61fef863dd3c7b405f1d",
+    "idempotencyKey": "8cafd631-fc38-4824-a144-4c3abec887dc",
+    "h3Cell": "872834403ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "f9708c8f-b4e2-4ebd-999a-a8ea1eec34cc",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:28:51.501Z",
+    "token": "fake-token-765513d55e4d5a030624ac49eb3b0f71ed041024",
+    "idempotencyKey": "a8ffba02-81e3-41fe-85f8-076c9b9c63ba",
+    "h3Cell": "87283440affffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "9ac38d1d-327c-4da6-b1b8-b355aa255c72",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:24:32.314Z",
+    "token": "fake-token-2cc252654f2eab0457b05670280597b6adbc1421",
+    "idempotencyKey": "a8a354fa-482a-48ee-9f2d-e05ee15c38b2",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "120128ef-cb44-4306-81d5-2c29f33dce37",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:45:24.716Z",
+    "token": "fake-token-7e1b2c9380a6e255d7e6fca945982525d480b2a4",
+    "idempotencyKey": "391497bd-c2ad-4abc-b43f-cd126c4c5186",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "48b22dc4-a512-4481-9b36-c351e6f07b35",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:41:09.086Z",
+    "token": "fake-token-967b0fab16cde5a9fe412bfb10e8f559ee2cc22d",
+    "idempotencyKey": "7329a591-d710-46ed-a972-755f66779d2e",
+    "h3Cell": "87283440bffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "04854660-ac53-4711-88eb-53fd39d642a9",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:15:31.555Z",
+    "token": "fake-token-9c82b3bb0f78a28e17e4f8d9669bb709ca83deea",
+    "idempotencyKey": "58ad4fd9-ab43-4e64-b0c0-5b6988ca9bf9",
+    "h3Cell": "87283440affffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "90f4c742-e694-4ddb-ba36-15d825267308",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:28:30.064Z",
+    "token": "fake-token-bd8a1e212487ac465720e3b10af590d9566cf0b3",
+    "idempotencyKey": "74eabf5a-3643-4970-a6ed-b0782d994ed0",
+    "h3Cell": "87283440effffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "05d18d9d-71e1-42d5-8b8f-c84300026792",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:38:46.496Z",
+    "token": "fake-token-914d652ee9e245a7557d3b72a540e12146c9a26d",
+    "idempotencyKey": "34100801-1b66-468f-8329-f07839e69ddb",
+    "h3Cell": "87283440bffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "4ef0e95a-f8e0-4610-992c-19b40d6dc228",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:28:48.456Z",
+    "token": "fake-token-13d39ffc18bfeb4b95939e30fc0d2fb02de7378e",
+    "idempotencyKey": "ceb65fae-a8ae-46a5-94d1-305d12927a67",
+    "h3Cell": "87283440cffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "665d1b88-b349-4d16-ba62-e55912069776",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:22:57.593Z",
+    "token": "fake-token-faa0450abe54fbea6ff65c2a99a44c32e4e7f8fc",
+    "idempotencyKey": "eae65e56-a0c5-4743-8dd3-9d790b98ce18",
+    "h3Cell": "87283440effffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "7df8a432-8510-434c-a47d-cafe776c7b55",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:15:26.889Z",
+    "token": "fake-token-7d71f815581f21e63161fde7523c4a24ddac6a89",
+    "idempotencyKey": "71635159-4e64-4ca2-aedd-8af35f163e74",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "39fc6ea3-14f1-4ab3-8a1b-ea34467d47ce",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:41:57.770Z",
+    "token": "fake-token-da0bccda2a04c7c0cfbf3e9d3ff6865b12e4d4e0",
+    "idempotencyKey": "02a6de9f-1325-43ce-9412-481545372b94",
+    "h3Cell": "87283440affffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "a6490926-8fcd-4980-ad53-0dc9303377dc",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:17:59.027Z",
+    "token": "fake-token-7448ffeec91798bd4fcfb55d8e49a12559ad9a87",
+    "idempotencyKey": "9131f2f2-d7db-42c1-b143-2b27d1f3b3d0",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "913bd656-ffa3-46d3-a5b4-09a41a5470b9",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:59:43.362Z",
+    "token": "fake-token-435b19e3ba744d9a07cf9db7e5881d7f2c13cd79",
+    "idempotencyKey": "ca79d482-048f-4f9c-b29c-e8d301a13b7f",
+    "h3Cell": "87283441dffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "4da3c0f2-f4f3-4a1f-a395-1327ff666184",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:44:50.415Z",
+    "token": "fake-token-61d039ee304c55b375d056ef544675a84ba1d1d7",
+    "idempotencyKey": "76927f30-99ee-4c98-ab5a-b4d605a80322",
+    "h3Cell": "87283440effffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "de5729b0-9db3-453e-abc8-4f8d42b1407b",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:52:43.258Z",
+    "token": "fake-token-1becbba9471ab4616b9ef108f30f7baf57f21dc6",
+    "idempotencyKey": "1db6503a-1ac0-4a8e-a0a5-c4dc916bc299",
+    "h3Cell": "87283440effffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "97a8ae2e-1fa2-4964-b20a-1871f5feafe7",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:24:03.558Z",
+    "token": "fake-token-05d280159dfc43b8a1d5ef8412d156bc34800d77",
+    "idempotencyKey": "267916a4-74d0-43d4-ac77-d70be4c18ee3",
+    "h3Cell": "87283440effffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "f6565964-3b9f-4fec-9c6c-b26b77b58243",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:26:02.931Z",
+    "token": "fake-token-bf1ffa5a0c59adfd94c27b62ff89073a5cdbcc2a",
+    "idempotencyKey": "21118131-7a0f-4939-8175-08a27f9cc1f6",
+    "h3Cell": "872834408ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "3765fe5b-5a9c-4ef0-9e7e-2aa5b50a3027",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:26:23.820Z",
+    "token": "fake-token-2e4b377e4b2f7dfef8221ed0a9f579c49bc9ad5e",
+    "idempotencyKey": "2d92a4f6-a46a-4fb5-ac4d-edc255d7c9b0",
+    "h3Cell": "872834456ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "ae163302-2ba2-49d1-87f3-d3f8d1301068",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:46:59.217Z",
+    "token": "fake-token-0e14fc4af3ae6c1b2abf971ff0c52c4ce31e9a2e",
+    "idempotencyKey": "ba6cba04-f343-436c-ab22-cb26b8117f3b",
+    "h3Cell": "872834456ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "f9df4631-3108-473e-b8cd-ac821aa24d14",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:32:44.705Z",
+    "token": "fake-token-df9ce531396032323965776a1cc1191500041670",
+    "idempotencyKey": "88a4a8d0-6859-46f6-afa5-7cc2a992df13",
+    "h3Cell": "872834408ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "b84fa4c4-7fc2-4b22-a596-146238ec27ba",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:11:57.874Z",
+    "token": "fake-token-063b5319c0acfde7c930746369345bb1ca94875a",
+    "idempotencyKey": "44e92241-4f92-4936-a4f1-42eec8c7914f",
+    "h3Cell": "87283440bffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "bfa7d4e9-1808-44d9-ba5b-91cc52dc4aa7",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:06:07.476Z",
+    "token": "fake-token-443e96fc9773f25358162b86a46c911c4a27c2c4",
+    "idempotencyKey": "fbff3646-0ff3-4bfe-82a1-9b398e3ac010",
+    "h3Cell": "872834408ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "c48dcea2-8d14-49e2-896b-31937e0ad458",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:47:29.428Z",
+    "token": "fake-token-7da03170702d104895aa4f2457f41134e9da5621",
+    "idempotencyKey": "21ab880a-72cd-4d07-8c7b-36dbcb62cf7d",
+    "h3Cell": "872834408ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "51d26194-f0bf-4a8e-9114-4bc3eeb8dc38",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:57:56.738Z",
+    "token": "fake-token-ee9fe0baedd2267772f1e163b4efde4a56a6e9d3",
+    "idempotencyKey": "9bbc3a39-741a-47f3-a54e-3fcb954c7ae3",
+    "h3Cell": "872834409ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "d8d24772-176f-4086-91aa-20f7b94430ed",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:03:08.900Z",
+    "token": "fake-token-c2b8f018bd12df995794a32f154290fa116c6072",
+    "idempotencyKey": "67c9ad17-ce5b-4850-98d5-b8e29780e8c7",
+    "h3Cell": "87283440effffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "e785962a-7ff9-4919-b5f2-a188cb23aec3",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:14:14.504Z",
+    "token": "fake-token-f3cd11408d6aa865030434b18d43feeee27a19e4",
+    "idempotencyKey": "7824d5c6-7d94-4754-8d88-4bc763e6083a",
+    "h3Cell": "87283440bffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "9a28327c-e0b2-4e0d-a2f2-a93f950d2938",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:51:44.804Z",
+    "token": "fake-token-df6eb6d038053dee94eeb5f6a80f7d4e225df8c1",
+    "idempotencyKey": "a25d4048-e9a3-47bb-8603-4a77ed52aa6b",
+    "h3Cell": "87283440bffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "90ca17e2-a7ce-4a48-b543-756180022c0c",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:31:31.007Z",
+    "token": "fake-token-60b8aacaeabef4e44fc28a1c6915b86be745405a",
+    "idempotencyKey": "f8acb23a-4e4f-4f49-969d-63aceb7ebd4d",
+    "h3Cell": "872834408ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "9286c5d4-cbe4-4c4c-86e6-a89918532f15",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:32:26.535Z",
+    "token": "fake-token-638bdebb11f09e17c1066a77b12214cd14ff2721",
+    "idempotencyKey": "4542b8b9-8353-4126-8c0a-289822e496ec",
+    "h3Cell": "87283440bffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "7ca2b0ac-2bcd-40e9-bae0-98858f1bb0b8",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:41:51.111Z",
+    "token": "fake-token-77c82adeb1e97abeea864482a4f669817e016b0d",
+    "idempotencyKey": "14d07c57-d2c2-4328-9270-6ff7c8aae839",
+    "h3Cell": "87283440cffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "d8e3e9b7-df5e-449c-9cd4-522ad6348de2",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:30:33.733Z",
+    "token": "fake-token-a760ddff8205ba573e5e6905b0437aaef05f7d1b",
+    "idempotencyKey": "d6a8c3e2-d789-4920-b0da-0435b8f15b43",
+    "h3Cell": "87283440effffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "c47ca86e-bd20-43d4-a9a0-1505a35de978",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:58:21.500Z",
+    "token": "fake-token-4cb515e699e30c8d3b7deb3c90c4fa6fda341d85",
+    "idempotencyKey": "a0e27cc8-ac9b-4930-92e8-afaabfd918fe",
+    "h3Cell": "87283440bffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "71725f4b-bca7-4613-83b0-bb85ee3e1e03",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:45:58.264Z",
+    "token": "fake-token-57284aa4eff93ef3df6c716971d1a3863dd5379c",
+    "idempotencyKey": "fcc14400-3c43-41c8-bd04-9acdf031452d",
+    "h3Cell": "87283440effffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "3bd55fde-45c7-4270-85eb-f03f08170c73",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:09:24.517Z",
+    "token": "fake-token-50f31974c5e9c4910a1eddc120ed09d86d203529",
+    "idempotencyKey": "4df94f4a-e5c3-4476-986c-d491d01ea1ae",
+    "h3Cell": "87283440affffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "16b6ec17-d060-4f42-8f11-d4ae0f3a42fa",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:38:56.452Z",
+    "token": "fake-token-eb9f1674e8d3a788dd5c1cb648f3e1027ab1c96a",
+    "idempotencyKey": "2cbe58e8-e9ea-44f4-b990-13d33666515f",
+    "h3Cell": "87283440affffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "1b82b315-9411-4049-b2d3-e439eb7cdd6a",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:43:07.363Z",
+    "token": "fake-token-9243d507088ab818db0a179960e0d35c22fc81c4",
+    "idempotencyKey": "c04e4dc6-41d7-49e4-8597-3975ee72f961",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "5ba2000a-f96c-4c24-b413-544b48b23614",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:13:57.718Z",
+    "token": "fake-token-74ac5fdd7159c87a1074a888c337125f7bfb5a01",
+    "idempotencyKey": "0f2bf551-babd-470a-b038-c38503375469",
+    "h3Cell": "87283441dffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "845d54b9-799b-4b65-bed0-2f5902bc4033",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:30:06.222Z",
+    "token": "fake-token-a68dfbacfa25144abba906f488f2d3cd484abc02",
+    "idempotencyKey": "ed1408d8-8eee-4c26-9817-2e7a23497718",
+    "h3Cell": "87283440bffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "b34cf7b8-503f-442c-b075-1dd8bc3f8023",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:28:44.129Z",
+    "token": "fake-token-dec5686ad76297ad0b3e867cfec7a1bf9156e6d3",
+    "idempotencyKey": "1f3446cb-90be-4f21-b5d0-c833d270a60e",
+    "h3Cell": "87283440affffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "76723156-9ad5-424a-a820-613c6b599948",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:58:48.236Z",
+    "token": "fake-token-a7d3548aa7ddc54a9271565f0f9cc4bd938162d8",
+    "idempotencyKey": "68d6e47f-4245-4c0f-a451-d23139544871",
+    "h3Cell": "87283440affffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "3d14f641-30cd-4e3c-93c4-97e300ad1d14",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:04:07.357Z",
+    "token": "fake-token-87fc4af4029d1165f11864817ba7926b045d01ee",
+    "idempotencyKey": "b7ebe843-be9a-4afa-a5e3-234ef27e8854",
+    "h3Cell": "87283440dffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "0f74cf1d-8fc4-4bf7-bed8-23866018c681",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:24:27.911Z",
+    "token": "fake-token-3aec798bb37f0c5ca7362ed91fd686de64810c1e",
+    "idempotencyKey": "e94fcc62-8b0a-414b-b511-f96e87f7373a",
+    "h3Cell": "872834408ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "49de30ab-cb6d-4d92-a7a1-249bd8accec8",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:53:57.935Z",
+    "token": "fake-token-8c83c2485cbcad5f787a8bd99f617c259ed9b4a1",
+    "idempotencyKey": "3b338f12-e651-4d98-9ab7-626a5b5ca205",
+    "h3Cell": "87283440effffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "d155f39e-14ea-4470-8160-de5ad94c476f",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:49:05.011Z",
+    "token": "fake-token-db918157270205c6a2d3c74a032cc30ccb4adb4d",
+    "idempotencyKey": "5137d65b-2fa5-4f09-b61d-7a4aa5f1b633",
+    "h3Cell": "87283440bffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "017cebfa-b5e2-47e1-adc8-6c8f0e99370a",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:16:49.738Z",
+    "token": "fake-token-e7b67f4d40aeb2a0ed087c8dbb46029a392104ec",
+    "idempotencyKey": "5c7287db-dd55-4524-a932-e333db223dca",
+    "h3Cell": "872834456ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "8b6a7892-f19b-4c5f-8edc-ea1c496cbed6",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:51:15.919Z",
+    "token": "fake-token-8e1f0803bbe8833288fb76fe87fdaaf2f99c817f",
+    "idempotencyKey": "9f6db69a-3a0c-4ee4-9618-263bb5b4cbb9",
+    "h3Cell": "87283440affffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "cbbe8f4b-4395-49de-878d-51ec61c78c1b",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:52:34.241Z",
+    "token": "fake-token-34460973efd3691fa73b7e4e016315fdebd9b97a",
+    "idempotencyKey": "2752d813-e4fc-4a57-ae36-d1486d258b14",
+    "h3Cell": "872834408ffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "64f0a04f-7852-4df7-98b6-431723b1872e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:24:22.404Z",
+    "token": "fake-token-aa0261efb98658884a1a5725ebc558a24bc826ee",
+    "idempotencyKey": "9ed23a9c-6eb5-4c84-a5ef-a0ac4dadc130",
+    "h3Cell": "87283440bffffff"
+  },
+  {
+    "alertId": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "deviceId": "00582db4-c615-4e20-ac45-b2ead56bdb65",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:29:12.158Z",
+    "token": "fake-token-8817b75baaf45d9431ddefe61f7cd3a4d74213b1",
+    "idempotencyKey": "3bfc1157-decd-4cac-8000-11586de98f49",
+    "h3Cell": "872834456ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "bdab5f9a-1666-4b27-8977-f7a19d12ac5f",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:47:39.716Z",
+    "token": "fake-token-cf951c63726652383fe00e99dad3e7eaa880c319",
+    "idempotencyKey": "24f63dec-4e41-406a-b256-2090601e7b0f",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "16aaebdd-2c0d-47d3-bd44-e4826dbf3fc7",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:09:38.188Z",
+    "token": "fake-token-d88a26b4c0f508b340c45312548af587e3eff798",
+    "idempotencyKey": "65f90689-0ca4-4020-9d7d-6a776725358e",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "cd5fae1f-bb49-45e1-9099-324dc5be7315",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:23:06.426Z",
+    "token": "fake-token-9a19973d7be2accf216a21a768d5bcb6dc2149a3",
+    "idempotencyKey": "59b8d564-b3ae-4682-a2d6-dfc9d1fc480e",
+    "h3Cell": "872834706ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "7fd50290-f9e3-4799-8ac4-29f24a1b39c8",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:17:52.433Z",
+    "token": "fake-token-f452ae23d6229f48ffb2e99bf4113a054d446c77",
+    "idempotencyKey": "55edbf6c-1c53-49cf-931e-0b8b8fefd7c6",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "3932bc87-0ffb-4d7a-8ef1-4e104a30c6b8",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:03:09.862Z",
+    "token": "fake-token-bded09d7f60d55885dc0b0b56de2453d53145ffb",
+    "idempotencyKey": "81b47ebf-f730-4bcd-ae00-c9154dde3971",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "0d8707a8-71fe-4776-b609-a743c2a3e961",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:35:59.827Z",
+    "token": "fake-token-2ae1b27f2ccd4d9604c7e9b9cc8c008373bdeb65",
+    "idempotencyKey": "52caec2d-b55b-428c-8337-300ce6c9056c",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "085c606d-8986-4a92-9533-e37fdc1b3ccd",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:52:28.996Z",
+    "token": "fake-token-570609a68b84102fad72a40cb270287e966f90ae",
+    "idempotencyKey": "a8f87c6c-3acd-4bf9-92af-daef5a392422",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "9777a472-6cce-49d9-8282-d0e12ebfaed0",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:38:18.251Z",
+    "token": "fake-token-f784341d1ea9f2ae5610d95ce57942bca0ca4949",
+    "idempotencyKey": "ec66253f-66a9-4169-8887-60dac343f010",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "20e29116-967e-4945-b764-d36c3fa5a94b",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:05:03.036Z",
+    "token": "fake-token-6313678621fc5eafb13f79a4fff1a764aa5c9a2a",
+    "idempotencyKey": "eac4cd1c-e4d6-4910-832e-c59aec0be25c",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "6930404f-2132-4d1c-882f-2353b3348b75",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:59:43.632Z",
+    "token": "fake-token-f73ce65341f51c81dbe92997dbd5703cf1761f74",
+    "idempotencyKey": "4bb75aea-10c2-4eda-8885-c04b5bc5ff36",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "f0491d73-455b-446b-864e-0fbe364289e5",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:49:42.320Z",
+    "token": "fake-token-930f34c5e31a3dd720c47b0e8b1a05aa4b17ac3a",
+    "idempotencyKey": "490f4a71-786c-4097-902a-a616ec3fd9df",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "f528ac61-2f54-41a4-bddd-f748caabb5b2",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:55:12.140Z",
+    "token": "fake-token-1a521b77ab5ab4b3bf28e9b5243c6a83d353c308",
+    "idempotencyKey": "e6ea4bff-b0c0-4271-9113-589c84b645c5",
+    "h3Cell": "872834706ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "19dbbed4-339c-4554-b6dc-2943fe7a59cf",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:27:23.673Z",
+    "token": "fake-token-db7a176c1175128034288a5b92d217e6e220bc9c",
+    "idempotencyKey": "0908007f-86c7-4893-9cb6-e38b875f14e8",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "65d68eed-5d51-48ad-9970-86353bf5ab1f",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:10:16.892Z",
+    "token": "fake-token-88c6da9debf956daefe9002c2f9c8d89a22d23c8",
+    "idempotencyKey": "07907f65-6370-423f-bab8-507f48ad7ce3",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "7ba6bafb-3089-421e-b650-e4678c4dbf54",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:52:45.953Z",
+    "token": "fake-token-b91e0690e8983eb648377e01e38b811f13ae9f7b",
+    "idempotencyKey": "aa01db75-6f4a-4f6d-a0ba-9aea17f645c8",
+    "h3Cell": "872834706ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "1f032955-23be-41e6-be55-c1959e8dd4df",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:04:04.609Z",
+    "token": "fake-token-52780674a82b2ec5fa3e032f17d3794584b0b092",
+    "idempotencyKey": "de06194c-5c4a-4150-99c1-1b7b9347cb69",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "aadff8b8-9217-45a9-9543-0da252bb296c",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:14:08.048Z",
+    "token": "fake-token-ddbe162a8901c33d63f74f1d869dff433cf6e061",
+    "idempotencyKey": "854913e0-fe1b-4b4e-9a9b-fed8f4f8cce3",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "e93ae2c7-9059-4c25-84bd-446d9ede7903",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:29:19.228Z",
+    "token": "fake-token-524ec372d70c0439fb8d2a80d347d3e5b5502d10",
+    "idempotencyKey": "e845e257-8945-416b-a135-3c8b6161b2a4",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "8d65f0d0-2653-42a3-8feb-dd44d0937be0",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:18:01.077Z",
+    "token": "fake-token-4c104274e688f412e00e1bf81f754528fb0aaa70",
+    "idempotencyKey": "92f1800c-cc06-4c35-bea4-01d542d60487",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "6f4326a4-f869-4804-a5f1-bed9a7c8e84b",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:23:47.082Z",
+    "token": "fake-token-06d15b1197f74e4de9832334b26e4721e76c3726",
+    "idempotencyKey": "3fd2a5bb-5ba2-4789-93d3-97b8d4362342",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "e5559701-bb90-4d3d-9b88-53a3bbb4e814",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:00:36.921Z",
+    "token": "fake-token-0df981c39f6ec27fb179e09e5ea1b32d2ea4c7e3",
+    "idempotencyKey": "252b2577-48e1-4cc9-be3a-1ec7920300d0",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "31b0dce3-1d40-4bcf-82f9-176f8be39243",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:28:29.933Z",
+    "token": "fake-token-715eb7f709055ad55f17a78757f4568285cb4d1f",
+    "idempotencyKey": "651cf8f5-251d-45ba-bfe3-e3e3f2642b53",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "5f4945df-21c4-439b-bb90-0adc3e420bc6",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:48:02.255Z",
+    "token": "fake-token-31e7097692dad1e4c8792d6291ee84978015a353",
+    "idempotencyKey": "183394ec-00e8-4c46-9ccd-890276ce67af",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "b67567d0-8594-4f4d-b8c5-46dd6221ce88",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:38:53.132Z",
+    "token": "fake-token-dda6ea56d30b28aec7df361eaed6b3888786d1ac",
+    "idempotencyKey": "2f0d561e-d7a3-4064-8f09-d1796e6b461a",
+    "h3Cell": "872834706ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "fa749bbd-2790-4e7f-be3c-3fcde17d9a76",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:52:08.583Z",
+    "token": "fake-token-9e99c34b059b15449e34a3fb1b3abfc8ba09b272",
+    "idempotencyKey": "df1a4b36-9be9-4a95-9338-b24e8b33b8e7",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "1cffb094-48ba-4740-8e9c-76791088d975",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:06:10.217Z",
+    "token": "fake-token-30f264a43d9c05522c9df53debea0711ae492d7e",
+    "idempotencyKey": "d47593dd-2f44-4058-8496-6515376b94de",
+    "h3Cell": "872834706ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "26565417-f7b4-476d-bd91-eb1ac694a133",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:50:17.463Z",
+    "token": "fake-token-92b898ddf8aa3d51d1cf720b081c20aeb723d7fb",
+    "idempotencyKey": "4a2301d2-b2a5-4374-afda-723faec0295c",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "2ad0135e-f05f-4afc-9541-7acd112dcc07",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:11:43.962Z",
+    "token": "fake-token-1414c09c6dee674be11cebae9969636eccc001be",
+    "idempotencyKey": "1d4f919f-69fe-4272-bbbf-050b577b818c",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "2fa8d55f-c1f4-42f7-b3ac-ecf475637a45",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:29:24.427Z",
+    "token": "fake-token-9401a2521d42ee21919e0eafc8f9de01e7287491",
+    "idempotencyKey": "70993020-bc6e-4f29-8a3d-ef4b6632663e",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "b672ffec-54d7-4c63-ad85-8cce5962636b",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:54:18.794Z",
+    "token": "fake-token-282c18c35cb6a9264ef79ddbc36437baf63c472a",
+    "idempotencyKey": "0e8d3fdf-42fc-4f4c-8169-2e231e8eac19",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "4edd67bf-6482-4007-8fee-dbdf9c033ab9",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:47:24.538Z",
+    "token": "fake-token-0abbed0b6443134bce53a34791453380a84e6c4b",
+    "idempotencyKey": "ceae163b-70a0-49ae-99ba-5b7671d4404d",
+    "h3Cell": "872834722ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "1796cd33-9a84-4936-966f-86e8821f2fae",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:36:35.645Z",
+    "token": "fake-token-24ef300069a659ae0ce6656e511daa4ca0a49c91",
+    "idempotencyKey": "6c1d4538-9a88-4f9f-82da-adf3e402f6ca",
+    "h3Cell": "872834706ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "87790e17-4e80-492c-acbb-36d581069995",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:27:16.853Z",
+    "token": "fake-token-2204c1fd88d7884e73358768b2aa181e203d9692",
+    "idempotencyKey": "9bb420a7-9c1e-4e31-93a9-f328d964c257",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "bd592d59-a617-4b26-a76e-c3d7f92c3c2a",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:14:34.309Z",
+    "token": "fake-token-97399e4ac959c777e80f82c69e83bb4018f91a9e",
+    "idempotencyKey": "2fdb4422-d9c9-453d-81a3-239f9959f25f",
+    "h3Cell": "872834706ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "06df4fc8-e8c9-4115-a7a6-0ecfa3f767f3",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:06:45.275Z",
+    "token": "fake-token-50a0051cf2d1207fbc131702bb52d2812296511c",
+    "idempotencyKey": "61eb532f-e7c1-4135-bad7-954f9d59819e",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "1a04332b-48a0-4156-9591-eb7bf27598de",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:34:33.688Z",
+    "token": "fake-token-ca894a7d83e0bff4305ad4a31b023fdd77251c88",
+    "idempotencyKey": "430bc062-bdce-4951-9e48-35de76f49f01",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "7dffe370-bd92-40ad-8a79-48a5c9c38cc6",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:34:51.379Z",
+    "token": "fake-token-201ddb89df1ba863c0b2975e8b1ae8f35fc7ecf4",
+    "idempotencyKey": "92059b95-2fb0-4979-acda-833062ebe772",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "ee22a46c-5867-4864-8581-4be9c10c8d33",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:38:08.862Z",
+    "token": "fake-token-870ce6dd627e08ba538a472a59beccb9cbb64f79",
+    "idempotencyKey": "6d5e58be-e5e1-4048-b430-f2b9e33ef003",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "137a984c-98ca-4302-84ae-fa8bf6966739",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:35:16.609Z",
+    "token": "fake-token-edfecb06f0567f4a23eee5bb8fdffc843115c469",
+    "idempotencyKey": "f2874730-e997-4612-b046-1e483e6ff2b4",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "9879610b-25e0-424f-8e19-692c9ac88da3",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:48:38.690Z",
+    "token": "fake-token-beea8f274b10f8ff999bb1b04d4001cb4775cfd7",
+    "idempotencyKey": "a7e4108c-e344-49a4-95de-31130d5a040d",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "13ab2b86-04d1-4315-ad65-dbf2b5d5b6b4",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:58:02.257Z",
+    "token": "fake-token-2e78714a81202fdc3021ef9df85d58900d7acb4f",
+    "idempotencyKey": "2874eb89-9b9c-47df-9d01-c1dc5547948b",
+    "h3Cell": "872834706ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "70d7b9b7-4f7b-4a1e-b3bf-d8bf974f2694",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:54:27.149Z",
+    "token": "fake-token-6cfd3b69948bb4b1926e471a4e8ca0160a87fc57",
+    "idempotencyKey": "6f428887-3d2d-4f60-b07c-5a296686b90d",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "c2bbf9ac-958d-4c78-aa5b-a52a97cb3ce9",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:18:20.849Z",
+    "token": "fake-token-3e207581133559b867b4394e3f1f772ea277228e",
+    "idempotencyKey": "b86ac470-325f-4dec-85f0-dbd5ad5c9781",
+    "h3Cell": "872834706ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "1d894633-0b45-47f4-b9c0-cfac96dc85be",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:41:54.796Z",
+    "token": "fake-token-8f6d119ff7f7e306aa9a04788f4befc747843ebe",
+    "idempotencyKey": "7daea066-8251-42e0-bf13-b101b6e835a4",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "f5569e55-60ec-4eed-98fc-d05e346aea4d",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:45:10.198Z",
+    "token": "fake-token-0262aed258192b929dd7a5c734bed84394e35e46",
+    "idempotencyKey": "26e1fef8-e435-4af2-91f0-f338afb27c13",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "076d8923-a68c-4dd1-9151-907846d99361",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:02:42.612Z",
+    "token": "fake-token-605361945db10d0416f029fe36a55dd8ffccd96c",
+    "idempotencyKey": "afb44f6a-bea4-4939-8cd8-4478c5c8f45e",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "941ee44d-7e71-483b-8906-71820930b91f",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:20:47.975Z",
+    "token": "fake-token-47714d0329c0e001cc14a960c01f8f228d667725",
+    "idempotencyKey": "220e16f1-dd0c-4e77-8866-103868d663d5",
+    "h3Cell": "872834706ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "c0530603-8484-4b6c-a36d-f880a2c32fe9",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:18:16.935Z",
+    "token": "fake-token-55260a1f403f82d194cddeebbeae2af5dfe6699d",
+    "idempotencyKey": "a48a849b-3ef4-4854-93a4-b912caf22e88",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "d9db3354-f3f6-4640-ba67-5d329b4f897a",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:50:30.104Z",
+    "token": "fake-token-0ed0d478f09077e3c7ce5410101efa85b9ca8a27",
+    "idempotencyKey": "ebc3ba78-8099-4531-bb8d-305033f5e9a0",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "965550a4-dd56-4df8-bbd2-2feea065c769",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:48:25.034Z",
+    "token": "fake-token-5fccd8a2128c57f7a449c8ec8dce575247010b40",
+    "idempotencyKey": "38208b97-199f-4bac-b3d7-276d6d3b5edf",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "61427bf0-3f96-42a2-aeaa-58aca2fc51a5",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:51:48.607Z",
+    "token": "fake-token-78e7fc971f0a1fcc524ae8079aa5c07f9486ddbf",
+    "idempotencyKey": "fe935052-4999-4a56-917b-03e5b25b5501",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "ddf62c87-5fa3-4c7e-93ce-6ff7f370a308",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:06:19.977Z",
+    "token": "fake-token-f4791e01011b74213122dfd3cddad8920501971b",
+    "idempotencyKey": "900be251-0804-4bb8-8d0a-9e50f757d1bc",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "a8152c09-0856-41b9-adb3-a3132b8a2995",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:13:32.753Z",
+    "token": "fake-token-64d8c2f5d758695e964c7483b12c5d59fee53c3f",
+    "idempotencyKey": "5979f229-2f64-4c7f-8ea5-7c4fbd4d4f95",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "cf3dc19b-ba79-4a5d-bf5d-c1c64a2403db",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:06:56.581Z",
+    "token": "fake-token-2dc892da901fc02b7e9a6780ff9e02f2331b92f0",
+    "idempotencyKey": "40d6d3fa-8227-47aa-a3ba-0a65e94f7d1c",
+    "h3Cell": "872834706ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "6ac725c7-f71f-4836-90a0-adb20a6c34ca",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:16:21.318Z",
+    "token": "fake-token-2d0535df8d976086fdb578284b744445d23e0f42",
+    "idempotencyKey": "7ba0294d-a2ca-4ffb-aac8-23af26911508",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "90ee9e0e-8c62-4b34-a96c-003d0f40882e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:20:37.908Z",
+    "token": "fake-token-ab51727521c018dac604c50f2dcbf0613b9753ec",
+    "idempotencyKey": "9207c5ad-e794-407a-864f-73d726b66410",
+    "h3Cell": "872834706ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "297bbf5a-a3f7-4a34-a7f7-1e4d34eec53e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:50:18.968Z",
+    "token": "fake-token-2043eb3fc9642edc9a8872d355f70ee88216084e",
+    "idempotencyKey": "33f974b2-7d14-43db-a93e-18a80a2131ef",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "e18f9b0c-3fa9-4664-a679-d2d7b4bfd967",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:31:04.322Z",
+    "token": "fake-token-f49cd59d47883a11bf6f4343ed7c62aa54831b7f",
+    "idempotencyKey": "6925d187-d6c4-4111-9e4d-65c9aa588ad7",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "b6d2c8f8-9d20-4a0b-9790-c4f9ce5c3392",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:12:24.162Z",
+    "token": "fake-token-a90f9945b8e59d1ef89dde250aa799b408a9700b",
+    "idempotencyKey": "2402daa2-4158-4861-b57b-6732e7018e18",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "85f0c17c-1236-4155-8f70-d755b248de00",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:39:17.838Z",
+    "token": "fake-token-9ece2c18456f4411bb52d60dcc8a142801d4839e",
+    "idempotencyKey": "515dcab1-a79a-4bcf-a50b-46386deb064e",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "b8463032-b1b3-4098-a1be-e36a2903cad5",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:08:25.814Z",
+    "token": "fake-token-1e71003343ce9ad59bcd9f4ccebf1d2620d07b71",
+    "idempotencyKey": "dd5c4908-cdc2-4364-a494-17b122152e3f",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "523c333e-d4d3-4148-afb5-e2932e7ecaca",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:04:56.813Z",
+    "token": "fake-token-29825c643d40b93e2568c26f0fdcb0df8adb8567",
+    "idempotencyKey": "3b1cd5cc-0864-4123-a150-ae2173360e6b",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "3e662e97-331c-42f5-a564-550c5d472178",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:20:44.213Z",
+    "token": "fake-token-2ba9332124e12e7d98b0b7a6d508ed0d708a34e8",
+    "idempotencyKey": "296a0485-1108-4d84-b838-9f6d7e574742",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "628dca6b-4696-41c0-add0-044c61c5d02e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:29:48.009Z",
+    "token": "fake-token-25c6e4d16cd10f14e7870d52cd9d049c4d14b5b7",
+    "idempotencyKey": "e7f35fa3-f2b7-4337-a3e3-0f9e1d3698df",
+    "h3Cell": "872834706ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "e5c220ce-0a8d-48a3-9574-1c5cd7c977f1",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:04:49.595Z",
+    "token": "fake-token-d92d0096d88d2e30958b01e69846cd412b763028",
+    "idempotencyKey": "7d693a8c-734f-4fcf-b839-8896aa3c169f",
+    "h3Cell": "872834722ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "0abb62b0-704c-4e5e-afc2-d088cbaa31c2",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:44:52.306Z",
+    "token": "fake-token-ee61c6213da90f9f101713fd5635749d9037a59e",
+    "idempotencyKey": "c1595211-cb7a-4bd5-bad4-79819215c206",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "565a0ffd-e212-4ef9-a6cc-ee7ef807724c",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:38:19.882Z",
+    "token": "fake-token-2e4336994e980c87a7eb9f2f7d47fd1f8fe313ba",
+    "idempotencyKey": "9797ed6b-3379-4576-9339-4b65b51f6a47",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "cd2105fd-d53b-4b92-bd8f-27727bdc6815",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:19:22.124Z",
+    "token": "fake-token-9bd10070a03559daee3d4efc53748638facd8173",
+    "idempotencyKey": "a0f4430b-8fcc-4062-99b7-59d742d3c053",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "bddec553-41c8-4373-90dc-a9b30a2be612",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:05:57.923Z",
+    "token": "fake-token-79cb0b6a77420e2ccdb2fe2bd54bdc03b52e2417",
+    "idempotencyKey": "d6725501-030d-4eaf-8573-a9f70f621c3c",
+    "h3Cell": "872834706ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "10513563-b274-48e9-a79b-973baed6def0",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:19:57.367Z",
+    "token": "fake-token-a015aed889afcd3e8ede058e297ed9e38033aaca",
+    "idempotencyKey": "e61577f9-06ad-4283-b99d-203db9e2efc9",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "55b87098-9fbc-427d-a5cf-25d81c576441",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:09:43.764Z",
+    "token": "fake-token-3e3653e2a88b0738e25b728c35c5af1afaf32af1",
+    "idempotencyKey": "9a79f68a-ad44-46d9-80f3-468ff6f6ad35",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "a9eda84a-b835-4e85-8a50-6eb6a5054745",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:05:06.421Z",
+    "token": "fake-token-11a2eeacfcd159e0c3099c9684fac5627ffc9d7f",
+    "idempotencyKey": "12b46b1d-31fc-4afc-8194-b6cbb7c8397c",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "01432387-87f4-46ec-81a7-3c2629056a23",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:47:49.130Z",
+    "token": "fake-token-d39c03681f4c99f4f6d10b6d087e02a615470b8c",
+    "idempotencyKey": "48c519b6-fe07-46d9-b9b9-e9990e0131ac",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "89f8a996-2d20-4a04-89f0-d24a23eb6560",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:35:17.408Z",
+    "token": "fake-token-20b4b7a0cde35ae16d7420b7145032597a0bc7ef",
+    "idempotencyKey": "3df8a79f-ff97-4d46-9201-79718865920c",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "c43a181e-7a75-4485-b4de-3fcc7d049e37",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:59:49.220Z",
+    "token": "fake-token-a22d79e9fb06c269273e295892157128bdec8e23",
+    "idempotencyKey": "e22fdcc8-0468-4aca-969c-a9aa0afdcab2",
+    "h3Cell": "872834706ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "253e1cd3-6d5a-4280-adcc-545a2ce87c1c",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:59:28.975Z",
+    "token": "fake-token-472a43786bbe6c1f909ffbb9e3f05e1de168de78",
+    "idempotencyKey": "3b3c6967-5f3d-40a1-b89e-64f359819a8c",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "7d911535-83cf-4a03-8870-d7bd15a5ecc1",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:57:48.855Z",
+    "token": "fake-token-5ed8ee88638318ac78ff362842b34da776ba1c28",
+    "idempotencyKey": "9aa9dcfa-d3fd-4deb-b477-a103182e18b4",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "bd30e0b8-25d7-4836-82d8-97319a37cfe1",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:05:45.107Z",
+    "token": "fake-token-8042b52213ed978d157ab4eb1296f66823a4175e",
+    "idempotencyKey": "8addaff2-98a3-4b3e-99cf-79679f56b45f",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "d8bf0909-b693-4e8b-ac34-bbf18ffa5757",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:17:42.686Z",
+    "token": "fake-token-bc07ee30ad7e5b0e7bb542dfff5ba51e4499a2ce",
+    "idempotencyKey": "1830c3e5-802b-422c-a96d-ce6d48d90799",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "2f93b342-1b25-41d9-9710-92244fbd2bc4",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:22:39.166Z",
+    "token": "fake-token-555ade8cd20d051678682faeb9b8404cf356868a",
+    "idempotencyKey": "afde7ff2-8f29-4520-88e1-51eb2d26afe7",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "e6e3a23a-e274-469a-84b9-6dd24b1fe8e3",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:43:27.930Z",
+    "token": "fake-token-bb89abbc642be80749194091b11d461eed007f95",
+    "idempotencyKey": "406fe080-ba2c-4a21-8752-ffb5699b94aa",
+    "h3Cell": "872834731ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "50012723-0ff1-43ce-96a9-5ea96cb91b7e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:09:33.146Z",
+    "token": "fake-token-8a2ba39fceb38ed44e398eb2532e5a36761d35bc",
+    "idempotencyKey": "1e3dcd51-c42c-4899-afb4-66cfa0a91a42",
+    "h3Cell": "872834706ffffff"
+  },
+  {
+    "alertId": "720bb445-03f9-4228-9666-a65e57989354",
+    "deviceId": "de5a293a-cd6b-4b7c-b1e1-a227995057e7",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:21:31.039Z",
+    "token": "fake-token-6b14c0677ffcf6e46c67052a9880de54f0e8ec5e",
+    "idempotencyKey": "59e28cf3-9b0b-424f-bc6d-29c8e950edc2",
+    "h3Cell": "872834704ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "ece31305-92c2-440d-8741-f688e490bd69",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:22:59.221Z",
+    "token": "fake-token-e990f39abc9c0065537d61172844073110aaca6d",
+    "idempotencyKey": "e75d962e-8f76-4d56-8682-52324fe0ef91",
+    "h3Cell": "87283408cffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "709b8983-6361-40ca-a5de-2269ebf6d0ce",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:28:36.881Z",
+    "token": "fake-token-2f1728b4626ffc10a8fea022075122a9959e1e45",
+    "idempotencyKey": "bc363750-2288-4234-88ab-44de71442bfe",
+    "h3Cell": "8728340aaffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "81f8a901-f74d-4d12-8324-783d1c58b4e3",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:23:50.713Z",
+    "token": "fake-token-9c11e57b5dc872029fb0b778485350d1a3758ea9",
+    "idempotencyKey": "5cc137b9-887c-46f0-8878-0f4b1bf5724d",
+    "h3Cell": "8728340aaffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "91372099-d108-465b-a2ce-0b2ddd0e8675",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:48:01.797Z",
+    "token": "fake-token-3725b454955c9d5c696bac216eec72e287fe75ce",
+    "idempotencyKey": "beb67b05-a283-4830-b3dc-e7ff5ab3c633",
+    "h3Cell": "872834081ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "5500725c-a107-4be7-829d-9546e309bff8",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:05:06.008Z",
+    "token": "fake-token-86d2db3531e4f4d34aab761bd20c08218e688128",
+    "idempotencyKey": "48fa023b-836c-4643-9b3d-d185a632736b",
+    "h3Cell": "8728340aaffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "d84e4d87-71b9-43e6-8bf3-12aaa43aa068",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:20:24.709Z",
+    "token": "fake-token-bd4de599a35c21f7071c8335af946c7db84f7723",
+    "idempotencyKey": "f2eede95-dfa2-4326-9072-a4c3ceb8eb2b",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "bf17005c-7155-4d4e-836b-43142ab9782b",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:47:04.510Z",
+    "token": "fake-token-7fc2345dbd0f2cbfb3e3e2b503dc62b6e2c323ac",
+    "idempotencyKey": "4fc40f35-c374-4659-a2c9-8c66980d3dde",
+    "h3Cell": "87283408cffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "57bc3688-5f4c-48c9-98c4-37db67513acb",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:25:27.903Z",
+    "token": "fake-token-68344948d827ba42233a00870ff07ae468319e1e",
+    "idempotencyKey": "6e953f87-910e-4f3d-beec-a8cf07a8e3ea",
+    "h3Cell": "8728340f6ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "e948c5cc-3b5d-43bf-9d97-fc5f81fa76e3",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:28:11.875Z",
+    "token": "fake-token-f6aa0c0f284615ff521f09452faa9109fd21c9c1",
+    "idempotencyKey": "9262535c-8e5a-4a9f-a125-4eb235c00dbf",
+    "h3Cell": "87283408cffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "4178f873-46f9-425d-8ebf-5e2831f712b2",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:26:51.026Z",
+    "token": "fake-token-326c3aa1325eda7b34df920138e2e8d00c76b00d",
+    "idempotencyKey": "062b3f96-8326-4563-a13f-a7a99eff7bce",
+    "h3Cell": "8728340abffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "0eb74e17-0686-4ff1-8330-fc7388149172",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:00:37.620Z",
+    "token": "fake-token-71f20e14ce0ba3e2ad8cc3bfb4a6be0ddb3cf4f5",
+    "idempotencyKey": "eb7e256d-d045-4650-89ae-71378131bff1",
+    "h3Cell": "8728340aaffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "7a04f9d1-0235-4979-9600-65b2668e0986",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:08:09.297Z",
+    "token": "fake-token-470834d2c5f06c11bba26b57652bdfa99321af28",
+    "idempotencyKey": "2303f9dc-7b00-4537-a70a-eea574d5140f",
+    "h3Cell": "87283408effffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "8170f7c1-cd8f-4703-a1a2-0a2ed7113493",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:08:52.717Z",
+    "token": "fake-token-d565e92c757aeb7ab9a0eb2a8c8f651e1a76d00a",
+    "idempotencyKey": "c899e350-2d83-481e-bfd0-e7bdf3187636",
+    "h3Cell": "8728340aaffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "781de45f-f6e1-4f30-8ef2-1c15fa0446e4",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:14:07.993Z",
+    "token": "fake-token-c1196b8e99ebc2b95565bffb8fd6c597856bbb5e",
+    "idempotencyKey": "f9f742ee-f453-4886-a23d-923701d06d94",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "3ea536ba-249e-4b8a-a2f5-41c1eb474a7b",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:18:51.276Z",
+    "token": "fake-token-21f69e8bf1bfd6be4d25198b469b19249af2a15e",
+    "idempotencyKey": "63b9f3d9-f174-414a-8b0e-1765dd8cfc43",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "df32f2c3-9dcd-4c3c-b022-d3fd5ab801ff",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:50:57.143Z",
+    "token": "fake-token-0dc6a018f2b9f88b87ea8c59cc9cec733330f7ba",
+    "idempotencyKey": "ece17928-42b2-48e3-9c49-bd63fa7db29a",
+    "h3Cell": "8728340f6ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "357c184d-3798-4d61-a71c-2cb972a057ca",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:57:27.410Z",
+    "token": "fake-token-2d4402f664f5b8c88a034c35c9829eec949c47a7",
+    "idempotencyKey": "6c5b4ff2-5571-42ab-aa9c-f88757428b53",
+    "h3Cell": "87283408cffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "d7a730c4-31e1-481a-b135-276a70e518a0",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:23:21.270Z",
+    "token": "fake-token-204192286f469a3673feaa657f0f49a2c7fefbfc",
+    "idempotencyKey": "97c22ad8-db79-4ce3-82ac-9482b8979cb4",
+    "h3Cell": "8728340f6ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "795bd310-4bb1-4e00-a8bf-755a71db85e0",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:16:18.656Z",
+    "token": "fake-token-2186d3bc42132259d9a66fae15f0b5f340ac7e7a",
+    "idempotencyKey": "2795a538-6083-4b54-967b-1ce81f612509",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "40f1272d-00e6-4b0a-a4eb-32312e12d3ee",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:55:38.941Z",
+    "token": "fake-token-7bd0104b7121637ceed69b703a99bd92a9118906",
+    "idempotencyKey": "6b70e291-a02f-43b5-8e66-58c398eaf626",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "9833acfc-e202-4522-9135-fbf83105e7fc",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:41:15.961Z",
+    "token": "fake-token-61ef8da0bb375c33c4c5d467e762a07e71e3a915",
+    "idempotencyKey": "0d8ec097-36c6-4835-9463-54494af1f470",
+    "h3Cell": "8728340a8ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "4f6b70f8-725b-4b00-8d76-eee6f26093b8",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:42:05.049Z",
+    "token": "fake-token-58c259c18f1a80f5363136fcc2e2711f2486e7c8",
+    "idempotencyKey": "c7061a2c-1dfc-4baa-8632-9f56b2e2ccb3",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "602fb9de-2044-445d-a0e3-3476ee41afb3",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:00:38.199Z",
+    "token": "fake-token-256fa9a5c9a738ae5802efa67a23aac30516ee19",
+    "idempotencyKey": "e9dab9f0-c392-4067-89af-4c269aadcf2d",
+    "h3Cell": "8728340a8ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "d7e7f705-fa25-4580-b4cb-e7b73300bcdc",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:25:53.660Z",
+    "token": "fake-token-872a784a6f895f21d1b787d681670d8bf4def130",
+    "idempotencyKey": "5d828333-9b4b-42a2-a47e-43f05c151cd5",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "4fd8128b-d98d-4d32-9637-33c5d21dc224",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:49:48.590Z",
+    "token": "fake-token-9f5fa53672bc43653da7a878baaa294651d5560c",
+    "idempotencyKey": "8af79032-c2a1-4d05-9390-326e2aafe66a",
+    "h3Cell": "8728340a8ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "b1383ace-d776-4b6b-a172-41edca1fe7fa",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:14:09.703Z",
+    "token": "fake-token-67b4320871b50842149ced85f38373c145c76dec",
+    "idempotencyKey": "bcbfd280-ffd9-4841-94ab-7180c4d3da28",
+    "h3Cell": "87283408cffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "65696f19-5028-4af0-99de-804a8fa25549",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:48:12.292Z",
+    "token": "fake-token-8f31fc867dc55a48fb3d639a751f1bb69cb7d227",
+    "idempotencyKey": "2051e310-6f23-4307-9dce-244ab546896d",
+    "h3Cell": "8728340f6ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "fc61c829-631f-4a5c-be0b-88be42689efa",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:43:33.297Z",
+    "token": "fake-token-1d3888857a75758c8132f6dfa4d831ef3a50873f",
+    "idempotencyKey": "55e96ad2-6fb8-44e6-acc8-7f096bf88a18",
+    "h3Cell": "8728340a8ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "2a4db677-8030-454a-b30b-4a85c4d201ae",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:47:36.287Z",
+    "token": "fake-token-a8b0368656c26faa03099f159ac61a8b6a71db36",
+    "idempotencyKey": "0042bd9f-ecad-4110-9f11-447ba41224a7",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "2f4c5980-46f1-4df8-a96d-088a81ab6588",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:04:06.119Z",
+    "token": "fake-token-245d842394372592bd443ecc97e840b82c3fdf77",
+    "idempotencyKey": "ddc1aa45-b400-4fae-a457-6237107b2dd7",
+    "h3Cell": "8728340aaffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "acd4c87d-789e-49d1-9e81-054c04ef9976",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:00:13.299Z",
+    "token": "fake-token-7e4adf7ce199ab0fb33b8747706260210e6f86af",
+    "idempotencyKey": "4d54c8af-24e7-48eb-8b84-ee6a4f20874b",
+    "h3Cell": "87283408cffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "245d5553-0a59-4efe-b92f-ae15da9bc427",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:10:03.137Z",
+    "token": "fake-token-1182879ff387aed097c4f05252fcef8d2ff85d06",
+    "idempotencyKey": "379a3ba0-3276-48a3-b57b-532d263b944b",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "c624b12c-7efd-42ed-b99d-b3c2e460acf0",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:34:23.127Z",
+    "token": "fake-token-fb4380be5cb2c9ab8f9b7265993a1be47a24c49f",
+    "idempotencyKey": "6bac68cf-2e5e-4dac-9919-f4f2e77ac768",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "c56b3181-2c89-44ec-9734-76af367cc7b1",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:22:55.660Z",
+    "token": "fake-token-308e4271cf054a69c1c75ddfb8f5d1e4db00220a",
+    "idempotencyKey": "4871110d-37b4-4466-b0bc-7e160611722d",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "3d6f59d1-367d-4490-80ba-a156b3d3ce03",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:29:24.620Z",
+    "token": "fake-token-2d292d188ec001bd7ce75842e567569334d3bd21",
+    "idempotencyKey": "d7e5d7f9-2b2b-4212-a7ab-a991927b7e8c",
+    "h3Cell": "87283408cffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "e9f5466b-24be-444d-8d81-63c9c1b46d55",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:50:21.261Z",
+    "token": "fake-token-680fad5f0c7fc58e81ab93905d26c0783bb98d15",
+    "idempotencyKey": "0bdfddf3-133c-4fdb-aa06-be2938347c01",
+    "h3Cell": "87283408cffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "a3115015-5eda-4607-bad9-0db8f345f733",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:01:10.387Z",
+    "token": "fake-token-06f9db347ec8ad8402c809c0e51efb0cba7fd561",
+    "idempotencyKey": "babe3816-4708-46f5-8fd4-0c905dbfbdbf",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "7c965a01-85ba-4b2a-b072-abf46bde7e02",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:51:22.649Z",
+    "token": "fake-token-890cdda62d5855c10d4d2c91422d8ea1c3987477",
+    "idempotencyKey": "15ee704e-e463-4460-8c62-88fcc648c65a",
+    "h3Cell": "8728340abffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "5116b6a4-f9db-4218-a9b0-0eb207fe4757",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:34:13.421Z",
+    "token": "fake-token-7462718cf0c398c417eae7b3c3ee48b5bbb28fe1",
+    "idempotencyKey": "58a08b3d-7da3-4a65-b190-c8618cca0b38",
+    "h3Cell": "8728340abffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "0598c684-e792-4f2e-8244-254e92e1c0d1",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:14:05.994Z",
+    "token": "fake-token-c7e55417f8d2db76d81465a6c58ba32de0b575a6",
+    "idempotencyKey": "d9438d6a-e021-4dc4-ac4a-8b42fa309103",
+    "h3Cell": "87283408cffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "0a956a18-dfdf-48bf-b1bb-7df0409e93ef",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:18:23.876Z",
+    "token": "fake-token-2a84893ec328b41d64fbe1dd6b950f989e38a580",
+    "idempotencyKey": "96ef4481-5368-48a6-9fd1-c5a860089eb2",
+    "h3Cell": "8728340aaffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "32dd68dc-245d-497d-8aa3-33a8f1a0a4d2",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:29:17.606Z",
+    "token": "fake-token-3a8eae77d2090329be01de6e33a8b4d252e2f12d",
+    "idempotencyKey": "0aa1e5a4-1358-449a-9129-60a5694e4376",
+    "h3Cell": "8728340abffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "d08c9efc-bc6f-4999-883f-6d188a83ba4c",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:20:19.458Z",
+    "token": "fake-token-37149aeb6fa778de0757113ec613f9a0b480dbb1",
+    "idempotencyKey": "0b9ab514-1fd4-4252-a805-31b33c0c32a2",
+    "h3Cell": "8728340abffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "281a973f-0a43-4b4a-9a11-a60e2d3977de",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:20:52.366Z",
+    "token": "fake-token-51157b9fc311ea5b61010e75939d1fc8dd6929ce",
+    "idempotencyKey": "78035ec6-d242-4ec1-a1b5-47102b578f34",
+    "h3Cell": "8728340f6ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "9b957701-c1c0-4ab4-a5ea-52e507a15ca3",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:20:39.941Z",
+    "token": "fake-token-28f0362bf956a813692b314453b956490033c892",
+    "idempotencyKey": "cd6df97b-a80a-49f3-9eff-82ea6e1dbc94",
+    "h3Cell": "8728340aaffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "c74984db-a827-4c65-8230-80263df1373e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:53:23.803Z",
+    "token": "fake-token-216b54d152bdc4f85509a66d349987f235aebc5b",
+    "idempotencyKey": "0ee40d68-803b-40ea-bce3-b4a0a5e5357d",
+    "h3Cell": "87283408cffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "e838a04f-bb98-4b6e-960e-6bd0a8f33115",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:53:50.597Z",
+    "token": "fake-token-dd1d7e9e47abf88b1f03acdb11acab0af4ff6287",
+    "idempotencyKey": "961b483d-cadb-446d-b010-ab4e745a9335",
+    "h3Cell": "8728340a8ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "83b8973d-0b29-4091-b5fd-c851b0c1b3d9",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:24:42.766Z",
+    "token": "fake-token-f693c306a06bac6b8e13a103dd9899dc14e3fdc1",
+    "idempotencyKey": "ddec9609-804a-4083-a651-15fd98708419",
+    "h3Cell": "87283408cffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "6b86f9d7-4272-4fa9-a38e-325999e8b9a5",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:38:47.727Z",
+    "token": "fake-token-d2554bd0ac668270363a654b312c19bc26b4ca0f",
+    "idempotencyKey": "f282ce98-8dba-4940-b0ed-928dd7d4c879",
+    "h3Cell": "8728340a8ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "1f5bc906-442f-48ea-80e2-2771923e9eff",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:46:40.149Z",
+    "token": "fake-token-9e73c04e3e8ff961243a94ae9c3aa4d405611a2c",
+    "idempotencyKey": "9d7dc108-0840-44d2-b6d5-5a424ca5f89c",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "619942ad-ca12-4112-b60e-fbd6ca608181",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:39:17.987Z",
+    "token": "fake-token-c994c4518896a50c1a46c4a1e68f0a1c891d6dac",
+    "idempotencyKey": "29e18d75-393a-473d-8832-66f6c9e29dd0",
+    "h3Cell": "8728340a8ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "f1600230-61e1-4bff-9da0-01f1046f8ed0",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:28:57.550Z",
+    "token": "fake-token-4b01228ff3bae32113fc72f7d8bf79984c57c316",
+    "idempotencyKey": "45f9d8da-45f0-49e1-9196-27aae1763bef",
+    "h3Cell": "8728340a8ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "a053fbeb-c806-4533-af54-4d376f86997a",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:33:22.203Z",
+    "token": "fake-token-12eb079888a16bc5888a7caf82eccf50d4c539c6",
+    "idempotencyKey": "e7650891-03c9-4a6c-aa1f-a5c1d74b86f0",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "035dabbb-95b6-4b5c-87cd-e299e835b9c3",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:51:35.252Z",
+    "token": "fake-token-f67e2aa8af773f8f1d7a6e9341a89a20b89d54e3",
+    "idempotencyKey": "cf484e20-5657-4bc4-a20e-bf01eea145f5",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "138092c4-1cfd-4f18-bd76-4a14872be131",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:43:58.971Z",
+    "token": "fake-token-e24bd0189dfdd759c7082157f1ea264fb0cb20df",
+    "idempotencyKey": "b6da13bc-90ab-4c30-a7f3-f5f449b899e1",
+    "h3Cell": "8728340abffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "0bfc9e29-a778-4d21-9f4e-eb82a332254d",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:06:09.872Z",
+    "token": "fake-token-3900ee03dc524969a0f6c4b6b792298979469f92",
+    "idempotencyKey": "c84aea0f-e388-4e4b-8bf0-8928b948eeca",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "98a38d1a-82c7-42cb-9578-3efe975e8e64",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:00:52.264Z",
+    "token": "fake-token-cfdec49aded8ff703bb5d78bfbf9105c01153380",
+    "idempotencyKey": "32e01930-59f0-4d77-a3e9-cdc53638677f",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "5239321d-e11d-48f3-bbd9-8ebecb144960",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:17:38.848Z",
+    "token": "fake-token-e567ef61c602dc945cee2c5193b210d641105c52",
+    "idempotencyKey": "ef1fd46c-2fbe-4a0f-add1-9c9360a5ec8f",
+    "h3Cell": "8728340abffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "12e3473b-d2ed-4cfa-b2f7-7d707b9526c4",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:44:24.263Z",
+    "token": "fake-token-5c6086c530e66bb3a8794a1b691c1f1e9ff99268",
+    "idempotencyKey": "c418ff90-bab6-4e13-a6b5-f70f7bb9ea82",
+    "h3Cell": "8728340a8ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "a9a55926-4179-46e7-99db-846c591ae4d2",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:24:29.552Z",
+    "token": "fake-token-5c370ab8f355fcb0c670b3556ed2e90901956292",
+    "idempotencyKey": "bfa0b1c9-c593-4225-b77f-721410ed60cc",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "c6a5cf1e-997c-4a93-a07b-a49c64fbdeb8",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:56:24.707Z",
+    "token": "fake-token-61047dff13127b690bb95554b0c17836ebb23633",
+    "idempotencyKey": "5b78a4d9-9cd9-467b-97f0-74ccbd00e9d9",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "3abadc6c-a457-459e-914c-e9b1e9349691",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:35:35.298Z",
+    "token": "fake-token-94e2b21fd644d2569586a322fa4b1c8cf338c5fa",
+    "idempotencyKey": "387741ef-76b9-4cc0-b06d-504ab798da4b",
+    "h3Cell": "87283408cffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "eed36505-1412-4588-8558-731b4e093693",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:46:36.542Z",
+    "token": "fake-token-7bb5f9a4fd3b04e1a38ec3855c752fb4c43156f3",
+    "idempotencyKey": "a3334b13-0f2b-4a85-9474-fab2c979f3cf",
+    "h3Cell": "872834081ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "8c4ddd7e-1f3d-4a94-98ce-eb643412ef22",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:49:09.964Z",
+    "token": "fake-token-29f33e4c1dc157c9b70ae39efec69ed1baa0a843",
+    "idempotencyKey": "57b28e83-15b2-4c3a-8b4e-4b9e02e1b7e8",
+    "h3Cell": "87283408cffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "d7c7e2fa-d331-4e30-946e-b9c23faf4dfd",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:01:41.838Z",
+    "token": "fake-token-cd895fe85fcdeeebd5597b011324f75c698cea91",
+    "idempotencyKey": "83a0fea9-7140-46c5-bd07-4f7b5ef5f1f1",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "de75e8b5-4ea6-4104-8235-255e5240f783",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:54:10.621Z",
+    "token": "fake-token-d4691bc240333882a97a5bcaf1d0289bd43c1571",
+    "idempotencyKey": "d0767119-d759-4c32-8dea-7ad7a88930c4",
+    "h3Cell": "8728340a8ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "d27c0e4c-1f25-4792-a0fa-48f87017641d",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:20:38.956Z",
+    "token": "fake-token-d28638bcc04b3eeb30a6763e2f5103db74c51cf5",
+    "idempotencyKey": "e8a03134-815e-4b61-8ad5-e256971ae988",
+    "h3Cell": "872834088ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "fbc95974-39dd-4713-a7a8-4733e639c003",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:55:32.574Z",
+    "token": "fake-token-4ad92112dda3beb4e5f7ad60096f5b01a535249e",
+    "idempotencyKey": "5921d8e2-b712-4bc5-8851-378212efaa09",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "9a5405e2-a3b3-4ff5-bffe-48ee96c858f1",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:45:15.076Z",
+    "token": "fake-token-30a7cd2db953c42417604ad30a9d74189eafb791",
+    "idempotencyKey": "71b95fb7-8e9e-43d0-8457-6aa5dc66e20e",
+    "h3Cell": "872834081ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "a83d3648-5739-4366-819a-134ca70d705b",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:10:54.696Z",
+    "token": "fake-token-deb7dc805dc8d5a06ec9724b2f0b345e7e2981a9",
+    "idempotencyKey": "32fc8e0f-9042-45cc-851d-c22e23712c66",
+    "h3Cell": "87283408cffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "87b0570e-5acd-4ae2-8987-8c07a31d7887",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:13:44.494Z",
+    "token": "fake-token-5c5d32031a992d485b99602109507d4789e4de07",
+    "idempotencyKey": "9beb8ddd-49d9-4a92-884a-667aed882860",
+    "h3Cell": "87283408cffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "440673d1-a394-4ca7-aaa5-e12676f9609f",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:55:08.628Z",
+    "token": "fake-token-19a80b5f8821774916a0e17235bf3228d928b432",
+    "idempotencyKey": "265221a5-4014-432c-ac66-e291f1aeb81f",
+    "h3Cell": "8728340abffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "f7535d30-8d82-4ba1-a253-ad3a0d4822bd",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:40:33.039Z",
+    "token": "fake-token-0780f859b5677f7649e8d034703183a55e9e43c0",
+    "idempotencyKey": "8808969d-73d2-4e9e-bf11-266c40ec4d60",
+    "h3Cell": "87283408cffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "ce3bf187-9692-4d87-910d-d21f7a83a117",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:43:07.437Z",
+    "token": "fake-token-a8411be54ca7d2c82cc1936695062a9178c7ab22",
+    "idempotencyKey": "1ad83154-8012-4bd8-b54b-766613391219",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "47530ee0-a8cc-49ce-ba9e-a3f6e85a732d",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:57:02.610Z",
+    "token": "fake-token-7df678cf402bf101d3cfe6b47bc4ddaa8119ccb6",
+    "idempotencyKey": "ef5f9f97-77dd-496b-8f04-5813bc5eca3f",
+    "h3Cell": "87283408cffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "58938116-2da1-4d13-869d-cce5bf980fed",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:19:09.378Z",
+    "token": "fake-token-86420e291f1ddafd901fe00cdf1b4029de5ab754",
+    "idempotencyKey": "80af4e2c-20c8-4d2d-afad-2deea4d962ae",
+    "h3Cell": "872834081ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "059d9afb-c477-4c42-addd-079e4b87d858",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:37:50.106Z",
+    "token": "fake-token-c5ddd2b899bf8409f2dd011820d2faa4f899f593",
+    "idempotencyKey": "a9b2c1af-bc70-43f0-b4bf-a8083e671614",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "07b2087b-dc25-4868-9255-7bd7f3b55359",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:14:29.575Z",
+    "token": "fake-token-a6cf5dd07b48068d7f65c6a70e283a26d1f3450a",
+    "idempotencyKey": "fba9ee22-1d01-43a4-ace7-b0b2be950a0f",
+    "h3Cell": "8728340abffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "cd17aa35-acf4-4b28-87af-468a65c60c23",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:59:31.685Z",
+    "token": "fake-token-ed12723233b5d0222fcd58c7b5432242abcca094",
+    "idempotencyKey": "45ae1566-556b-443f-9b6e-164f0c394b46",
+    "h3Cell": "8728340aaffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "362e4ff3-3b59-4cb8-801d-b6337e70e380",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:06:23.364Z",
+    "token": "fake-token-982c38aabd87623c5274371f573820d5d653734a",
+    "idempotencyKey": "2d940d95-5a32-4919-87fb-faea2e878c84",
+    "h3Cell": "87283408dffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "dc85d63a-196c-413a-bed9-b1548857f0f7",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:28:48.061Z",
+    "token": "fake-token-3bc4032ef7f6725e427d075e020e88f0bb9779a6",
+    "idempotencyKey": "0fc281f6-c19b-4558-aa18-be908045c601",
+    "h3Cell": "8728340a8ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "8b5ba6a0-cbd0-448c-a09b-b662aa22f55e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:32:14.926Z",
+    "token": "fake-token-edcb99ea697b83b40ad71b5164320d935a606d92",
+    "idempotencyKey": "fef81cd4-1cee-433c-bda9-2807899b8d02",
+    "h3Cell": "872834088ffffff"
+  },
+  {
+    "alertId": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "deviceId": "e81e80f3-8d87-4675-a30b-07d3a3cfd46f",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:50:25.639Z",
+    "token": "fake-token-4e756f0ad976df10816765b959cb59f27404b105",
+    "idempotencyKey": "98e0303d-5e30-499b-88da-aa1d2b9f9c77",
+    "h3Cell": "8728340f6ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "8ba54f4c-0803-4e84-92bb-27d59eb3e4cc",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:38:42.044Z",
+    "token": "fake-token-c690f59d62ea3dc75f50f2d4fcdd1269e59059de",
+    "idempotencyKey": "8020617a-3f3c-466d-971c-34ff2f0ae908",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "89bea974-ea36-4b05-8197-94756b028abc",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:30:17.366Z",
+    "token": "fake-token-43b3a4342b526b56174eb9771eafe5d982edabfb",
+    "idempotencyKey": "5c328dfb-553d-4e3c-9b60-ebc810fe06ec",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "24d7d1e6-d832-4c96-8cd7-966206b08fbd",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:16:10.611Z",
+    "token": "fake-token-6ea70ba8fe18bb88c79117daaf3d34d32b14a6bf",
+    "idempotencyKey": "83ed45bd-92e6-4e65-bd39-3f6a7b6089d0",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "a0a8b443-7992-4291-b4a1-148bfccc494c",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:01:59.013Z",
+    "token": "fake-token-45eb93304f0657cbe7700f31188c18cef9189dc0",
+    "idempotencyKey": "e21bd9f4-9804-4029-bfaa-1ce8869a613d",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "aaf9f2e6-0669-4f73-9694-9fc0c6f32654",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:32:38.559Z",
+    "token": "fake-token-5ad508da9cf343a15ce07c24d0cd399999a498a7",
+    "idempotencyKey": "07bc2377-4402-4413-a696-612b9677db96",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "2063ba4e-f06b-4bdf-8b4b-314cdbd455c6",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:37:27.337Z",
+    "token": "fake-token-d030c6d09880dfcd2c618fc338be6046b2382f04",
+    "idempotencyKey": "81d5d0b2-92ab-4cee-b06c-95768189e17d",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "ba4f1ea5-7d89-4d0c-ae71-a0853394fcb9",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:27:31.719Z",
+    "token": "fake-token-4c49d16fb4b2f4838d8aae2da172d79e4799f1dc",
+    "idempotencyKey": "5129b6e0-408f-416d-a9d3-58ee51e5e5bd",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "6e4edf2e-907d-4b87-815d-1784d9957b1a",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:45:07.403Z",
+    "token": "fake-token-21f93b3ff82317ead8b02404a8ef48721a8e4156",
+    "idempotencyKey": "beb5414e-9c5e-4b50-94f5-1c0e97f0cb64",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "eb91ba65-aed5-4857-8c4a-7039e7b7ad01",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:48:31.282Z",
+    "token": "fake-token-0768f718b2dd2dcb3114c5d13581a8a905663cd1",
+    "idempotencyKey": "ffa5e490-c02d-4da5-84b4-d94fea8aaae7",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "a57340c2-d27b-48df-aa78-f2e21bc9635f",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:52:16.178Z",
+    "token": "fake-token-5b71119297e37700a64efd76141aadd0374e3be5",
+    "idempotencyKey": "1f927ad1-7dcd-4bb0-8c77-e4c19b95ed44",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "4aebe0b2-f430-41a4-b769-cab96736d8bf",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:08:03.137Z",
+    "token": "fake-token-9c967a79eb83d4b80f582250fb574613815dd721",
+    "idempotencyKey": "be774b92-0477-4311-86b5-55cac22b1e69",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "5d6955dd-f349-42bd-8af9-9fb354c0d33a",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:29:15.513Z",
+    "token": "fake-token-f9b2206c382b17f38088bf14d01b92621fb28e5e",
+    "idempotencyKey": "e84da647-631b-4f5a-86fc-87ae538832e6",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "8d1d648e-6e79-4286-b774-469f439bdf9b",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:57:09.007Z",
+    "token": "fake-token-6ee6904e704ee015760f69ca0d35e18f64648c7a",
+    "idempotencyKey": "757f89fc-978a-41b7-bf59-0c17751dceb1",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "f8bbdc43-7e8d-461e-bfb1-fd3e7577a6a0",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:43:52.048Z",
+    "token": "fake-token-b4e4d9a67c6e9310c8da9bfd7b929130346da930",
+    "idempotencyKey": "19cd05dd-b3a3-4d5a-b5e3-87ef7805cd0c",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "2728c02f-ddba-47f2-b28d-4abcbce31ea1",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:46:19.679Z",
+    "token": "fake-token-84aa00a399587929a1cbf33c90c269906c54dcca",
+    "idempotencyKey": "86ade8a6-70dc-4311-ace3-bd2ea9c8e93c",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "e87721c7-2f0f-4fa8-adec-5ce720112127",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:31:29.052Z",
+    "token": "fake-token-7ba3091d7404334c1c57e3d3613027a5990441d3",
+    "idempotencyKey": "8be2ea58-5711-403b-b5a3-9eef77242ac7",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "19c335f4-710a-437d-8e07-2c83c8a52180",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:23:25.895Z",
+    "token": "fake-token-9abf2ac1d1c59f1a36cb5d9b4c380d1e56596b36",
+    "idempotencyKey": "1f3a3a6a-b24b-4223-a70b-286b0d050845",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "3bfd5830-9c18-4b6b-a827-a974d5cab3b2",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:47:31.609Z",
+    "token": "fake-token-bf1544d95c131eb3885b617ef593eb8ce999ba07",
+    "idempotencyKey": "3dcdbf74-e719-45fd-ab5e-3b8447fc1f75",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "8a6292c6-d551-4407-b379-fb5918c4a7b8",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:07:46.158Z",
+    "token": "fake-token-043d5d011e58c772732ca2b754f3460ef605aeae",
+    "idempotencyKey": "7dbbffab-a998-48ae-a1b2-ed6d3ad6715e",
+    "h3Cell": "872834541ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "ec8da26a-1c2c-456c-af76-440dff597548",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:35:43.830Z",
+    "token": "fake-token-57696728595cb92c6051e960878e353b4be59a63",
+    "idempotencyKey": "ed20008d-742c-4846-9537-4f0ff1187635",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "3c0fd64b-ca7e-480a-b80b-1f973f72eaa5",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:25:11.381Z",
+    "token": "fake-token-ccfe036bbbe2ae8ba9f2f0f9436f08b34ded4b0b",
+    "idempotencyKey": "4bb41768-cdff-464d-a57f-a229bc882762",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "7a206510-7871-4ec0-8f47-36e308b3c224",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:03:58.632Z",
+    "token": "fake-token-ac6223105f3702b1ea605aaeee576f0d5f114471",
+    "idempotencyKey": "759e1529-53d7-4e29-b58c-684926fee08b",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "57e6176b-ebb2-4c00-8d72-d4d2d38337da",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:31:45.957Z",
+    "token": "fake-token-4cd3ad8224ba9a811cad99e0ca0058f08600af94",
+    "idempotencyKey": "93484480-e758-45f2-87aa-d69792a25c9d",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "dd09a6b9-3dc2-4626-8e0f-33214845c75d",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:07:28.751Z",
+    "token": "fake-token-d68cade4761756cce68fa713e74e87378e6974f7",
+    "idempotencyKey": "4e536f77-4a31-4e79-bf7c-2076207d9f10",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "072c68e9-52f8-4fbb-bebd-5f913152ba4a",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:54:17.303Z",
+    "token": "fake-token-2b05a6044764bbb9683e9e57f05a71619fd7e3c5",
+    "idempotencyKey": "e5307f8b-db21-4fb3-92fe-bb2164f0bd47",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "fcacd161-e1db-44b9-ac8c-ece12c43dbee",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:12:38.645Z",
+    "token": "fake-token-911fb6f5d28680302365094df4c003d4d48f1d62",
+    "idempotencyKey": "89996eef-f8d4-4514-bd51-b3cb8586a866",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "94d47ba9-8d9a-48ce-a84b-2171cbea00a6",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:15:54.877Z",
+    "token": "fake-token-71198a9e73151c91030e629065bfe29c56504faa",
+    "idempotencyKey": "c0d1270f-21d3-4f11-b911-5e02ccc784f2",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "600e1f38-30d0-40b1-8db8-42ba2350c386",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:29:39.410Z",
+    "token": "fake-token-ed76f9825439ccd44df3241c1cea15083913e0d9",
+    "idempotencyKey": "8db5f889-9dc3-4ab3-bea4-add9192e50ce",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "d6b87c8e-9b9f-4127-bdd4-ac5d6b5db3ef",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:50:29.716Z",
+    "token": "fake-token-88cdebf874c2c7f2a426df1eb76a3f280b9b749a",
+    "idempotencyKey": "f179b2b3-e4fa-4624-820f-39921c08e597",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "7c910df6-9825-4f10-955c-9407451c826c",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:43:38.314Z",
+    "token": "fake-token-044c7c3599759d6d44872aafddd5b12caeff5838",
+    "idempotencyKey": "7f3c2b75-970b-4537-97d9-1314c7fcf3af",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "8cadaeb4-7c18-4794-bb86-1c9a29c97bc6",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:31:44.390Z",
+    "token": "fake-token-33589dee2d2b5e283ab89d29ec691e3b86eda2ac",
+    "idempotencyKey": "65d5e78f-5bb4-4d83-9b3a-01a16385c467",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "1d4293c1-0588-4421-a2d5-d91a5cbe0474",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:24:18.424Z",
+    "token": "fake-token-2123d4d8e4716ae991836dd021a096065fb67920",
+    "idempotencyKey": "2c48d426-a657-4d91-9cd5-b11f22e5d774",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "9ac2b091-a769-4659-a6be-e4c20fdce1f2",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:46:43.503Z",
+    "token": "fake-token-fe6aa0dd734b473762a9dd349457c08f78ff0b7b",
+    "idempotencyKey": "9ae38a10-8bf9-41ca-b02a-4c4fd467dd64",
+    "h3Cell": "872834540ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "8bfa5e14-9a4a-4b23-ad26-68486916ca05",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:54:49.627Z",
+    "token": "fake-token-601f2b59f55d837e7ab8b5d4b9448a00cf3f3de0",
+    "idempotencyKey": "15282593-65e1-4a74-95e3-0bd7d777b823",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "39c22792-2ead-4698-9244-e24a75a347b8",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:35:06.569Z",
+    "token": "fake-token-f49b621c103f5993537d0c073417d2cc9e6d7afe",
+    "idempotencyKey": "f62f8cb1-5fc9-45e8-b084-d3072d86e498",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "fb7c7801-9258-4fcf-b5c3-f012e23b38e4",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:53:07.808Z",
+    "token": "fake-token-c8f0bc4b59be7372fe0cded3bf7225eaa8e6b85a",
+    "idempotencyKey": "d09d178e-0fd8-4b66-9bad-81565329cdc5",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "420ecf7b-cb4a-44f1-87c9-52fbcc165232",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:21:18.328Z",
+    "token": "fake-token-e48e79f9b58f1cd7d22185630b13e7f3341a1cb5",
+    "idempotencyKey": "9d0d3024-a2e1-4ace-bf4a-4d1307baa33c",
+    "h3Cell": "872834541ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "00bcb32e-2ee2-4a4c-9439-1148b579b2b0",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:44:44.366Z",
+    "token": "fake-token-91999b6bd9c0b230de0c5cd69cc4c272626eeef6",
+    "idempotencyKey": "3397ac7b-07bc-4d99-ae58-66b09c474894",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "3e8f9920-976b-47ae-896a-1b4ec5bfcf77",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:24:10.764Z",
+    "token": "fake-token-74835a57af32bfe627e8f041ea45b7993f36f9e0",
+    "idempotencyKey": "88ef8c3a-9fda-4ff3-9e3b-74be4e63d6db",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "805ee136-7548-4962-bb89-afac9a3e9e92",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:23:13.946Z",
+    "token": "fake-token-e68e497a119245575ff6e580dd776e217110fff5",
+    "idempotencyKey": "9c728473-7b62-4195-a496-e8baba83ef16",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "9bf8c121-1720-433d-9f22-09ee02f33453",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:25:47.752Z",
+    "token": "fake-token-616360decbfa5058ed84a7bc69e7cc78a7ea4e72",
+    "idempotencyKey": "7531b273-76bb-4ba4-a3b5-a048acfb12ab",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "5f42f4d6-2537-4ab9-8136-dfae88a2fc1e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:27:09.414Z",
+    "token": "fake-token-b3797a75ee45be6212ae05a20f5e5ed1e2fc5991",
+    "idempotencyKey": "198d5f7e-7668-4f9c-85b2-5c13bef6dfdc",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "22fe0428-5b3e-4018-9712-bced87ab6941",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:51:51.907Z",
+    "token": "fake-token-4ddf0aa768f2f4e5fb7c394f5c3ad7e6cb669a95",
+    "idempotencyKey": "1ba1b1ac-04b4-4de5-ab90-0801f9abd001",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "13f772c4-eb30-4b67-bd78-71f78606d1a0",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:49:37.003Z",
+    "token": "fake-token-9c7bf9ce7d2f42b0524666d4967214a3b70db00c",
+    "idempotencyKey": "c04348c3-b9eb-4702-8105-aad2581dd99c",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "59d36f46-c77d-4cb6-a664-a3bffb3fbaf8",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:00:25.799Z",
+    "token": "fake-token-1b5811915deb60b4c04a17208d190331d49fd076",
+    "idempotencyKey": "b8649e36-f02b-4fc9-b39c-2dcedb43c459",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "0d5acf10-0835-4580-8b88-7d22e28beb1d",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:00:35.831Z",
+    "token": "fake-token-181e7452c40e05c71c10e0f283a835234c6b36dd",
+    "idempotencyKey": "8ada2779-7304-4cc3-a5fc-6f1e787d59fc",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "cb423df9-bbf2-4e85-9565-1b3be7992c38",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:58:27.139Z",
+    "token": "fake-token-1c599a914cc22c49caa30c84fa614661a91726ec",
+    "idempotencyKey": "89abc676-58c7-46d3-8598-9c382a421589",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "ebc4196a-9b14-4c66-b690-95bec4a4b59d",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:41:02.309Z",
+    "token": "fake-token-e168534ee9603aeb64bcaa73c78734473f616d29",
+    "idempotencyKey": "4f436336-43f1-4b91-b4b2-93e3016ca48b",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "745fb541-3389-4a17-8cea-5c3e4a7f8c55",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:53:48.622Z",
+    "token": "fake-token-d4b172a20d4e2b5adf00d561de11148e190d082c",
+    "idempotencyKey": "c42aa87f-d8ce-40bc-b380-50f2accd35f7",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "b0a382fd-e29d-4d0b-8ba5-845097d97232",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:22:31.287Z",
+    "token": "fake-token-2084c8f8c8c4b6a5d5886f64eb5048437f16b42c",
+    "idempotencyKey": "00153cda-04e4-47c7-9297-f49f704f4a08",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "4bc602ae-6f77-4a8d-92ad-2ad997b54695",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:18:09.559Z",
+    "token": "fake-token-5725ebb4fb136e2c1f26f82efa21aad2d57b4652",
+    "idempotencyKey": "1ed5b72a-34a2-4503-8354-3bb8f77effe0",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "1bc636f4-05d7-4f2e-b423-9779845ab843",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:55:40.022Z",
+    "token": "fake-token-41d329f5d0af4513d6e5b2aae0fd13522a800453",
+    "idempotencyKey": "b9acf898-d86e-416f-9b7d-539d4da910ab",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "79437605-1be7-4cb9-82a2-5a0e2bfb94be",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:59:47.137Z",
+    "token": "fake-token-1b21c5246c8171c80e6ed7e83f2805ede1729667",
+    "idempotencyKey": "7cf03421-bd4e-4d1c-b707-e60ea4124d82",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "d7d077e9-ab62-44ff-a499-51fce35d7f99",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:59:54.489Z",
+    "token": "fake-token-9bc8d553f4079158d603e5e4336e460f7b602537",
+    "idempotencyKey": "8e8dcaaf-4840-48cc-affd-7c413ab8a47e",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "102c62d5-0b2f-4860-95a1-844448180cb5",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:58:30.463Z",
+    "token": "fake-token-6b2604dbf37a11cc0f591f11ec207e9d5e0a82d7",
+    "idempotencyKey": "b6da615c-4c1b-4dd1-abc0-d6f231d0ab97",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "7045780e-8da7-4d3c-ad5a-187d2ccff2d5",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:03:57.422Z",
+    "token": "fake-token-289ea35e3dccd0bae69321dc8c6d28e2da1bbcda",
+    "idempotencyKey": "5475b342-8252-47c2-8897-3bb8e893e491",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "9f3986b2-9c83-4c61-bdd6-133afcab1099",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:35:33.080Z",
+    "token": "fake-token-1e9d457d116cfb7a0c9e5ace0543fc79d4c3a1af",
+    "idempotencyKey": "6e27cd1f-56a9-4073-93f3-790aeda8af4e",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "65c4fd8d-f198-46d0-96b7-db3394a8ce9e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:29:23.709Z",
+    "token": "fake-token-338e44294f35ffff47e174c5b59a29248d7d1695",
+    "idempotencyKey": "50903618-4a26-42c9-b1d3-6fee83495e4e",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "41217c2d-7064-4c72-8814-194f35450922",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:50:03.343Z",
+    "token": "fake-token-2419451347469d6fc80ef051c85fe2b2dca83b5a",
+    "idempotencyKey": "932cfd43-bf9e-4b78-b6a5-3fe56eb19093",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "59e7dfb9-1849-41c7-b419-93069c91195d",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:57:00.954Z",
+    "token": "fake-token-484dd72a3655bd5df053e76a4f51817220370061",
+    "idempotencyKey": "fb9825ec-eb8c-41e8-a80a-e5d092a3a870",
+    "h3Cell": "872834540ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "cb9b6983-9ee7-4da6-92dd-7da215e8be5f",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:45:18.765Z",
+    "token": "fake-token-466d3d822986eaf61f7d4e37e09715ebe180d295",
+    "idempotencyKey": "65a93892-935b-4ed6-9449-34393839493c",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "4d71d41c-c861-44a2-805e-ff94b33284ef",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:01:40.292Z",
+    "token": "fake-token-2a8f6e747ef5d94b20b9928c542d89cac47d0e01",
+    "idempotencyKey": "e93f5c99-11bd-45b6-ab74-d01851ade585",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "1c1db092-724a-4376-b968-ed5d3439e8b6",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:54:27.789Z",
+    "token": "fake-token-3d1b26fd1aea54bb6758ce0f500e9329c2660e7f",
+    "idempotencyKey": "801fad95-3174-4d0e-93a8-5b55ed22cf58",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "c0a649e6-56e6-4a2a-9ee0-2a4b2d86a010",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:58:20.376Z",
+    "token": "fake-token-15b465d877a44fa04f50871c53034605066f9112",
+    "idempotencyKey": "7c1c449e-a6b1-4e78-9873-275fcf97b1ed",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "50a6d7f9-2f9a-4d4f-9bdd-06ceffb38ec5",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:18:48.342Z",
+    "token": "fake-token-23c4d1cbf64ba73b9e6534bccc78f960077311b6",
+    "idempotencyKey": "d2b150a4-3753-453b-b16f-157df2d6a2dd",
+    "h3Cell": "872834540ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "cd5b5488-9003-4856-965b-19aefd81b5cd",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:46:24.659Z",
+    "token": "fake-token-51bcf7fb3d440f1c622b390866c048eaff6221b6",
+    "idempotencyKey": "d11c000b-4270-4d7f-9c8c-bd2b7aa31d27",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "5c48856e-ebc5-44f3-bc3e-a94a45b4e499",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:20:34.629Z",
+    "token": "fake-token-63e998c039f01bd0f1fa381f05e1cc371e0e3258",
+    "idempotencyKey": "b65e5a24-f90c-45f9-a8fd-da42ea579bb5",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "ba45d9ca-45de-4ce4-8885-343496de9610",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:25:28.493Z",
+    "token": "fake-token-72a86b39c4108cd19c10aa0d8fe4e46434cd4ab0",
+    "idempotencyKey": "f43cb089-c772-4b33-a16d-aff373729690",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "20fecd6c-eb4f-4419-a763-5e1b0674f66d",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:34:38.637Z",
+    "token": "fake-token-2ec7b2a6a1eebc8dbe3645713497ea7fb6295654",
+    "idempotencyKey": "6ca3e02d-b184-488f-b7c4-be8692e33426",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "22f4b7c0-5b05-4f26-8da8-74c95976271c",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:51:17.813Z",
+    "token": "fake-token-fa80843f2b07fa45be5c5203c8e6322e29bae3cb",
+    "idempotencyKey": "6426bf4c-2aea-4859-b0a4-4a474a208b05",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "c7c045d5-4491-4c99-ae2c-53dda735e50b",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:05:03.971Z",
+    "token": "fake-token-16f0e738dc24b0b27fab0cbcfe0ebda9e8a7f0c5",
+    "idempotencyKey": "dfc09e2d-6e94-4f9b-a3e2-308cb52742e8",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "498386d8-d491-444d-8c76-fc971aa101ea",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:41:44.199Z",
+    "token": "fake-token-e146e420c44367021f4abb6a54a1f6edcdd1f939",
+    "idempotencyKey": "210d8d77-fb23-4d49-b5ad-40a66e723a42",
+    "h3Cell": "872834540ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "2e408faa-d9da-4e77-b044-3aa099be3dd8",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:58:29.688Z",
+    "token": "fake-token-0f51b7f8f38fd5fc3834e53617875ac320796d80",
+    "idempotencyKey": "7f2d5a66-c8a7-4bf4-bf42-74e9ce898b19",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "353a2d7a-7858-4bcc-b851-2488205bea7e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:23:15.858Z",
+    "token": "fake-token-e47e2badc1d196237f54a3a4ab4c9312ba8f7c90",
+    "idempotencyKey": "cd333765-dd3e-4cbc-9a9d-61769f1a301b",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "8d38e2c7-7b80-4805-aed8-8b532311ea59",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:27:34.806Z",
+    "token": "fake-token-aa75aa53e51244cef21faba989db488a8788045e",
+    "idempotencyKey": "930d4dc2-26f0-48f5-87d2-75b5eb4cee40",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "21a8ed2e-797d-4fbf-bdd3-96172f6e4ef3",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:26:04.765Z",
+    "token": "fake-token-337f7413ac2f8ae0cb8585ed9314bcfe342d2a31",
+    "idempotencyKey": "0e9ccc37-4e16-4d75-988c-0e8f6900e1dd",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "33e5561c-3537-40a9-a5aa-d18ba29239ce",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:52:14.635Z",
+    "token": "fake-token-48cd7e6d7455fb335ea30bcab0b4cd8257886be6",
+    "idempotencyKey": "13b580fa-0f00-46cd-83c4-70d1e7640092",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "b268071f-9eca-49d9-89e8-8fb00e633077",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:41:13.064Z",
+    "token": "fake-token-cd9bb6c743c1450cd6f7b68a4813d68e89aefa7d",
+    "idempotencyKey": "e6148749-9991-4663-b2af-103fcaa4f3c9",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "64890ad3-9108-4958-b1e2-375d7e2dcda1",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:35:14.754Z",
+    "token": "fake-token-77cc666af800d051e43822dff9d1e41af81e392d",
+    "idempotencyKey": "03837d7f-0333-462a-9286-468cd43aa910",
+    "h3Cell": "872834540ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "9a1a200b-65e4-4f58-8b67-44228614f14f",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:32:26.487Z",
+    "token": "fake-token-7c6a7375d513b78d9ad013d4098eb1d936d0229d",
+    "idempotencyKey": "7e121fe0-0b6b-4019-9bab-de3f2ea9f4de",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "bfb5ca15-6128-424b-8669-2f1de1233932",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:34:27.579Z",
+    "token": "fake-token-55064d7c0579d194571e56f66c8b03863033ade6",
+    "idempotencyKey": "3278c653-67bb-4e7c-b024-6ec08c154e6c",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "269742c8-51d5-45f1-8a25-7bbc8a041a4e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:50:16.703Z",
+    "token": "fake-token-b15db71206e5c7ec2b45913c662da587f030853b",
+    "idempotencyKey": "2406a2eb-e870-4bf8-bae6-74a931232bce",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "deviceId": "40001775-0b95-4af4-a05b-6518fd7f8438",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:47:23.241Z",
+    "token": "fake-token-dd433860c067a7c64c64d3746c9c1e1c5d0dfc25",
+    "idempotencyKey": "8d02ceaa-9434-48c3-b39d-d5066df3deed",
+    "h3Cell": "872834543ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "662dda12-8c37-458b-95ed-f7b41ec8b4d2",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:00:29.166Z",
+    "token": "fake-token-d7df85f817589b02a64ceb87e910b2ee278b3486",
+    "idempotencyKey": "9af28989-5455-45c2-8b1c-b6d07fec5fa2",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "39f0af5d-d5e7-4a39-b1b7-e1130d7d8f98",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:14:30.543Z",
+    "token": "fake-token-f00ab694181342347e91e76ca428fa4cc4439a86",
+    "idempotencyKey": "86044d56-e234-46c2-a1c2-022ecc8b1a70",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "166c9f22-c623-4517-ae1e-208016d7c2bf",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:01:29.407Z",
+    "token": "fake-token-d307936310fe12a6193088fda89ee8ea75a87a15",
+    "idempotencyKey": "180f3b00-dfe2-49d9-ba9a-a100ab6b3e20",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "df988c58-6569-4e34-a2c9-c4fa9c847a8e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:03:50.373Z",
+    "token": "fake-token-f9ac533dee0e52617f36cfddedc4f7f03aca2ee3",
+    "idempotencyKey": "51dbb69b-c79f-40e2-a1e0-cad372084980",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "7605cef8-a50d-4075-8624-9d8a8e012304",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:29:06.468Z",
+    "token": "fake-token-e9492293f69a1e07efa8b69df3a5ee18853d95e0",
+    "idempotencyKey": "382e9742-a32c-43c8-9e07-744c3ef2d42e",
+    "h3Cell": "8728340f6ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "c90804dc-8ec5-49bb-b2e1-8eabc63a3665",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:23:46.288Z",
+    "token": "fake-token-d957893da3c907cf1ad99f828899bb22b29c470c",
+    "idempotencyKey": "ffec772d-a764-4052-ad5b-c0e4c4bb7aba",
+    "h3Cell": "8728340f6ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "41c394c4-1a59-4b6b-bdd2-84d7b4c7fc9b",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:23:54.815Z",
+    "token": "fake-token-a221e39798211174ed16bee3efb1f93ac19a81a7",
+    "idempotencyKey": "f39c4974-7933-4a2d-ae39-168deea74d42",
+    "h3Cell": "8728340f6ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "9c743bea-4792-4b9d-b47c-59d0b3056276",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:30:30.401Z",
+    "token": "fake-token-101f579a0e87089a9118cbdbd3201dc4918df4ad",
+    "idempotencyKey": "9ded8200-4baa-4879-ad7a-ce535b9b4c39",
+    "h3Cell": "8728340f4ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "66f69f00-0580-4c5e-99ab-7671f6453454",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:48:44.008Z",
+    "token": "fake-token-40c9ea112bde321ffddfcf10e109bd9808917089",
+    "idempotencyKey": "00881caf-13ce-4376-aab9-d09bc1750669",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "ab9e1561-39d5-4166-96ee-9a17546df6f8",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:11:52.979Z",
+    "token": "fake-token-115088f0934ff7b51bd0ccf55def0dea7086a48d",
+    "idempotencyKey": "897f3ab2-4be9-4963-9094-53c35afe7557",
+    "h3Cell": "87283401bffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "72746a0e-5c62-42dd-ab43-19b70fadda0b",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:41:49.168Z",
+    "token": "fake-token-cb6cc08d7912a8dd2ebf8a171c48aaeabb8d587c",
+    "idempotencyKey": "11c54f99-88ad-4085-8700-d9df4030e006",
+    "h3Cell": "8728340f4ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "9f8aec06-2d5a-440f-ac62-b25ef6e3ec8e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:35:07.685Z",
+    "token": "fake-token-a9213502526482f344fa5d51b84d8c19f219e9bb",
+    "idempotencyKey": "ed56680c-822a-440f-abf8-29999fa75fa5",
+    "h3Cell": "8728340f4ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "02fa4749-9f96-474d-b027-bcde2f9439e1",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:04:36.987Z",
+    "token": "fake-token-46d761649aa2b40bb10d09f6d941bfdacf112c19",
+    "idempotencyKey": "c32267e9-3b6f-4fc2-9d75-542595ecf038",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "fba1d420-a376-406e-a149-69294361ec6e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:29:01.606Z",
+    "token": "fake-token-51bf87702277691ecb24587a32e365a66458a2c2",
+    "idempotencyKey": "fca9718b-b15f-4e20-bff1-fd9731ff5152",
+    "h3Cell": "8728340f6ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "f0f01977-aa12-4125-a1b0-cad3965c7076",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:44:31.753Z",
+    "token": "fake-token-1b2fbe9e7c0d47695c9a26f826e62b1c550e4103",
+    "idempotencyKey": "01000a9c-b4b6-4065-9b24-83a935e0ef86",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "104deb8c-260a-4595-8503-5fca06f699c4",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:58:26.813Z",
+    "token": "fake-token-159c4a1e6bb2f8d98ee0193defbef2eb0b27dfbf",
+    "idempotencyKey": "f0a356c5-dd03-4e87-902d-da664c96d31b",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "f54ca793-ee3c-4f45-a5b8-55fbca6de477",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:59:29.042Z",
+    "token": "fake-token-4a4e1f4b4068b5aad35745d05520c73326a932ad",
+    "idempotencyKey": "174ce60c-04e6-410c-bd1d-b5a46e2e2e06",
+    "h3Cell": "8728340f4ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "aa8179ec-7e7f-4a14-94fc-4a99022e4038",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:36:28.219Z",
+    "token": "fake-token-71dc0e9fb18ae31947b4a72f6cf426e1affb3bff",
+    "idempotencyKey": "85578868-951f-4bc7-8b2d-d8a50edf3890",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "7a1246c3-ac11-4ea1-b0ec-36d942d5a742",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:36:38.419Z",
+    "token": "fake-token-1d42e453e46f582e7950902fe4e2457bd302bfdd",
+    "idempotencyKey": "1e293151-86bb-44f3-8e48-5e6af0957305",
+    "h3Cell": "8728340abffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "55ef182b-115e-492d-a872-ddaee2914abd",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:45:40.393Z",
+    "token": "fake-token-03a8067052b141608ace8265353d747c1d8e31e0",
+    "idempotencyKey": "2e862d24-f489-4830-a4ac-ae4cf944325f",
+    "h3Cell": "87283401bffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "98909823-aa6e-45f8-bba4-e6290eaa5ca8",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:52:00.097Z",
+    "token": "fake-token-5e29644f9a408cd7d0b319b4834f61787f677aab",
+    "idempotencyKey": "ee7607ac-f0d7-44bf-9093-2e9a97316aec",
+    "h3Cell": "8728340f4ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "53f0e9f2-4d37-4b05-b134-597652557bfc",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:03:04.815Z",
+    "token": "fake-token-b885625d25ae5e597156b5ce52624e036b6aaebe",
+    "idempotencyKey": "03f5a153-af96-4358-9c72-871023cd3d6a",
+    "h3Cell": "8728340f6ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "f5ad35f4-def1-4cee-832e-c73845d50d7a",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:34:57.054Z",
+    "token": "fake-token-c6b7202877aa5ef604b10394977298db29ad91f5",
+    "idempotencyKey": "a06f691c-72e1-4628-aa6a-031a361bf01b",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "29b0219a-9884-481f-b7e3-558c908bcaef",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:03:43.810Z",
+    "token": "fake-token-aeb85c33e3317881e31b56c7f08c478668d423fa",
+    "idempotencyKey": "21a2a60e-24cf-480f-8fba-a266714b6407",
+    "h3Cell": "8728340f4ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "e8ccf088-c196-43b0-b6ae-e42055f10a06",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:55:23.660Z",
+    "token": "fake-token-aae0c51261f6ca091b2c95c248ef8138fdd29f24",
+    "idempotencyKey": "527791b7-2367-454c-8cd6-2b9d5e0ea720",
+    "h3Cell": "8728340a8ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "0ef65b0a-c953-49fa-be88-a1f7a974b724",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:04:32.887Z",
+    "token": "fake-token-ba1bf2ac16d92ca76ff69722648f4ac2bef03f7a",
+    "idempotencyKey": "c92ead27-8852-4241-a148-2249482d75c3",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "26ba5dfb-cff8-463d-b778-5045d4cbb72d",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:32:25.211Z",
+    "token": "fake-token-d18c6174a9908e1976622ba648440f2b1e459a07",
+    "idempotencyKey": "ad23b741-6181-4af9-adfd-24e2467ab297",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "3e456ea0-55a8-4bcd-af3c-36691aceefa7",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:09:09.840Z",
+    "token": "fake-token-f4e9a2a02713aac41730e80aa5f68a572d009123",
+    "idempotencyKey": "68d1da3b-92be-450d-ace0-819370101b79",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "a177e68c-8df2-4891-b889-fc8bfa8e6b35",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:33:42.755Z",
+    "token": "fake-token-efe340f55881ef8a57b51918d2f1a3a943e8afeb",
+    "idempotencyKey": "e5877da7-a7d1-494a-a263-d0b5926884e9",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "477900e3-2cfb-4436-8ee2-43ff88201711",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:36:27.234Z",
+    "token": "fake-token-50801677a4f5e597dea7dd355db76eb0810b3c1d",
+    "idempotencyKey": "98a0c5d1-4bec-4245-a997-4dfc3b90cac0",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "f6cf71f0-f0a2-4bbd-8320-63a97f5fb200",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:51:25.850Z",
+    "token": "fake-token-d6d1d724623216042faf2308b71f916f34d9a542",
+    "idempotencyKey": "c6e188f1-440c-49aa-b1f4-840c85ef110c",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "2aa4b84a-d670-40be-9750-bad82e362a67",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:49:03.273Z",
+    "token": "fake-token-a67f750c48de0392505df041c8655bfcaff98dfd",
+    "idempotencyKey": "386eeed7-b10f-4c0f-af35-1321723ff5f7",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "bbda4e4b-01b3-4a75-8aa7-d2a8a28c3fd4",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:32:33.335Z",
+    "token": "fake-token-f58bea81c115fe966fb69f9ef8b3d7494bc3dee6",
+    "idempotencyKey": "9ebadcad-1cb5-445d-b5ea-f2d11013e1ec",
+    "h3Cell": "8728340f4ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "dcdde2a7-a2e3-4a03-a20d-0154b1d2eb5e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:08:26.196Z",
+    "token": "fake-token-1a2898e8c89882038e64c64b574ac5608a42e47c",
+    "idempotencyKey": "509ff20c-0658-48fc-9cbf-34684c86d9e3",
+    "h3Cell": "8728340f4ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "724c5feb-5e0c-4b40-ae10-df02412e903e",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:24:47.545Z",
+    "token": "fake-token-6fbd33eb34720f8ee5f32a462886042f76553154",
+    "idempotencyKey": "abd0eba3-6440-47b5-bd04-47e8d66f6ba2",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "07091d27-900b-4f54-97f4-c33f7f56c2ea",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:14:57.745Z",
+    "token": "fake-token-564727cc5d2f3ede205ac18d2ed2f5361ce5a984",
+    "idempotencyKey": "9189aa11-0086-4f32-a8d4-6aa1ab55b55d",
+    "h3Cell": "8728340f4ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "2b98d60f-3756-4756-aa53-46d8fa8993ea",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:57:58.717Z",
+    "token": "fake-token-a86cda417b5814d7b5a7164b2ba7eddc6fb609a0",
+    "idempotencyKey": "c1ca0369-45a9-4fd9-94b9-2987dcce72f3",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "baa42cdd-69ec-45f6-b64e-ef82c8fcc548",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:10:39.082Z",
+    "token": "fake-token-6949c6874d4a7f11b98032acf5a8899fddfa43bc",
+    "idempotencyKey": "ac8e57fa-2309-4e0e-9c05-c5d6e07d5944",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "6e91b30b-e6cb-416c-8aff-34ca4ce4188c",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:45:28.866Z",
+    "token": "fake-token-6f08809e2cbed7adaf524338d53eebb906a05fac",
+    "idempotencyKey": "d6036009-0e65-47ea-8cca-1113e6c388a1",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "05f487fb-04e0-4bbe-9fc7-5c294882304c",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:28:22.493Z",
+    "token": "fake-token-25a2f996a5d0d48b4d65c3a60f6316980d5aa16a",
+    "idempotencyKey": "616239e0-32c7-4cc7-a6da-29ff51991cc8",
+    "h3Cell": "8728340f4ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "1d47a959-31a5-4bb2-965d-838c575ac932",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:54:46.847Z",
+    "token": "fake-token-3d538388cafd072c30be0b2b39357f2ade8638f2",
+    "idempotencyKey": "900b3d00-c42c-4848-a1a3-cc5bb5763767",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "487053b3-d02e-4996-b6fb-c0b51b22d10f",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:20:11.267Z",
+    "token": "fake-token-253594f2b4c7412a6e6f8d0c969f553ab02f256f",
+    "idempotencyKey": "86f5c2d1-46a6-4847-818d-3f1502f94baf",
+    "h3Cell": "8728340f4ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "b3cd0719-eaa2-405c-bb99-8ba8c91435ca",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:37:23.356Z",
+    "token": "fake-token-146524b9758c22de66529a83a507d1f51cc10456",
+    "idempotencyKey": "d324d1b8-c976-4622-a9d8-d5d8060b76db",
+    "h3Cell": "8728340f6ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "56f6a1d6-86d8-418c-a525-c5b90acd979b",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:24:29.318Z",
+    "token": "fake-token-eaa4174e576688c890e095e35b79d4a5caa93655",
+    "idempotencyKey": "b44ef011-e553-4c7f-9df9-0b9543f4d866",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "5e0d0737-7521-460b-881c-df28f76df26a",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:13:32.795Z",
+    "token": "fake-token-95ba261d5ff241cd942f1ba52bb5c1f52e35f21e",
+    "idempotencyKey": "d24ae044-ce21-46de-a6ff-8ce16b84ad11",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "18de8e82-ab94-4c06-8e57-f136dc065c5c",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:36:36.626Z",
+    "token": "fake-token-1ecab83ec5db0ddd916facec7181447be22ee3eb",
+    "idempotencyKey": "d05feca9-4613-4ad1-8219-be0c29efc441",
+    "h3Cell": "8728340f6ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "e4563351-d324-4cfc-b514-bd3e4bceac23",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:00:58.216Z",
+    "token": "fake-token-0465908c4e7698a899f68624d7a9a7284ebfb6f5",
+    "idempotencyKey": "9d43bdb8-d66b-4a6d-b87a-8007f2404f62",
+    "h3Cell": "8728340f6ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "1c43acce-3d4f-4140-b15a-1b180aaad5ab",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:57:31.237Z",
+    "token": "fake-token-5f96d5f91433a590efba499d31f8c3cc481c1eb0",
+    "idempotencyKey": "9f55f82b-116a-4d4b-be31-d3c0c891886e",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "b154b886-c968-4099-a78e-06f79cb17973",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:11:07.818Z",
+    "token": "fake-token-63402faeb21820c2295393d599c093fa53e8ea76",
+    "idempotencyKey": "f2d3fdd8-0d9c-4eee-a345-01f8fb34a7ad",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "9c1fa13e-3bc3-4e2a-bda7-58c47a74c429",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:56:19.475Z",
+    "token": "fake-token-2602c345914af94b018c682a16ad51e328836909",
+    "idempotencyKey": "107108a7-bbee-43f0-8abb-af6d0c30a826",
+    "h3Cell": "8728340abffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "083836e0-4bfe-4355-888a-d33495886774",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:35:07.573Z",
+    "token": "fake-token-974e8408a409e4272e3a91f5b15eff25654199e5",
+    "idempotencyKey": "cd283f00-66a1-44da-898f-9f17b70253d6",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "bed56697-66da-493d-bba4-36859d41efe8",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:47:18.866Z",
+    "token": "fake-token-bd6e762d236a5ce7b84391c69d1b5d9618b62b1d",
+    "idempotencyKey": "83ee7234-2b25-4b12-baf3-e160e4ba337d",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "a3aead0d-ac56-4ce1-9edf-d6e3cfd87315",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:03:00.428Z",
+    "token": "fake-token-f14fc1bf4801508f0430830ac2530860f15dce77",
+    "idempotencyKey": "53bfbd3c-2b33-45a3-aa6b-0fe5a7538cc9",
+    "h3Cell": "8728340f4ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "2e1a6230-53f5-4f4f-b17b-602a4c425fd3",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:40:45.150Z",
+    "token": "fake-token-32490e90e7d518130f381bf65d70abee318a647a",
+    "idempotencyKey": "2495d43d-b4c9-48eb-8b00-8abd092cbf2d",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "538f4970-5dea-4f4e-8991-22b7c921f961",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:33:22.417Z",
+    "token": "fake-token-35c1bcda6df031ee056631cbaf90dd89b3fb0390",
+    "idempotencyKey": "0723466a-7fff-4815-a9e9-46409df5211e",
+    "h3Cell": "8728340a8ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "80d05191-6d87-4f9a-80c3-9df939823a76",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:44:17.711Z",
+    "token": "fake-token-77a45f5f60570fd50cc817ea4c39a0be1ddce0b4",
+    "idempotencyKey": "c8817427-6db1-407c-814c-2ab400667287",
+    "h3Cell": "8728340f4ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "a942c72f-bf35-4d0d-8b47-96fb39fa8386",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:49:36.043Z",
+    "token": "fake-token-8461c2067815c82ea34121685306c96213f161cd",
+    "idempotencyKey": "f6cdfcd1-264b-4728-aa04-184c984c3de1",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "c71730e6-a474-4f23-93f8-f703c6a34b95",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:45:51.732Z",
+    "token": "fake-token-cf65c17183cc6959be5ed9f0e4b57ff32ba4e476",
+    "idempotencyKey": "3fed31a7-09b7-4593-9578-18098f7ffa46",
+    "h3Cell": "8728340f4ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "7a6ada84-293f-49c3-a006-73da576355f5",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:47:24.388Z",
+    "token": "fake-token-6146b011b4e33014304cca1ac790b3b0b4dc3d9f",
+    "idempotencyKey": "a8fe6d4e-9c70-405e-be28-c65dccb6c69e",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "8f251724-65b8-465a-8c89-4b2ad775567c",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:38:41.599Z",
+    "token": "fake-token-82cdee1bd48e2fc8a42cf5ea99a8d7bc0d546e16",
+    "idempotencyKey": "a2e1a59a-9035-48db-b9c6-e561d04a0e19",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "9a83282b-0346-44d0-8f65-ba4da7c902de",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:26:09.575Z",
+    "token": "fake-token-82923d58adca7bfd978aa54a9cb170af60bdc5bb",
+    "idempotencyKey": "0fcb0226-f30e-413c-bbd3-0413d5c4dd82",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "c49cfcfd-6783-4292-a9f4-a60dae194795",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T23:43:53.959Z",
+    "token": "fake-token-7a9f5cadf90fc8ac4e9bdfd12a8ab48264cf6e0e",
+    "idempotencyKey": "9c3a3bd8-496d-4031-afa9-abda4eaa8da3",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "dd50889e-cbe1-4fe0-bf1c-b20da721001a",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:51:20.050Z",
+    "token": "fake-token-837e174a53fed2049df982b06cc8100a0679e0b4",
+    "idempotencyKey": "d01b5f71-8939-49a3-9bd8-339a7f922d4e",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "e8187244-8220-4d0e-ace9-c2092c21556a",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:32:11.786Z",
+    "token": "fake-token-502ec9ea75661d49b1e29b5f8588acb363c7cedd",
+    "idempotencyKey": "34174c6f-6826-41d4-8566-baf92617cc58",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "8d92d4cf-d946-4802-a3b5-7a58d8d321ab",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:07:47.231Z",
+    "token": "fake-token-9d6e7930cfa4a98c30bd6b09d13b73d7eeffdf02",
+    "idempotencyKey": "354b68f0-bc31-4244-a517-2503537f56c3",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "f04ee949-07c5-4587-ac77-666a65378044",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:44:32.255Z",
+    "token": "fake-token-148e38302afbb779727d336072274af0e3889d82",
+    "idempotencyKey": "b91a8d7f-d4d9-41d2-9e31-20600f9ac7d2",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "59bd9c7b-2ab5-497d-9cae-c0433259d306",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:58:43.887Z",
+    "token": "fake-token-6c43bb43a9110d53fb3b56525fd2715db8b7aa75",
+    "idempotencyKey": "880e2895-2067-454d-8248-c02e5cfd5ecb",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "d9ac46f4-185e-4f11-a31b-a82add640f39",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:20:49.498Z",
+    "token": "fake-token-2dbdceb844c2a1da925746203e047c7c8b625c48",
+    "idempotencyKey": "a8af65a2-fccd-48cf-a1ca-cb717f9c5d0d",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "46b69efd-500d-4dce-9347-c50135c5be95",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:24:15.213Z",
+    "token": "fake-token-da46d52eca649d3cb4ff4d7765375a865855e701",
+    "idempotencyKey": "b4cd3485-1844-4e8b-82e2-ba322e2c81a9",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "cb0e2795-3bc3-4c52-b3d3-6705b10c8a9c",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:18:25.465Z",
+    "token": "fake-token-e39cda65c414da6e41469538b558b206d621d3e3",
+    "idempotencyKey": "7d1f6540-3127-45d4-9a92-7d3cf1b9cb1d",
+    "h3Cell": "8728340f4ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "2b53203d-babb-4d9b-b561-7424db2ebd0c",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:52:59.745Z",
+    "token": "fake-token-4aace8ea0f9a1e05d716cf130f1f51dd3ba77348",
+    "idempotencyKey": "b849cd1b-0968-4b3c-acb7-37bf6d78a294",
+    "h3Cell": "8728340abffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "31e3a180-29f7-43ea-b89d-ed1b19fa30f9",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:32:44.781Z",
+    "token": "fake-token-9af68ac4c81ce5fb92512b4fa025312b5e4db9e0",
+    "idempotencyKey": "0a01eb9a-89b5-44ed-a1a6-c9ddf1745cd5",
+    "h3Cell": "8728340f6ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "4e9c87ed-dfff-4f5b-bf5f-df15e4feb6f5",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:49:05.576Z",
+    "token": "fake-token-83db778676ae514bd42df71f47574e3772863208",
+    "idempotencyKey": "d51d74f8-90f7-4ad5-83a5-5f9316c0de7e",
+    "h3Cell": "8728340f4ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "9184a7de-ceb0-4035-b84c-3fdce53b449f",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:10:32.077Z",
+    "token": "fake-token-b2512d5759c735084a6f44d5aaa0ecf489905555",
+    "idempotencyKey": "9d33caec-9213-4065-81b0-5c17c646ccd1",
+    "h3Cell": "8728340a8ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "4a443be4-2d62-4afd-9d4a-bd375c4fc299",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:16:58.171Z",
+    "token": "fake-token-288341584c02b6090de839b3643ca8e65428e690",
+    "idempotencyKey": "4ead4e59-ceef-41c1-b1be-a46068a26c43",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "fa84cfdc-4689-4d9e-b334-e74652cd5c05",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:11:15.535Z",
+    "token": "fake-token-0a4af3b1b1c05859af9f6992a1d75cb4f42ce3a8",
+    "idempotencyKey": "fc786bdd-8e52-468d-b6c7-0f89bfc8bcbd",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "16ef563d-b406-4841-9d54-912c0e1afe7a",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T22:26:07.601Z",
+    "token": "fake-token-f602b18e9bc94c451d597dabddd93fbfe91ede47",
+    "idempotencyKey": "a499d1d1-8a9c-49aa-83e1-e4398f56ee9c",
+    "h3Cell": "8728340a8ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "60fd35b5-6b85-4667-a422-861e0a484d0d",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T18:40:00.478Z",
+    "token": "fake-token-f905a826ed9740e5371de895fb45328194df4981",
+    "idempotencyKey": "eb03a26b-000d-46c2-8d14-a1155fa04205",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "cb28cb10-b58a-4ff9-89d3-8aff2ae829a4",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:10:53.378Z",
+    "token": "fake-token-4481371e2fbae14349d4e44b382cf2c13d80580e",
+    "idempotencyKey": "6714bd90-4e1b-4171-93c4-120c9a09201d",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "508dfc35-d931-49f3-8f2c-2eb461f15714",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:02:36.833Z",
+    "token": "fake-token-e9ffe09c1ecd0b90effd8060c58a6ef6facacd22",
+    "idempotencyKey": "36a08ed5-455b-4656-80f2-60ce643f1acd",
+    "h3Cell": "8728340a9ffffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "dead181f-9b54-4e49-b09b-2483eedf0338",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T20:56:43.518Z",
+    "token": "fake-token-380561c77bdb768989cada3b34d429c340f4be89",
+    "idempotencyKey": "f1d545ff-5fbc-4012-b889-a4c1873d717d",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "2ef503cd-afc3-42d0-add1-c72ac4ae9fee",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T21:10:14.535Z",
+    "token": "fake-token-c98fade44f494bc63f4b1729b68c4a7247d5a49c",
+    "idempotencyKey": "b02dedd2-210f-458e-835f-ac3e32b159c6",
+    "h3Cell": "87283401affffff"
+  },
+  {
+    "alertId": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "deviceId": "fa48154e-8752-45a0-8c13-6b98e22f65ca",
+    "status": "ok",
+    "checkedInAt": "2026-12-10T19:54:41.756Z",
+    "token": "fake-token-0c21b81e2a0fb54fe72a1e2495bf49e751270aec",
+    "idempotencyKey": "81689f2b-fa0a-4174-9898-58a16df9bde2",
+    "h3Cell": "8728340f4ffffff"
+  }
+]
