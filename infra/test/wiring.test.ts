@@ -802,9 +802,21 @@ describe('fan-out and sender env contracts', () => {
     senderEnv(all.sender),
     envNamesRead('scale/sender/main.ts'),
     {
-      optional: ['SENDER_CONCURRENCY'],
+      optional: ['SENDER_CONCURRENCY', 'PUBLIC_ALERT_BASE_URL'],
     },
   );
+});
+
+describe('sender CDN base URL', () => {
+  it('PUBLIC_ALERT_BASE_URL is set from publicAlertBaseUrl and absent otherwise', () => {
+    expect(senderEnv(synthAll('dev').sender)).not.toContain('PUBLIC_ALERT_BASE_URL');
+    const t = synthAll('dev', { publicAlertBaseUrl: 'https://alerts.example.org' }).sender;
+    const defs = Object.values(t.findResources('AWS::ECS::TaskDefinition')) as any[];
+    const env = defs[0].Properties.ContainerDefinitions[0].Environment as any[];
+    expect(env.find((e) => e.Name === 'PUBLIC_ALERT_BASE_URL')?.Value).toBe(
+      'https://alerts.example.org',
+    );
+  });
 });
 
 describe('IngestStack fan-out mode and zone pack bucket', () => {

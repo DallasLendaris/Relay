@@ -25,6 +25,8 @@ import { Construct } from 'constructs';
 
 /** URL prefix of the public alert objects (must match backend/src/scale/publish/paths.ts). */
 export const PUBLIC_ALERTS_PATH_PATTERN = '/alerts/v1/*';
+/** Immutable, content-addressed alert documents: cached for up to a year (see publish/paths.ts). */
+export const PUBLIC_ALERT_DOCS_PATH_PATTERN = '/alerts/v1/doc/*';
 
 /**
  * WAF rate limits: requests per IP per 5 minutes (the longest window WAF offers besides 10 min).
@@ -115,6 +117,20 @@ export class EdgeStack extends Stack {
       enableAcceptEncodingBrotli: true,
     });
 
+    // Documents never change under their key (the key carries a hash of the version), so the edge
+    // may keep them for a year: maxTtl must be raised or CloudFront would clamp the origin's
+    // max-age=31536000 to the 1 hour of the policy above.
+    const publicAlertDocsCache = new CachePolicy(this, 'PublicAlertDocsCachePolicy', {
+      minTtl: Duration.days(1),
+      defaultTtl: Duration.days(30),
+      maxTtl: Duration.days(365),
+      enableAcceptEncodingGzip: true,
+      enableAcceptEncodingBrotli: true,
+    });
+
+    // One origin object for both behaviors, so there is one Origin Access Control.
+    const publicAlertsOrigin = S3BucketOrigin.withOriginAccessControl(this.publicAlertsBucket);
+
     this.distribution = new Distribution(this, 'Distribution', {
       comment: `relay-${props.stage} edge`,
       webAclId: this.webAcl.attrArn,
@@ -140,9 +156,17 @@ export class EdgeStack extends Stack {
         originRequestPolicy: OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
         viewerProtocolPolicy: ViewerProtocolPolicy.HTTPS_ONLY,
       },
+      // CloudFront matches behaviors in this order, so the specific doc path goes first.
       additionalBehaviors: {
+        [PUBLIC_ALERT_DOCS_PATH_PATTERN]: {
+          origin: publicAlertsOrigin,
+          allowedMethods: AllowedMethods.ALLOW_GET_HEAD,
+          cachePolicy: publicAlertDocsCache,
+          compress: true,
+          viewerProtocolPolicy: ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        },
         [PUBLIC_ALERTS_PATH_PATTERN]: {
-          origin: S3BucketOrigin.withOriginAccessControl(this.publicAlertsBucket),
+          origin: publicAlertsOrigin,
           allowedMethods: AllowedMethods.ALLOW_GET_HEAD,
           cachePolicy: publicAlertsCache,
           compress: true,

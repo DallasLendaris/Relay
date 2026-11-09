@@ -27,6 +27,16 @@ if (modeCtx !== undefined && modeCtx !== 'queue' && modeCtx !== 'inline') {
   throw new Error(`fanoutMode must be "queue" or "inline", got "${String(modeCtx)}"`);
 }
 
+// CDN origin for the alert documents the sender links in pushes: -c publicAlertBaseUrl=https://...
+// Unset: pushes carry no alertUrl and phones open alerts through the API.
+const publicAlertBaseUrl = app.node.tryGetContext('publicAlertBaseUrl');
+if (
+  publicAlertBaseUrl !== undefined &&
+  !/^https:\/\/[^/\s]+\/?$/.test(String(publicAlertBaseUrl))
+) {
+  throw new Error('publicAlertBaseUrl must be an https origin such as https://alerts.example.org');
+}
+
 // Capacity settings from context, e.g. -c auroraMaxAcu=32 -c apiReservedConcurrency=3000.
 // Prod reserves concurrency by default, sized from -c lambdaConcurrencyQuota (default 1000, the
 // AWS default; raise the real quota first, see docs/scale-quotas.md). Dev stays unreserved.
@@ -83,5 +93,6 @@ buildRelayApp(app, {
   env,
   edgeEnv,
   ...(throttle ? { throttle } : {}),
+  ...(publicAlertBaseUrl ? { publicAlertBaseUrl: String(publicAlertBaseUrl) } : {}),
   ...(modeCtx ? { fanoutMode: modeCtx as 'queue' | 'inline' } : {}),
 });

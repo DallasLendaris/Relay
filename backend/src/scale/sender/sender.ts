@@ -44,6 +44,7 @@ import {
   type SendQueue,
 } from '../contracts.js';
 import { errorFields } from '../../delivery/redact.js';
+import { publicAlertDocUrl } from '../publish/paths.js';
 import { PermanentBreaker } from './breaker.js';
 import { DeadTargetQueue } from './dead-target-queue.js';
 import { consoleMetricWriter, emfLine, type MetricWriter } from './metrics.js';
@@ -113,6 +114,12 @@ export interface SenderDeps {
   random?: () => number;
   /** Sub-chunks in flight per batch. Default 8. */
   chunkConcurrency?: number;
+  /**
+   * CDN origin (env PUBLIC_ALERT_BASE_URL, e.g. https://dxxxx.cloudfront.net). When set, every
+   * push carries `data.alertUrl`, the cell-free alert document, so phones open the alert from the
+   * CDN instead of the API. Unset: the field is left out and the app uses the API.
+   */
+  publicAlertBaseUrl?: string;
 }
 
 export type BatchReason =
@@ -198,16 +205,27 @@ async function loadEligible(batch: SendBatch, deps: SenderDeps, now: Date): Prom
   return { alert };
 }
 
-function buildMessages(batch: SendBatch, alert: Alert, now: Date): NativePushMessage[] {
+export function buildMessages(
+  batch: SendBatch,
+  alert: Alert,
+  now: Date,
+  publicAlertBaseUrl?: string,
+): NativePushMessage[] {
   const policy = PUSH_POLICY[alert.relaySeverity];
   const end = alertEndTime(alert);
   const ttlSeconds = Math.max(1, Math.floor((end.getTime() - now.getTime()) / 1000));
   const text = { en: alertPushText(alert, 'en'), es: alertPushText(alert, 'es') };
+  const alertUrl = publicAlertDocUrl(publicAlertBaseUrl, alert);
   return batch.recipients.map((r) => ({
     target: r.target,
     title: text[r.language].title,
     body: text[r.language].body,
-    data: { alertId: alert.id, checkInToken: r.checkInToken, expiresAt: end.toISOString() },
+    data: {
+      alertId: alert.id,
+      checkInToken: r.checkInToken,
+      expiresAt: end.toISOString(),
+      ...(alertUrl ? { alertUrl } : {}),
+    },
     priority: policy.priority,
     sound: policy.sound !== null,
     collapseKey: alert.id,
@@ -364,7 +382,7 @@ export async function processBatch(
       return outcome(false, 'paused');
     }
 
-    const messages = buildMessages(batch, alert, now);
+    const messages = buildMessages(batch, alert, now, deps.publicAlertBaseUrl);
     const results = await sendAll(messages, deps, batch.batchKey, control);
 
     // The lease went away or shutdown began while sending: settle nothing.

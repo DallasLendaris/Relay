@@ -105,6 +105,19 @@ describe('EdgeStack: CloudFront behaviors', () => {
     expect(b.CachePolicyId.Ref).toMatch(/^PublicAlertsCachePolicy/);
   });
 
+  it('serves /alerts/v1/doc/* from S3 with a one-year cache, matched before /alerts/v1/*', () => {
+    const cfg = dist();
+    const patterns = cfg.CacheBehaviors.map((x: any) => x.PathPattern);
+    expect(patterns.indexOf('/alerts/v1/doc/*')).toBeGreaterThanOrEqual(0);
+    expect(patterns.indexOf('/alerts/v1/doc/*')).toBeLessThan(patterns.indexOf('/alerts/v1/*'));
+    const b = cfg.CacheBehaviors.find((x: any) => x.PathPattern === '/alerts/v1/doc/*');
+    expect(b.AllowedMethods).toEqual(['GET', 'HEAD']);
+    expect(b.CachePolicyId.Ref).toMatch(/^PublicAlertDocsCachePolicy/);
+    edge.hasResourceProperties('AWS::CloudFront::CachePolicy', {
+      CachePolicyConfig: Match.objectLike({ MaxTTL: 31536000 }),
+    });
+  });
+
   it('routes everything else to the HTTP API uncached with all viewer headers except Host', () => {
     const cfg = dist();
     const d = cfg.DefaultCacheBehavior;

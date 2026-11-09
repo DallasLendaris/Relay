@@ -14,7 +14,10 @@ export type Templates = { [K in keyof Stacks]: Template };
 const cache = new Map<string, { stacks: Stacks; templates: Templates }>();
 
 type Options = Partial<
-  Pick<RelayAppOptions, 'throttle' | 'fanoutMode' | 'capacity' | 'monitoring'>
+  Pick<
+    RelayAppOptions,
+    'throttle' | 'fanoutMode' | 'capacity' | 'monitoring' | 'publicAlertBaseUrl'
+  >
 >;
 
 export function synthApp(stage: 'dev' | 'prod' = 'dev', options: Options = {}) {

@@ -26,6 +26,8 @@ export interface RelayAppOptions {
   edgeEnv: Environment;
   throttle?: { rateLimit: number; burstLimit: number };
   fanoutMode?: FanoutMode;
+  /** CDN origin the sender puts in push data (PUBLIC_ALERT_BASE_URL); bin/relay.ts reads `-c publicAlertBaseUrl`. */
+  publicAlertBaseUrl?: string;
   /** Capacity settings (bin/relay.ts reads them from CDK context). All optional; see each stack. */
   capacity?: {
     /** Aurora max ACU (default prod 16, dev 2). */
@@ -205,6 +207,7 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     cellIndexTableArn: fanout.cellIndexTableArn,
     alertKeysSecretArn: config.alertKeysSecretArn,
     ...killSwitch,
+    ...(o.publicAlertBaseUrl ? { publicAlertBaseUrl: o.publicAlertBaseUrl } : {}),
   });
   const edge = new EdgeStack(app, id('edge'), {
     env: edgeEnv,

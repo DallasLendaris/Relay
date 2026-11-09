@@ -10,8 +10,9 @@ issued by mistake, it is wrong, or the agency has withdrawn it and Relay did not
 1. Loads the stored alert and sets its `state` to `cancelled`.
 2. Drops the alert's summaries (a cancelled alert never reads "in effect").
 3. Re-signs it with the current alert signing key (the signing store does this on every save).
-4. Republishes the public JSON: `alerts/v1/<id>.json` now says `cancelled`, and the alert leaves
-   the shard indexes (`alerts/v1/active/<shard>.json`) that phones read.
+4. Republishes the public objects: a new document `alerts/v1/doc/<id>/<hash>.json` that says
+   `cancelled` (the old document is never changed), the pointer `alerts/v1/latest/<id>.json` now
+   naming it, and the alert leaves the shard indexes (`alerts/v1/active/<shard>.json`).
 5. Writes one structured log line, `alert.recalled`, with the alert id, NWS id, event, previous
    state and your reason. That line is the audit trail. The reason is not stored on the alert.
 
@@ -48,8 +49,10 @@ PUBLIC_ALERTS_BUCKET=...  PUBLIC_ALERTS_REGION=...
    `npx tsx backend/scripts/alert-recall.ts <alert-id> --reason "Issued for wrong county" --dry-run`
 3. Run it for real, without `--dry-run`. It prints a JSON result with `ok`, `previousState`
    and `republished`.
-4. Check the public copy: `alerts/v1/<alert-id>.json` in the public bucket has `"state":"cancelled"`
-   (CloudFront may serve the old copy until its cache expires; the cache time is short).
+4. Check the public copy: `alerts/v1/latest/<alert-id>.json` in the public bucket has
+   `"state":"cancelled"` and its `doc` path opens a document with the same state. CloudFront may
+   serve the old pointer for at most 75 seconds (max-age 15 s plus stale-while-revalidate 60 s).
+   Old documents stay in the bucket and in phones' caches by design; they are immutable.
 
 If `PUBLIC_ALERTS_BUCKET` is not set, the stored alert is cancelled but nothing is republished;
 the script warns about this.

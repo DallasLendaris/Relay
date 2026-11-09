@@ -4,7 +4,8 @@
  *
  * Env: URGENT_QUEUE_URL, STANDARD_QUEUE_URL, IDEMPOTENCY_TABLE, CELL_INDEX_TABLE, DB_CLUSTER_ARN,
  * DB_SECRET_ARN, DB_NAME, ALERT_KEYS_SECRET_ARN, KILL_SWITCH_PARAM, APNS_KEY_SECRET_ARN,
- * FCM_SERVICE_ACCOUNT_SECRET_ARN. Optional: SENDER_CONCURRENCY (default 50).
+ * FCM_SERVICE_ACCOUNT_SECRET_ARN. Optional: SENDER_CONCURRENCY (default 50), PUBLIC_ALERT_BASE_URL
+ * (CDN origin; puts data.alertUrl in every push).
  */
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { RDSDataClient } from '@aws-sdk/client-rds-data';
@@ -124,6 +125,9 @@ async function main(): Promise<void> {
     deadTargets,
     clock: { now: () => new Date() },
     logger,
+    ...(process.env['PUBLIC_ALERT_BASE_URL']
+      ? { publicAlertBaseUrl: process.env['PUBLIC_ALERT_BASE_URL'] }
+      : {}),
     invalidateAlert: (id) => alerts.invalidate(id),
     refreshKeys: async () => {
       clearKeyringCache();

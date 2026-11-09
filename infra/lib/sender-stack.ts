@@ -70,6 +70,11 @@ export interface SenderStackProps extends StackProps {
   alertKeysSecretArn: string;
   killSwitchParamName: string;
   killSwitchParamArn: string;
+  /**
+   * CDN origin for alert documents (e.g. https://alerts.example.org), from `-c publicAlertBaseUrl`.
+   * Becomes PUBLIC_ALERT_BASE_URL; unset means pushes carry no alertUrl and phones use the API.
+   */
+  publicAlertBaseUrl?: string;
 }
 
 /** Fargate stop timeout: the consumer drains for 25 s and main.ts hard-exits at 29 s. */
@@ -231,6 +236,7 @@ export class SenderStack extends Stack {
         KILL_SWITCH_PARAM: props.killSwitchParamName,
         APNS_KEY_SECRET_ARN: apnsSecret.secretArn,
         FCM_SERVICE_ACCOUNT_SECRET_ARN: fcmSecret.secretArn,
+        ...(props.publicAlertBaseUrl ? { PUBLIC_ALERT_BASE_URL: props.publicAlertBaseUrl } : {}),
       },
     });
 
