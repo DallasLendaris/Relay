@@ -1,8 +1,11 @@
 import { AlertSchema, isPds, relaySeverityFor } from '@relay/shared';
 import type { Alert } from '@relay/shared';
+import { validateGeometry } from '../geo/validate-geometry.js';
 
+/** `permanent` marks a rejection that retrying can never fix (logged at error level by the poller). */
 export type NormalizeResult =
-  { ok: true; alert: Alert } | { ok: false; reason: string; sourceId: string | null };
+  | { ok: true; alert: Alert }
+  | { ok: false; reason: string; sourceId: string | null; permanent?: true };
 
 const URL_PREFIX = 'https://api.weather.gov/alerts/';
 
@@ -118,8 +121,30 @@ export function normalizeFeature(
     const geocode = isObj(p['geocode']) ? p['geocode'] : {};
     const eventCodes = isObj(p['eventCode']) ? p['eventCode'] : {};
     const geometry = feature['geometry'];
-    const keepGeometry =
-      isObj(geometry) && (geometry['type'] === 'Polygon' || geometry['type'] === 'MultiPolygon');
+    const ugcCodes = strList(geocode['UGC']);
+    let keepGeometry = false;
+    if (
+      isObj(geometry) &&
+      (geometry['type'] === 'Polygon' || geometry['type'] === 'MultiPolygon')
+    ) {
+      const check = validateGeometry(geometry);
+      if (check.ok) {
+        keepGeometry = true;
+      } else if (ugcCodes.length > 0) {
+        // Broken polygon but the zones are listed: match by zone instead of failing the alert.
+        opts.warn?.('invalid geometry dropped, using UGC zones', {
+          sourceId,
+          reason: check.reason,
+        });
+      } else {
+        return {
+          ok: false,
+          sourceId,
+          permanent: true,
+          reason: `permanent: invalid_geometry: ${check.reason}`,
+        };
+      }
+    }
 
     const damageThreat = damageThreatFor(event, p['parameters']);
     const pds = isPds(event, damageThreat);
@@ -144,7 +169,7 @@ export function normalizeFeature(
       area: {
         description: str(p['areaDesc']) ?? '',
         geometry: keepGeometry ? geometry : null,
-        ugcCodes: strList(geocode['UGC']),
+        ugcCodes,
         sameCodes: strList(geocode['SAME']),
         h3Cells: [], // filled later by the matching step
       },

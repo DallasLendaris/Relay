@@ -36,7 +36,7 @@ The engine went through three independent safety reviews. Every confirmed findin
 
 ## How an alert flows
 
-1. Every minute, EventBridge triggers the ingest Lambda, which polls NWS about every 12 seconds within one run.
+1. Every minute, EventBridge triggers the ingest Lambda, which polls NWS twice per run, 30 seconds apart (the NWS minimum; the poller keeps its own spacing, honors `Retry-After` and backs off on 429/503). Features of one response are processed concurrently, but one alert chain stays in order.
 2. The raw response is archived to S3.
 3. Each feature is normalized and validated. Only `Actual` alerts are kept.
 4. The alert area becomes H3 cells (resolution 7).

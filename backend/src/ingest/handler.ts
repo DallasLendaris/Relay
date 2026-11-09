@@ -1,6 +1,6 @@
 /**
- * Ingest Lambda. EventBridge fires it every minute; it polls NWS several times
- * (about every 12 s) before returning. buildHandler takes the engine pieces
+ * Ingest Lambda. EventBridge fires it every minute; it polls NWS twice (every 30 s, the NWS
+ * recommended minimum, never faster) before returning. buildHandler takes the engine pieces
  * (see pipeline.ts); `handler` at the bottom wires the real AWS dependencies.
  */
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -18,14 +18,14 @@ import { PostgresPlaceStore } from '../adapters/postgres/place-store.js';
 import { createKillSwitch } from '../config/kill-switch.js';
 import { loadKeyring } from '../config/secrets.js';
 import { DataApiExecutor } from '../db/sql.js';
-import { createNwsClient } from './nws-client.js';
+import { MIN_POLL_INTERVAL_MS, createNwsClient, sharedGate } from './nws-client.js';
 import { createIngestPipeline, type PipelineDeps } from './pipeline.js';
 import { pollLoop, type PollCounts, type PollDeps } from './poll.js';
 
 /** The parts of PollDeps that the caller supplies. */
 export type EngineDeps = Pick<
   PollDeps,
-  'normalize' | 'parseFeed' | 'apply' | 'cellsFor' | 'onApplied' | 'reconcile'
+  'normalize' | 'parseFeed' | 'apply' | 'cellsFor' | 'onApplied' | 'reconcile' | 'flush'
 >;
 
 export interface HandlerEnv {
@@ -63,6 +63,38 @@ export function positiveNumber(
   return fallback;
 }
 
+/** Default seconds between polls: NWS asks for no more than one request per 30 s per URL. */
+export const DEFAULT_POLL_INTERVAL_SECONDS = 30;
+/** Default polls per (per-minute) invocation: at 0 s and 30 s. A third would overlap the next run. */
+export const DEFAULT_POLLS_PER_INVOCATION = 2;
+
+/** The configured poll interval in ms, never below the NWS minimum (a lower value is raised, with a warning). */
+export function resolvePollIntervalMs(raw: string | undefined): number {
+  const ms =
+    positiveNumber(raw, DEFAULT_POLL_INTERVAL_SECONDS, 'POLL_INTERVAL_SECONDS', false) * 1000;
+  if (ms >= MIN_POLL_INTERVAL_MS) return ms;
+  console.warn(
+    JSON.stringify({
+      level: 'warn',
+      msg: 'POLL_INTERVAL_SECONDS is below the NWS minimum; raised to 30',
+      raw,
+      minSeconds: MIN_POLL_INTERVAL_MS / 1000,
+    }),
+  );
+  return MIN_POLL_INTERVAL_MS;
+}
+
+/** NWS requires a User-Agent that says who to contact. Warns (does not throw) when none is visible. */
+export function warnIfNoContact(userAgent: string): void {
+  if (/@|https?:\/\//i.test(userAgent)) return;
+  console.warn(
+    JSON.stringify({
+      level: 'warn',
+      msg: 'NWS_USER_AGENT has no contact (email or URL); NWS requires one',
+    }),
+  );
+}
+
 const METRICS = [
   'Accepted',
   'Rejected',
@@ -70,6 +102,8 @@ const METRICS = [
   'Errors',
   'FetchFailed',
   'Quarantined',
+  'UnknownZones',
+  'PublishFailed',
 ] as const;
 
 /**
@@ -97,15 +131,21 @@ export function buildEmf(polls: PollCounts[], now: Date = new Date()): Record<st
     Errors: sum((c) => c.errors),
     FetchFailed: sum((c) => c.fetchFailed),
     Quarantined: sum((c) => c.quarantined),
+    UnknownZones: sum((c) => c.unknownZones),
+    PublishFailed: sum((c) => c.publishFailed),
   };
 }
 
 export function buildHandler(engine: EngineDeps, overrides: HandlerOverrides = {}) {
   return async (_event: unknown, context: LambdaContext): Promise<{ polls: PollCounts[] }> => {
     const env: HandlerEnv = overrides.env ?? process.env;
-    const intervalMs =
-      positiveNumber(env.POLL_INTERVAL_SECONDS, 12, 'POLL_INTERVAL_SECONDS', false) * 1000;
-    const polls = positiveNumber(env.POLLS_PER_INVOCATION, 5, 'POLLS_PER_INVOCATION', true);
+    const intervalMs = resolvePollIntervalMs(env.POLL_INTERVAL_SECONDS);
+    const polls = positiveNumber(
+      env.POLLS_PER_INVOCATION,
+      DEFAULT_POLLS_PER_INVOCATION,
+      'POLLS_PER_INVOCATION',
+      true,
+    );
 
     let base = overrides.base;
     if (!base) {
@@ -113,9 +153,17 @@ export function buildHandler(engine: EngineDeps, overrides: HandlerOverrides = {
       if (!RAW_BUCKET || !STATE_TABLE || !NWS_USER_AGENT) {
         throw new Error('RAW_BUCKET, STATE_TABLE and NWS_USER_AGENT must be set');
       }
+      warnIfNoContact(NWS_USER_AGENT);
       base = {
-        // The client lives for this invocation, so If-None-Match carries across its polls.
-        client: createNwsClient({ fetch, userAgent: NWS_USER_AGENT }),
+        // The client lives for this invocation, so If-None-Match carries across its polls. The
+        // shared gate keeps the 30 s spacing (and any Retry-After backoff) across invocations
+        // that run in the same warm container.
+        client: createNwsClient({
+          fetch,
+          userAgent: NWS_USER_AGENT,
+          minIntervalMs: MIN_POLL_INTERVAL_MS,
+          gate: sharedGate,
+        }),
         archive: new S3RawArchive(new S3Client({}), RAW_BUCKET),
         seen: new DynamoSeenStore(DynamoDBDocumentClient.from(new DynamoDBClient({})), STATE_TABLE),
       };

@@ -25,13 +25,13 @@ describe('IngestStack', () => {
       ReservedConcurrentExecutions: 1,
       Runtime: 'nodejs22.x',
       Architectures: ['arm64'],
-      Timeout: 70,
+      Timeout: 58,
       MemorySize: 1024,
       Environment: {
         Variables: Match.objectLike({
-          NWS_USER_AGENT: 'Relay capstone (contact via GitHub DallasLendaris/Relay)',
-          POLL_INTERVAL_SECONDS: '12',
-          POLLS_PER_INVOCATION: '5',
+          NWS_USER_AGENT: 'Relay capstone (https://github.com/DallasLendaris/Relay)',
+          POLL_INTERVAL_SECONDS: '30',
+          POLLS_PER_INVOCATION: '2',
           RAW_BUCKET: Match.anyValue(),
           STATE_TABLE: Match.anyValue(),
         }),
@@ -97,7 +97,16 @@ describe('IngestStack', () => {
       ComparisonOperator: 'GreaterThanOrEqualToThreshold',
       TreatMissingData: 'notBreaching',
     });
-    t.resourceCountIs('AWS::CloudWatch::Alarm', 4); // the original Lambda Errors alarm stays
+    // REL-7: some zones of an alert could not be resolved.
+    t.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      Namespace: 'Relay/Ingest',
+      MetricName: 'UnknownZones',
+      Statistic: 'Sum',
+      Threshold: 1,
+      Period: 300,
+      TreatMissingData: 'notBreaching',
+    });
+    t.resourceCountIs('AWS::CloudWatch::Alarm', 5); // the original Lambda Errors alarm stays
   });
 
   it('retains data and enables PITR on prod, destroys on dev', () => {

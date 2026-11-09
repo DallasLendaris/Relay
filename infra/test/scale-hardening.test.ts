@@ -146,7 +146,7 @@ describe('capacity', () => {
 
   it('ingest has 1024 MB in both stages', () => {
     for (const t of [dev.ingest, prod.ingest]) {
-      t.hasResourceProperties('AWS::Lambda::Function', { MemorySize: 1024, Timeout: 70 });
+      t.hasResourceProperties('AWS::Lambda::Function', { MemorySize: 1024, Timeout: 58 });
     }
   });
 
