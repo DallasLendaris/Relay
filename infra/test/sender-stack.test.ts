@@ -1,7 +1,12 @@
 import { App, Aws } from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
-import { SENDER_MAX_TASKS, SKIP_IMAGE_CONTEXT, SenderStack } from '../lib/sender-stack.js';
+import {
+  SENDER_IDLE_MINUTES_BEFORE_SCALE_IN,
+  SENDER_MAX_TASKS,
+  SKIP_IMAGE_CONTEXT,
+  SenderStack,
+} from '../lib/sender-stack.js';
 
 const queue = (name: string) => ({
   name,
@@ -9,9 +14,9 @@ const queue = (name: string) => ({
   url: `https://sqs.us-west-2.amazonaws.com/111111111111/${name}`,
 });
 
-function synth(stage: 'dev' | 'prod') {
+function synth(stage: 'dev' | 'prod', context: Record<string, string> = {}) {
   // The context flag keeps the Docker image asset out of the test (no hashing the repo, no Docker).
-  const app = new App({ context: { [SKIP_IMAGE_CONTEXT]: 'true' } });
+  const app = new App({ context: { [SKIP_IMAGE_CONTEXT]: 'true', ...context } });
   const stack = new SenderStack(app, `sender-${stage}`, {
     env: { region: 'us-west-2' },
     stage,
@@ -35,6 +40,10 @@ function synth(stage: 'dev' | 'prod') {
 
 const dev = synth('dev');
 const prod = synth('prod');
+// Fleet enabled (context senderEnabled=true): the scaling and DesiredCount tests use these.
+const ON = { senderEnabled: 'true' };
+const devOn = synth('dev', ON);
+const prodOn = synth('prod', ON);
 
 function statements(t: Template): any[] {
   const policies = Object.values(t.findResources('AWS::IAM::Policy')) as any[];
@@ -132,23 +141,56 @@ describe('SenderStack service', () => {
   });
 });
 
+describe('SenderStack gating (placeholder secrets must not crash-loop)', () => {
+  it('without senderEnabled: desiredCount 0 and no auto scaling at all, on dev and prod', () => {
+    for (const t of [dev, prod]) {
+      t.hasResourceProperties('AWS::ECS::Service', { DesiredCount: 0 });
+      t.resourceCountIs('AWS::ApplicationAutoScaling::ScalableTarget', 0);
+      t.resourceCountIs('AWS::ApplicationAutoScaling::ScalingPolicy', 0);
+    }
+  });
+
+  it('with senderEnabled=true: desiredCount is left to auto scaling', () => {
+    for (const t of [devOn, prodOn]) {
+      const [svc] = Object.values(t.findResources('AWS::ECS::Service')) as any[];
+      expect(svc.Properties.DesiredCount).toBeUndefined();
+      t.resourceCountIs('AWS::ApplicationAutoScaling::ScalableTarget', 1);
+    }
+  });
+
+  it('uses stage-derived cluster and service names (the planner builds its ARNs from them)', () => {
+    prod.hasResourceProperties('AWS::ECS::Cluster', { ClusterName: 'relay-prod-sender' });
+    prod.hasResourceProperties('AWS::ECS::Service', { ServiceName: 'relay-prod-sender' });
+    dev.hasResourceProperties('AWS::ECS::Service', { ServiceName: 'relay-dev-sender' });
+  });
+});
+
 describe('SenderStack scaling', () => {
-  it('scales between 1 (prod) / 0 (dev) and 50 tasks', () => {
-    expect(SENDER_MAX_TASKS).toBe(50);
-    prod.hasResourceProperties('AWS::ApplicationAutoScaling::ScalableTarget', {
-      MinCapacity: 1,
-      MaxCapacity: 50,
+  it('prod scales between 10 and 100 tasks, dev between 0 and 10', () => {
+    expect(SENDER_MAX_TASKS).toBe(100);
+    prodOn.hasResourceProperties('AWS::ApplicationAutoScaling::ScalableTarget', {
+      MinCapacity: 10,
+      MaxCapacity: 100,
       ServiceNamespace: 'ecs',
     });
-    dev.hasResourceProperties('AWS::ApplicationAutoScaling::ScalableTarget', {
+    devOn.hasResourceProperties('AWS::ApplicationAutoScaling::ScalableTarget', {
       MinCapacity: 0,
-      MaxCapacity: 50,
+      MaxCapacity: 10,
     });
+  });
+
+  it('prod minimum is configurable with context senderMinTasks, and validated', () => {
+    synth('prod', { ...ON, senderMinTasks: '25' }).hasResourceProperties(
+      'AWS::ApplicationAutoScaling::ScalableTarget',
+      { MinCapacity: 25, MaxCapacity: 100 },
+    );
+    expect(() => synth('prod', { ...ON, senderMinTasks: '500' })).toThrow('senderMinTasks');
+    expect(() => synth('prod', { ...ON, senderMinTasks: 'x' })).toThrow('senderMinTasks');
   });
 
   it('has step scaling on queue depth and age (out) and an idle policy (in)', () => {
     const policies = Object.values(
-      prod.findResources('AWS::ApplicationAutoScaling::ScalingPolicy'),
+      prodOn.findResources('AWS::ApplicationAutoScaling::ScalingPolicy'),
     ) as any[];
     expect(policies).toHaveLength(3); // out on depth, out on age, in when idle
     for (const p of policies) expect(p.Properties.PolicyType).toBe('StepScaling');
@@ -164,23 +206,33 @@ describe('SenderStack scaling', () => {
     // Out is fast (short cooldown); in is slow (long cooldown, many evaluation periods).
     for (const p of outs) expect(steps(p).Cooldown).toBeLessThanOrEqual(60);
     expect(steps(ins[0]).Cooldown).toBeGreaterThanOrEqual(300);
-    // Biggest out step reaches +30 tasks.
+    // Aggressive: the depth policy reaches +50 tasks in one step.
     const biggest = Math.max(
       ...outs.flatMap((p) => steps(p).StepAdjustments.map((a: any) => a.ScalingAdjustment)),
     );
-    expect(biggest).toBeGreaterThanOrEqual(30);
+    expect(biggest).toBeGreaterThanOrEqual(50);
   });
 
-  it('alarms watch SQS depth, urgent age, and idleness', () => {
-    const alarms = Object.values(prod.findResources('AWS::CloudWatch::Alarm')) as any[];
+  it('alarms use 1-minute periods; scale-out reacts after 1 period, scale-in after 15 idle minutes', () => {
+    const alarms = Object.values(prodOn.findResources('AWS::CloudWatch::Alarm')) as any[];
     const text = JSON.stringify(alarms);
     expect(text).toContain('ApproximateNumberOfMessagesVisible');
     expect(text).toContain('ApproximateAgeOfOldestMessage');
     expect(text).toContain('ApproximateNumberOfMessagesNotVisible');
-    const inAlarm = alarms.find((a) => a.Properties.EvaluationPeriods === 10);
+    expect(SENDER_IDLE_MINUTES_BEFORE_SCALE_IN).toBe(15);
+    const inAlarm = alarms.find((a) => a.Properties.EvaluationPeriods === 15);
     expect(inAlarm).toBeDefined();
+    expect(alarms.some((a) => a.Properties.EvaluationPeriods === 10)).toBe(false);
     const outAlarms = alarms.filter((a) => a.Properties.EvaluationPeriods === 1);
     expect(outAlarms.length).toBeGreaterThanOrEqual(2);
+    // Every metric in the scaling alarms is sampled once a minute.
+    const scalingAlarms = [inAlarm, ...outAlarms].filter((a) => a.Properties.Metrics);
+    expect(scalingAlarms.length).toBeGreaterThanOrEqual(2);
+    for (const a of scalingAlarms) {
+      for (const m of a.Properties.Metrics) {
+        if (m.MetricStat) expect(m.MetricStat.Period).toBe(60);
+      }
+    }
   });
 });
 

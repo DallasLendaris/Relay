@@ -5,6 +5,7 @@
  */
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { RDSDataClient } from '@aws-sdk/client-rds-data';
+import { ECSClient } from '@aws-sdk/client-ecs';
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
@@ -13,12 +14,14 @@ import { PostgresAlertStore } from '../../adapters/postgres/alert-store.js';
 import { createKillSwitch } from '../../config/kill-switch.js';
 import { clearKeyringCache, loadKeyring } from '../../config/secrets.js';
 import { DataApiExecutor } from '../../db/sql.js';
+import type { Context } from 'aws-lambda';
 import type { Logger } from '../../delivery/types.js';
 import { createAlertVerifier } from '../../signing/index.js';
 import { createCheckInToken, type TokenKey } from '../../tokens/index.js';
-import type { ShardJob } from '../contracts.js';
 import type { FanoutRefusal } from './common.js';
-import { isAlertReady, isShardJob } from './messages.js';
+import { CachedAlertReader } from './alert-cache.js';
+import { fleetScalerFromEnv } from './fleet-scaler.js';
+import { isAlertReady, isShardJob, type ResumableShardJob } from './messages.js';
 import { DynamoCellReader } from './dynamo-cell-reader.js';
 import { planShards, type PlannerDeps } from './planner.js';
 import {
@@ -62,15 +65,33 @@ export async function runRecords<T>(
   return { batchItemFailures };
 }
 
+/**
+ * 'unsigned' is not final here (the sender retries it too): the alert may be signed with a key
+ * that was rotated in after our keyring cache filled. So: refresh the keys once and try again;
+ * if it is still unsigned, throw so SQS (planner) or Lambda's async retry (shard) tries again
+ * later, and log `fanout.signature_failed` for the alarm-minded.
+ */
+async function retryUnsigned<D extends { logger: Logger }, R extends { refused?: FanoutRefusal }>(
+  ids: { alertId: string; shardId?: string },
+  deps: D,
+  refreshKeys: (() => Promise<D>) | undefined,
+  run: (d: D) => Promise<R>,
+): Promise<R> {
+  let result = await run(deps);
+  if (result.refused === 'unsigned' && refreshKeys) result = await run(await refreshKeys());
+  if (result.refused === 'unsigned') {
+    deps.logger.error('fanout.signature_failed', { ...ids, refreshed: refreshKeys !== undefined });
+    throw new Error(`alert ${ids.alertId} failed signature verification; will retry`);
+  }
+  return result;
+}
+
 export const buildPlannerHandler =
   (deps: PlannerDeps, refreshKeys?: () => Promise<PlannerDeps>) =>
   (event: SQSEvent): Promise<SQSBatchResponse> =>
-    runRecords(event, isAlertReady, async (ready) => {
-      const result = await planShards(ready, deps);
-      if (result.refused !== 'unsigned' || !refreshKeys) return result;
-      // A signature failure may just mean a key was rotated in after our cache filled.
-      return planShards(ready, await refreshKeys());
-    });
+    runRecords(event, isAlertReady, (ready) =>
+      retryUnsigned({ alertId: ready.alertId }, deps, refreshKeys, (d) => planShards(ready, d)),
+    );
 
 /**
  * The shard worker takes a ShardJob two ways:
@@ -80,12 +101,11 @@ export const buildPlannerHandler =
  */
 export const buildShardHandler =
   (deps: ShardWorkerDeps, refreshKeys?: () => Promise<ShardWorkerDeps>) =>
-  async (event: SQSEvent | ShardJob): Promise<SQSBatchResponse | undefined> => {
-    const run = async (job: ShardJob) => {
-      const result = await processShard(job, deps);
-      if (result.refused !== 'unsigned' || !refreshKeys) return result;
-      return processShard(job, await refreshKeys());
-    };
+  async (event: SQSEvent | ResumableShardJob): Promise<SQSBatchResponse | undefined> => {
+    const run = (job: ResumableShardJob) =>
+      retryUnsigned({ alertId: job.alertId, shardId: job.shardId }, deps, refreshKeys, (d) =>
+        processShard(job, d),
+      );
     if ('Records' in event) return runRecords(event, isShardJob, run);
     if (!isShardJob(event)) throw new Error('shard event is not a ShardJob');
     const result = await run(event);
@@ -125,6 +145,7 @@ function alertStore(env: { DB_CLUSTER_ARN: string; DB_SECRET_ARN: string; DB_NAM
 }
 
 /** SHARD_DISPATCH is 'lambda' (default; needs SHARD_FUNCTION_NAME) or 'sqs' (needs SHARD_QUEUE_URL). */
+/** Optional: SCALER_ENV (fleet-scaler.ts) names the pre-scale settings. Off when any is missing. */
 const PLANNER_ENV = [
   'DB_CLUSTER_ARN',
   'DB_SECRET_ARN',
@@ -147,7 +168,13 @@ const SHARD_ENV = [
 
 let planner: Promise<(event: SQSEvent) => Promise<SQSBatchResponse>> | undefined;
 let shard:
-  Promise<(event: SQSEvent | ShardJob) => Promise<SQSBatchResponse | undefined>> | undefined;
+  | Promise<
+      (
+        event: SQSEvent | ResumableShardJob,
+        context?: Pick<Context, 'getRemainingTimeInMillis'>,
+      ) => Promise<SQSBatchResponse | undefined>
+    >
+  | undefined;
 
 /** Lambda invoke by default; SQS when SHARD_DISPATCH=sqs. */
 export function shardDispatcherFromEnv(env: Record<string, string | undefined>): ShardDispatcher {
@@ -161,9 +188,12 @@ export function shardDispatcherFromEnv(env: Record<string, string | undefined>):
 
 function buildPlanner(env: Record<string, string | undefined>) {
   const e = requireEnv(env, PLANNER_ENV);
+  const fleetScaler = fleetScalerFromEnv(env, new ECSClient({}), logger);
   const base = {
-    alerts: alertStore(e),
+    // One cached read per alert per 10 s per warm planner (see alert-cache.ts).
+    alerts: new CachedAlertReader(alertStore(e)),
     shardDispatcher: shardDispatcherFromEnv(env),
+    ...(fleetScaler ? { fleetScaler } : {}),
     isDeliveryPaused: createKillSwitch(e.KILL_SWITCH_PARAM),
     clock,
     logger,
@@ -183,7 +213,14 @@ function buildPlanner(env: Record<string, string | undefined>) {
 function buildShard(env: Record<string, string | undefined>) {
   const e = requireEnv(env, SHARD_ENV);
   const base = {
-    alerts: alertStore(e),
+    alerts: new CachedAlertReader(alertStore(e)),
+    // Continuations go back to this same function: Lambda sets AWS_LAMBDA_FUNCTION_NAME, so the
+    // stack needs no env var that would make the function's configuration refer to itself.
+    continuation: new LambdaShardDispatcher(
+      new LambdaClient({}),
+      env.AWS_LAMBDA_FUNCTION_NAME ?? '',
+      1,
+    ),
     cellIndex: new DynamoCellReader(
       DynamoDBDocumentClient.from(new DynamoDBClient({})),
       e.CELL_INDEX_TABLE,
@@ -207,11 +244,20 @@ function buildShard(env: Record<string, string | undefined>) {
       makeCheckInToken: makeCheckInTokenFor(tokenKeys.current),
     };
   };
-  return async (event: SQSEvent | ShardJob) =>
-    buildShardHandler(await withKeys(), async () => {
+  return async (
+    event: SQSEvent | ResumableShardJob,
+    context?: Pick<Context, 'getRemainingTimeInMillis'>,
+  ) => {
+    const remainingMs = context ? () => context.getRemainingTimeInMillis() : undefined;
+    const timed = async (): Promise<ShardWorkerDeps> => ({
+      ...(await withKeys()),
+      ...(remainingMs ? { remainingMs } : {}),
+    });
+    return buildShardHandler(await timed(), async () => {
       clearKeyringCache();
-      return withKeys();
+      return timed();
     })(event);
+  };
 }
 
 // Clients are built once per container; a failed build is not cached, so the next call retries.
@@ -222,9 +268,10 @@ export const plannerHandler = async (event: SQSEvent): Promise<SQSBatchResponse>
 };
 
 export const shardHandler = async (
-  event: SQSEvent | ShardJob,
+  event: SQSEvent | ResumableShardJob,
+  context?: Pick<Context, 'getRemainingTimeInMillis'>,
 ): Promise<SQSBatchResponse | undefined> => {
   shard ??= Promise.resolve().then(() => buildShard(process.env));
   shard.catch(() => (shard = undefined));
-  return (await shard)(event);
+  return (await shard)(event, context);
 };

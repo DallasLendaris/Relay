@@ -33,6 +33,13 @@ import { Effect, PolicyStatement } from 'aws-cdk-lib/aws-iam';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { Secret } from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
+import {
+  isSenderEnabled,
+  SENDER_MAX_TASKS_PROD,
+  senderClusterName,
+  senderMaxTasks,
+  senderServiceName,
+} from './fanout-stack.js';
 import { dbEnv, type DbRefs } from './grants.js';
 
 /** One SQS queue, passed between stacks as plain strings (like every other prop). */
@@ -60,7 +67,14 @@ export interface SenderStackProps extends StackProps {
 
 /** Fargate stop timeout: the consumer drains for 25 s and main.ts hard-exits at 29 s. */
 export const SENDER_STOP_TIMEOUT_SECONDS = 30;
-export const SENDER_MAX_TASKS = 50;
+/** Prod fleet ceiling. Needs a Fargate vCPU quota of at least this many 1-vCPU tasks (README). */
+export const SENDER_MAX_TASKS = SENDER_MAX_TASKS_PROD;
+/** Prod floor when the fleet is enabled: warm tasks, so an alert never waits for a cold start. */
+export const SENDER_MIN_TASKS_PROD = 10;
+/** Context: override the prod minimum task count (default 10). */
+export const SENDER_MIN_TASKS_CONTEXT = 'senderMinTasks';
+/** Scale in only after this many consecutive idle minutes. */
+export const SENDER_IDLE_MINUTES_BEFORE_SCALE_IN = 15;
 /** Context flag: when "true" the image comes from a public base image instead of building the Dockerfile. */
 export const SKIP_IMAGE_CONTEXT = 'relay:skipSenderImageAsset';
 
@@ -76,9 +90,28 @@ const ASSET_EXCLUDES = [
   'docs',
 ];
 
+/** Prod minimum task count: context senderMinTasks, default 10, an integer from 0 to the maximum. */
+function senderMinTasks(scope: Construct, maxTasks: number): number {
+  const raw = scope.node.tryGetContext(SENDER_MIN_TASKS_CONTEXT);
+  if (raw === undefined) return SENDER_MIN_TASKS_PROD;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0 || n > maxTasks) {
+    throw new Error(`context ${SENDER_MIN_TASKS_CONTEXT} must be an integer from 0 to ${maxTasks}`);
+  }
+  return n;
+}
+
 /**
  * The sender service: long-running Fargate tasks that drain the urgent and standard send queues
  * and push to APNs and FCM. Scaled on queue depth and age.
+ *
+ * Gating: the APNs and FCM secrets are created with placeholder values, and a sender that boots
+ * with them crash-loops (and the circuit breaker would roll the deploy back). So desiredCount is 0
+ * and no auto scaling exists until the context flag senderEnabled=true. Order for a first deploy:
+ *   1. deploy without the flag (secrets and everything else are created, fleet at 0)
+ *   2. put the real APNs and FCM values into the two secrets
+ *   3. deploy again with -c senderEnabled=true (the fleet starts at its minimum)
+ * The planner reads the same flag, so it never pre-scales a fleet that is off.
  */
 export class SenderStack extends Stack {
   readonly clusterName: string;
@@ -111,6 +144,8 @@ export class SenderStack extends Stack {
     securityGroup.addEgressRule(Peer.anyIpv4(), Port.tcp(443), 'APNs, FCM and AWS APIs over HTTPS');
 
     const cluster = new Cluster(this, 'Cluster', {
+      // Fixed name: the fan-out stack builds the planner's pre-scale ARN from it (see fanout-stack.ts).
+      clusterName: senderClusterName(props.stage),
       vpc,
       containerInsightsV2: ContainerInsights.ENABLED,
     });
@@ -223,8 +258,10 @@ export class SenderStack extends Stack {
     );
     allow(['ssm:GetParameter'], [props.killSwitchParamArn]);
 
+    const enabled = isSenderEnabled(this);
     const service = new FargateService(this, 'Service', {
       cluster,
+      serviceName: senderServiceName(props.stage),
       taskDefinition: taskDef,
       securityGroups: [securityGroup],
       vpcSubnets: { subnetType: SubnetType.PUBLIC },
@@ -232,7 +269,9 @@ export class SenderStack extends Stack {
       minHealthyPercent: 100,
       maxHealthyPercent: 200,
       circuitBreaker: { rollback: true },
-      // desiredCount is left to auto scaling so a deploy never resets the fleet size.
+      // Off (0) until senderEnabled=true; then left to auto scaling so a deploy never resets the
+      // fleet size.
+      ...(enabled ? {} : { desiredCount: 0 }),
     });
 
     // ---- Auto scaling ----
@@ -267,50 +306,53 @@ export class SenderStack extends Stack {
     });
     const urgentAge = sqsMetric(props.urgentQueue, 'ApproximateAgeOfOldestMessage');
 
-    const scaling = service.autoScaleTaskCount({
-      minCapacity: isProd ? 1 : 0,
-      maxCapacity: SENDER_MAX_TASKS,
-    });
+    const maxTasks = senderMaxTasks(props.stage);
+    const minTasks = isProd ? senderMinTasks(this, maxTasks) : 0;
+    // Without the flag there is no scaling at all: the service stays at 0 tasks.
+    const scaling = enabled
+      ? service.autoScaleTaskCount({ minCapacity: minTasks, maxCapacity: maxTasks })
+      : undefined;
     // Idle SQS queues stop publishing metrics, so each input is FILLed with 0; otherwise the
-    // scale-in alarm would sit in INSUFFICIENT_DATA forever.
-    // Out on depth (a message holds up to 10 batches, about 3,000 recipients).
-    scaling.scaleOnMetric('ScaleOutOnDepth', {
+    // scale-in alarm would sit in INSUFFICIENT_DATA forever. All metrics use 1-minute periods.
+    // Out on depth (a message holds up to 10 batches, about 3,000 recipients; 1M recipients is
+    // about 350 messages). Steps are aggressive: ramp time, not cost, is the risk.
+    scaling?.scaleOnMetric('ScaleOutOnDepth', {
       metric: visible,
       adjustmentType: AdjustmentType.CHANGE_IN_CAPACITY,
       scalingSteps: [
         { upper: 0, change: 0 },
-        { lower: 1, change: +2 },
-        { lower: 50, change: +6 },
-        { lower: 300, change: +15 },
-        { lower: 1000, change: +30 },
+        { lower: 1, change: +5 },
+        { lower: 30, change: +15 },
+        { lower: 150, change: +30 },
+        { lower: 400, change: +50 },
       ],
       evaluationPeriods: 1,
       cooldown: Duration.seconds(30),
     });
     // Out on age: work waiting longer than 10 s means the fleet is too small right now.
-    scaling.scaleOnMetric('ScaleOutOnAge', {
+    scaling?.scaleOnMetric('ScaleOutOnAge', {
       metric: urgentAge,
       adjustmentType: AdjustmentType.CHANGE_IN_CAPACITY,
       scalingSteps: [
         { upper: 10, change: 0 },
-        { lower: 10, change: +5 },
-        { lower: 30, change: +15 },
-        { lower: 60, change: +30 },
+        { lower: 10, change: +10 },
+        { lower: 30, change: +25 },
+        { lower: 60, change: +50 },
       ],
       evaluationPeriods: 1,
       cooldown: Duration.seconds(30),
     });
-    // In: only after 10 quiet minutes (no visible AND no in-flight messages), one task at a
-    // time every 5 minutes. A statewide alert has long tails (retries) and the check-in burst
-    // follows it, so we hold capacity rather than flap.
-    scaling.scaleOnMetric('ScaleInWhenIdle', {
+    // In: only after 15 quiet minutes (no visible AND no in-flight messages), a few tasks at a
+    // time every 5 minutes, never below the minimum. A statewide alert has long tails (retries)
+    // and the check-in burst follows it, so we hold capacity rather than flap.
+    scaling?.scaleOnMetric('ScaleInWhenIdle', {
       metric: busy,
       adjustmentType: AdjustmentType.CHANGE_IN_CAPACITY,
       scalingSteps: [
-        { upper: 0, change: -1 },
+        { upper: 0, change: -5 },
         { lower: 1, change: 0 },
       ],
-      evaluationPeriods: 10,
+      evaluationPeriods: SENDER_IDLE_MINUTES_BEFORE_SCALE_IN,
       cooldown: Duration.minutes(5),
     });
 

@@ -6,3 +6,6 @@ export * from './queues.js';
 export * from './redrive.js';
 export * from './shard-worker.js';
 export * from './messages.js';
+export * from './alert-cache.js';
+export * from './fleet-scaler.js';
+export * from './send-redrive.js';

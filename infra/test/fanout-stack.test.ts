@@ -5,10 +5,14 @@ import { Match, Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
 import { ConfigStack } from '../lib/config-stack.js';
 import { DataStack } from '../lib/data-stack.js';
-import { FanoutStack } from '../lib/fanout-stack.js';
+import { FanoutStack, SHARD_MEMORY_MB } from '../lib/fanout-stack.js';
 
-function synth(stage: 'dev' | 'prod', shardReservedConcurrency?: number) {
-  const app = new App();
+function synth(
+  stage: 'dev' | 'prod',
+  shardReservedConcurrency?: number,
+  context: Record<string, string> = {},
+) {
+  const app = new App({ context });
   const env = { region: 'us-west-2' };
   const data = new DataStack(app, `data-${stage}`, { env, stage });
   const config = new ConfigStack(app, `config-${stage}`, { env, stage });
@@ -61,6 +65,17 @@ function envList(name: string): string[] {
   return [...(m[1] as string).matchAll(/'([A-Z0-9_]+)'/g)].map((x) => x[1] as string);
 }
 
+/** The pre-scale env names the planner reads (SCALER_ENV in fleet-scaler.ts). */
+function scalerEnv(): string[] {
+  const src = readFileSync(
+    fileURLToPath(new URL('../../backend/src/scale/fanout/fleet-scaler.ts', import.meta.url)),
+    'utf8',
+  );
+  const m = /SCALER_ENV = \[([^\]]*)\]/.exec(src);
+  if (!m) throw new Error('SCALER_ENV not found');
+  return [...(m[1] as string).matchAll(/'([A-Z0-9_]+)'/g)].map((x) => x[1] as string);
+}
+
 describe('FanoutStack', () => {
   const { t, stack } = synth('dev');
 
@@ -74,18 +89,27 @@ describe('FanoutStack', () => {
     expect(queues.filter((q) => q.Properties.RedrivePolicy)).toHaveLength(3);
     t.hasResourceProperties('AWS::SQS::Queue', {
       VisibilityTimeout: 30,
-      RedrivePolicy: { maxReceiveCount: 5, deadLetterTargetArn: Match.anyValue() },
+      RedrivePolicy: { maxReceiveCount: 100, deadLetterTargetArn: Match.anyValue() },
     });
   });
 
-  it('shard worker: Node 22, ARM64, 60 s, 1024 MB, reserved concurrency 500', () => {
+  it('send queues allow 100 receives before the DLQ (pause and leasing cause receives); none use 5', () => {
+    const queues = Object.values(t.findResources('AWS::SQS::Queue')) as Res[];
+    const send = queues.filter((q) => q.Properties.VisibilityTimeout === 30);
+    expect(send).toHaveLength(2);
+    for (const q of send) expect(q.Properties.RedrivePolicy.maxReceiveCount).toBe(100);
+    expect(queues.some((q) => q.Properties.RedrivePolicy?.maxReceiveCount === 5)).toBe(false);
+  });
+
+  it('shard worker: Node 22, ARM64, 60 s, 2048 MB, reserved concurrency 500', () => {
     expect(fnByHandler(t, 'shardHandler').Properties).toMatchObject({
       Runtime: 'nodejs22.x',
       Architectures: ['arm64'],
       Timeout: 60,
-      MemorySize: 1024,
+      MemorySize: 2048,
       ReservedConcurrentExecutions: 500,
     });
+    expect(SHARD_MEMORY_MB).toBe(2048);
   });
 
   it('shard concurrency is configurable', () => {
@@ -151,6 +175,69 @@ describe('FanoutStack', () => {
     expect(actions).not.toContain('sqs:SendMessage');
   });
 
+  it('planner may only UpdateService/DescribeServices, on the sender service, nothing wider', () => {
+    const st = statementsFor(t, 'plannerHandler');
+    const ecs = st.filter((s) => actionsOf([s]).some((a) => a.startsWith('ecs:')));
+    expect(ecs).toHaveLength(1);
+    expect([...actionsOf(ecs)].sort()).toEqual(['ecs:DescribeServices', 'ecs:UpdateService']);
+    const resource = JSON.stringify(ecs[0]?.Resource);
+    expect(resource).toContain('service/relay-dev-sender/relay-dev-sender');
+    expect(resource).not.toContain('"*"');
+    expect(ecs[0]?.Resource).not.toBe('*');
+    // The shard worker and redrive functions get no ECS access.
+    for (const h of ['shardHandler', 'redriveHandler', 'sendRedriveHandler']) {
+      expect(actionsOf(statementsFor(t, h)).some((a) => a.startsWith('ecs:'))).toBe(false);
+    }
+  });
+
+  it('planner pre-scale env: off (max 0) until senderEnabled, on with the stage limits after', () => {
+    const env = (tt: Template) =>
+      fnByHandler(tt, 'plannerHandler').Properties.Environment.Variables as Record<string, any>;
+    const off = env(t);
+    expect(off.SENDER_MAX_TASKS).toBe('0');
+    expect(off.SENDER_SERVICE_NAME).toBe('relay-dev-sender');
+    expect(JSON.stringify(off.SENDER_CLUSTER_ARN)).toContain('cluster/relay-dev-sender');
+    expect(Number(off.SENDER_SCALE_PER_SHARD)).toBeGreaterThan(0);
+    expect(Number(off.SENDER_RECIPIENTS_PER_TASK_PER_MIN)).toBeGreaterThan(0);
+    const devOn = env(synth('dev', undefined, { senderEnabled: 'true' }).t);
+    expect(devOn.SENDER_MAX_TASKS).toBe('10');
+    const prodOn = env(synth('prod', undefined, { senderEnabled: 'true' }).t);
+    expect(prodOn.SENDER_MAX_TASKS).toBe('100');
+    expect(prodOn.SENDER_SERVICE_NAME).toBe('relay-prod-sender');
+  }, 60_000);
+
+  it('shard worker may invoke itself (continuations), by explicit name, not by its own ARN token', () => {
+    const st = statementsFor(t, 'shardHandler');
+    const invoke = st.filter((s) => actionsOf([s]).includes('lambda:InvokeFunction'));
+    expect(invoke).toHaveLength(1);
+    expect(JSON.stringify(invoke[0]?.Resource)).toContain('function:relay-dev-shard-worker');
+    expect(fnByHandler(t, 'shardHandler').Properties.FunctionName).toBe('relay-dev-shard-worker');
+  });
+
+  it('send redrive function: native DLQ move for urgent and standard only', () => {
+    const f = fnByHandler(t, 'sendRedriveHandler').Properties;
+    expect(Object.keys(f.Environment.Variables).sort()).toEqual([
+      'STANDARD_DLQ_ARN',
+      'URGENT_DLQ_ARN',
+    ]);
+    const st = statementsFor(t, 'sendRedriveHandler');
+    const actions = actionsOf(st);
+    for (const a of [
+      'sqs:StartMessageMoveTask',
+      'sqs:ReceiveMessage',
+      'sqs:DeleteMessage',
+      'sqs:SendMessage',
+    ]) {
+      expect(actions).toContain(a);
+    }
+    const move = st.find((s) => actionsOf([s]).includes('sqs:StartMessageMoveTask'));
+    const res = JSON.stringify(move?.Resource);
+    expect(res).toContain('UrgentDlq');
+    expect(res).toContain('StandardDlq');
+    expect(res).not.toContain('PlanDlq');
+    expect(res).not.toContain('ShardDlq');
+  });
+
   it('shard worker: Query on the cell index, send to the two send queues, nothing wider', () => {
     const st = statementsFor(t, 'shardHandler');
     const actions = actionsOf(st);
@@ -163,12 +250,7 @@ describe('FanoutStack', () => {
     ]) {
       expect(actions).toContain(a);
     }
-    for (const a of [
-      'dynamodb:PutItem',
-      'dynamodb:Scan',
-      'dynamodb:GetItem',
-      'lambda:InvokeFunction',
-    ]) {
+    for (const a of ['dynamodb:PutItem', 'dynamodb:Scan', 'dynamodb:GetItem']) {
       expect(actions).not.toContain(a);
     }
     const send = st.filter((s) => actionsOf([s]).includes('sqs:SendMessage'));
@@ -189,7 +271,9 @@ describe('FanoutStack', () => {
   it('sets exactly the env vars the handler wiring reads', () => {
     const planner = Object.keys(fnByHandler(t, 'plannerHandler').Properties.Environment.Variables);
     const shard = Object.keys(fnByHandler(t, 'shardHandler').Properties.Environment.Variables);
-    expect(planner.sort()).toEqual([...envList('PLANNER_ENV'), 'SHARD_FUNCTION_NAME'].sort());
+    expect(planner.sort()).toEqual(
+      [...envList('PLANNER_ENV'), 'SHARD_FUNCTION_NAME', ...scalerEnv()].sort(),
+    );
     expect(shard.sort()).toEqual([...envList('SHARD_ENV')].sort());
   });
 
@@ -200,8 +284,13 @@ describe('FanoutStack', () => {
     }
   });
 
-  it('alarms on each of the four DLQs', () => {
+  it('alarms on each of the four DLQs, including urgent and standard send', () => {
     t.resourceCountIs('AWS::CloudWatch::Alarm', 4);
+    const alarms = Object.values(t.findResources('AWS::CloudWatch::Alarm')) as Res[];
+    const watched = alarms.map((a) => JSON.stringify(a.Properties.Dimensions));
+    for (const dlq of ['UrgentDlq', 'StandardDlq', 'PlanDlq', 'ShardDlq']) {
+      expect(watched.some((w) => w.includes(dlq))).toBe(true);
+    }
     t.hasResourceProperties('AWS::CloudWatch::Alarm', {
       MetricName: 'ApproximateNumberOfMessagesVisible',
       Namespace: 'AWS/SQS',

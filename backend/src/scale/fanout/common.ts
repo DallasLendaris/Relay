@@ -1,14 +1,15 @@
 import type { Alert } from '@relay/shared';
 import { refusalFor, type Refusal } from '../../delivery/eligibility.js';
 import type { Logger } from '../../delivery/types.js';
-import type { AlertStore, Clock } from '../../ports.js';
+import type { Clock } from '../../ports.js';
 import { QUEUE_FOR_SEVERITY, type SendQueueName } from '../contracts.js';
 
 /** Why a planner or shard worker did nothing for a message. */
 export type FanoutRefusal = Refusal | 'paused' | 'informational' | 'stale';
 
 export interface EligibilityDeps {
-  alerts: Pick<AlertStore, 'get'>;
+  /** `sourceId` is the version the message is about; a caching reader keys on it. */
+  alerts: { get(id: string, sourceId?: string): Promise<Alert | null> };
   verifyAlert(alert: Alert): boolean;
   isDeliveryPaused(): Promise<boolean>;
   clock: Clock;
@@ -31,7 +32,7 @@ export async function checkEligibility(
   deps: EligibilityDeps,
   stage: 'planner' | 'shard',
 ): Promise<EligibilityOutcome> {
-  const alert = await deps.alerts.get(message.alertId);
+  const alert = await deps.alerts.get(message.alertId, message.sourceId);
   if (!alert) throw new Error(`alert ${message.alertId} not found`);
 
   if (alert.sourceId !== message.sourceId) {
