@@ -4,6 +4,7 @@ import { checkEligibility, type EligibilityDeps, type FanoutRefusal } from './co
 import { bucketFor } from './hash.js';
 import type { ResumableShardJob } from './messages.js';
 import { MAX_MESSAGE_BYTES } from './pack.js';
+import { isPrimaryCell } from './primary-cell.js';
 import type { ShardDispatcher } from './queues.js';
 
 export interface ShardWorkerDeps extends EligibilityDeps {
@@ -35,6 +36,8 @@ export interface ShardResult {
   entries: number;
   /** Entries skipped because the device has no push target. */
   skippedNoTarget: number;
+  /** Entries skipped because the device is sent from another of its cells (primary-cell rule). */
+  skippedNonPrimary: number;
   /** Extra entries for a device already in the same cell (two places in one cell). */
   duplicates: number;
   /** Recipients across all batches. */
@@ -56,6 +59,7 @@ const emptyResult = (cells: number): ShardResult => ({
   cells,
   entries: 0,
   skippedNoTarget: 0,
+  skippedNonPrimary: 0,
   duplicates: 0,
   recipients: 0,
   batches: 0,
@@ -69,11 +73,11 @@ const emptyResult = (cells: number): ShardResult => ({
  * Batch keys depend only on the alert, the cell and the bucket, so re-planning, or SQS retrying
  * this job after a crash partway, re-enqueues identical keys and the sender's claims make that safe.
  *
- * KNOWN GAP: a device with saved places in two different cells of the same alert appears in two
- * batches (two keys) and can get two pushes. A shard worker cannot see other shards, and a global
- * per-device claim would cost one write per device (the cost the batch-key design removes). Both
- * pushes carry the same collapseKey (the alert id), so the phone app must collapse
- * notifications by collapseKey and treat a second check-in token for the same alert as a duplicate.
+ * Cross-cell duplicates: a device with saved places in several cells of one alert area has an entry
+ * in each. Every entry carries the device's full `deviceCells`, and only the entry in the
+ * smallest cell of (deviceCells ∩ alert area) sends (isPrimaryCell), so a multi-cell device is in
+ * exactly one batch per alert with no cross-shard coordination and no per-device write. Entries
+ * without deviceCells (old data) and inconsistent entries fail open and send.
  */
 export async function processShard(
   job: ResumableShardJob,
@@ -82,6 +86,7 @@ export async function processShard(
   const outcome = await checkEligibility(job, deps, 'shard');
   if (!outcome.ok) return { ...emptyResult(job.cells.length), refused: outcome.refused };
   const { alert, queue } = outcome;
+  const alertCellSet = new Set(alert.area.h3Cells);
 
   const result = emptyResult(job.cells.length);
   const expiresAt = alertEndTime(alert); // tokens live as long as the alert does
@@ -114,6 +119,10 @@ export async function processShard(
         result.entries++;
         if (!entry.target) {
           result.skippedNoTarget++;
+          continue;
+        }
+        if (!isPrimaryCell(entry, alertCellSet)) {
+          result.skippedNonPrimary++;
           continue;
         }
         if (seen.has(entry.deviceId)) {

@@ -134,4 +134,28 @@ describe('backfillCellIndex on PGlite', () => {
     expect(entries).toHaveLength(7);
     expect(entries.find((e) => e.placeId === id('a', 2))?.target?.token).toBe(APNS);
   });
+
+  it("writes every entry with the device's full, sorted deviceCells, even across pages", async () => {
+    await seed(); // devices 1, 2, 3 each have places in BOTH cells
+    // Device 4: two places in ONE cell. Device 5: one place.
+    await devices.create(device({ id: id('4', 4), credentialHash: 'h4', expoPushToken: null }));
+    await devices.create(device({ id: id('5', 5), credentialHash: 'h5', expoPushToken: null }));
+    await places.add(place({ id: id('b', 1), deviceId: id('4', 4), h3Cell: '872830829ffffff' }));
+    await places.add(place({ id: id('b', 2), deviceId: id('4', 4), h3Cell: '872830829ffffff' }));
+    await places.add(place({ id: id('b', 3), deviceId: id('5', 5), h3Cell: '872830828ffffff' }));
+    const index = new MemoryCellIndex();
+    const counts = await backfillCellIndex({ db, index, pageSize: 2 }); // a device spans pages
+    expect(counts.entriesPut).toBe(10);
+    const entries = await dump(index);
+    const both = ['872830828ffffff', '872830829ffffff'];
+    for (const e of entries) {
+      const want =
+        e.deviceId === id('4', 4)
+          ? ['872830829ffffff']
+          : e.deviceId === id('5', 5)
+            ? ['872830828ffffff']
+            : both;
+      expect(e.deviceCells, e.placeId).toEqual(want);
+    }
+  });
 });

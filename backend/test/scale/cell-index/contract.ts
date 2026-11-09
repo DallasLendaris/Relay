@@ -34,6 +34,22 @@ const byId = (a: CellIndexEntry, b: CellIndexEntry) => a.placeId.localeCompare(b
 /** The CellIndex behavior every implementation must have. `make` gives a fresh, empty index. */
 export function cellIndexContract(name: string, make: () => CellIndex): void {
   describe(`CellIndex contract: ${name}`, () => {
+    it('round-trips deviceCells, and an entry without it comes back without it', async () => {
+      const index = make();
+      await index.put([
+        entry(1, { deviceCells: [CELL, OTHER_CELL] }),
+        entry(2), // old entry: no deviceCells
+      ]);
+      const { entries } = await listAll(index, CELL);
+      expect(entries.find((e) => e.placeId === entry(1).placeId)?.deviceCells).toEqual([
+        CELL,
+        OTHER_CELL,
+      ]);
+      const old = entries.find((e) => e.placeId === entry(2).placeId);
+      expect(old).toBeDefined();
+      expect(old && 'deviceCells' in old).toBe(false);
+    });
+
     it('puts and lists entries, replacing by (deviceId, placeId)', async () => {
       const index = make();
       await index.put([entry(1), entry(2)]);

@@ -31,6 +31,9 @@ export class DynamoCellReader implements Pick<CellIndex, 'listForCell'> {
       placeId: String(item.placeId),
       target: (item.target as CellIndexEntry['target'] | undefined) ?? null,
       language: item.language === 'es' ? 'es' : 'en',
+      ...(Array.isArray(item.deviceCells) && item.deviceCells.length > 0
+        ? { deviceCells: item.deviceCells.filter((c): c is string => typeof c === 'string') }
+        : {}),
     }));
     return out.LastEvaluatedKey
       ? {

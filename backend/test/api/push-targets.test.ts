@@ -212,6 +212,7 @@ describe('cell index write-through', () => {
         placeId: place.id,
         target: { platform: 'ios', token: APNS },
         language: 'es',
+        deviceCells: [place.h3Cell],
       },
     ]);
   });

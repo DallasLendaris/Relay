@@ -32,6 +32,8 @@ export interface CellIndexEntry {
   placeId: string;
   target: PushTarget | null;
   language: 'en' | 'es';
+  /** Sorted, de-duplicated cells of all of the device's places (the primary-cell rule input). */
+  deviceCells?: string[];
 }
 
 /** H3 resolution of the cell index. */
@@ -183,6 +185,7 @@ export function* generateDevices(options: SeedOptions = {}): Generator<SeedDevic
 /** Streams one CellIndexEntry per (device, place). Roughly 1.15 entries per device. */
 export function* generateEntries(options: SeedOptions = {}): Generator<CellIndexEntry> {
   for (const d of generateDevices(options)) {
+    const deviceCells = [...new Set(d.places.map((p) => p.h3Cell))].sort();
     for (const p of d.places) {
       yield {
         h3Cell: p.h3Cell,
@@ -190,6 +193,7 @@ export function* generateEntries(options: SeedOptions = {}): Generator<CellIndex
         placeId: p.placeId,
         target: d.target,
         language: d.language,
+        deviceCells,
       };
     }
   }

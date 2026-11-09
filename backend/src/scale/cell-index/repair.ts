@@ -6,9 +6,10 @@ import { PostgresDeviceStore } from '../../adapters/postgres/device-store.js';
 import { PostgresPlaceStore } from '../../adapters/postgres/place-store.js';
 import { DataApiExecutor } from '../../db/sql.js';
 import type { DeviceStore, PlaceStore } from '../../ports.js';
-import type { CellIndex, CellIndexEntry } from '../contracts.js';
+import type { CellIndex } from '../contracts.js';
 import { DynamoCellIndex } from './dynamo-cell-index.js';
 import { parseRepairMessage, type IndexRepairMessage } from './repair-queue.js';
+import { syncDeviceCells } from './sync-device-cells.js';
 import { targetOf } from './util.js';
 
 /**
@@ -20,8 +21,10 @@ import { targetOf } from './util.js';
  * device are re-read and the index is made to match. That makes every repair idempotent and
  * order-independent: a duplicate, a late message, or a put that arrives after the place was
  * deleted all converge on the same state.
- *   - place still in Aurora  -> upsert its entry with the device's current target and language
- *   - place gone from Aurora -> delete its entry (the message names the cell)
+ *   - place still in Aurora  -> upsert it, and every other entry of the device, with the current
+ *                               target, language and deviceCells
+ *   - place gone from Aurora -> delete its entry (the message names the cell), after rewriting
+ *                               the remaining entries without that cell
  *   - update, placeId ''     -> upsert every place of the device
  * Messages that cannot be parsed are dropped (retrying cannot fix them); anything that throws is
  * reported in batchItemFailures so SQS retries only that message, and after the queue's
@@ -33,37 +36,30 @@ export interface RepairDeps {
   cellIndex: CellIndex;
 }
 
-/** Applies one repair message. Throws when a store call fails (the caller reports it). */
+/**
+ * Applies one repair message. Throws when a store call fails (the caller reports it).
+ * Re-reads the device and its places and rewrites ALL of the device's entries through
+ * syncDeviceCells (target, language and deviceCells from the truth), so the primary-cell lists
+ * are repaired together with the entry the message names. When the message names a place that
+ * Aurora no longer has, its entry is deleted last.
+ */
 export async function applyRepair(deps: RepairDeps, msg: IndexRepairMessage): Promise<void> {
-  const device = await deps.devices.get(msg.deviceId);
-  const places = await deps.places.listForDevice(msg.deviceId);
-  const wantAll = msg.placeId === '';
-
-  if (!device) {
-    // The device is gone; so are its places (cascade). Drop the one entry the message names.
-    if (!wantAll && msg.h3Cell !== '') {
-      await deps.cellIndex.remove(msg.h3Cell, msg.deviceId, msg.placeId);
-    }
-    return;
-  }
-
-  const wanted = wantAll ? places : places.filter((p) => p.id === msg.placeId);
-  if (wanted.length === 0 && !wantAll) {
-    // Aurora no longer has the place: whatever the op was, the entry must not exist.
-    if (msg.h3Cell !== '') await deps.cellIndex.remove(msg.h3Cell, msg.deviceId, msg.placeId);
-    return;
-  }
-  if (wanted.length === 0) return;
-
-  const target = targetOf(device);
-  const entries: CellIndexEntry[] = wanted.map((p) => ({
-    h3Cell: p.h3Cell,
-    deviceId: device.id,
-    placeId: p.id,
-    target,
-    language: device.language,
-  }));
-  await deps.cellIndex.put(entries);
+  const named = msg.placeId !== '' && msg.h3Cell !== '';
+  await syncDeviceCells(deps.cellIndex, {
+    deviceId: msg.deviceId,
+    load: async () => {
+      const device = await deps.devices.get(msg.deviceId);
+      if (!device) return null;
+      const places = await deps.places.listForDevice(msg.deviceId);
+      return {
+        target: targetOf(device),
+        language: device.language,
+        places: places.map((p) => ({ id: p.id, h3Cell: p.h3Cell })),
+      };
+    },
+    ...(msg.placeId !== '' ? { added: { placeId: msg.placeId } } : {}),
+    ...(named ? { removed: { h3Cell: msg.h3Cell, placeId: msg.placeId } } : {}),
+  });
 }
 
 export function createRepairHandler(
