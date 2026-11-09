@@ -21,7 +21,7 @@ function synth(
     stage,
     db: {
       clusterArn: data.clusterArn,
-      secretArn: data.secretArn,
+      roleSecretArns: data.roleSecretArns,
       databaseName: data.databaseName,
     },
     tokenKeysSecretArn: config.tokenKeysSecretArn,

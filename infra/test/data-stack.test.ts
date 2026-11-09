@@ -33,8 +33,8 @@ describe('DataStack', () => {
     t.resourceCountIs('AWS::EC2::InternetGateway', 0);
   });
 
-  it('generates the credentials secret and outputs both ARNs', () => {
-    t.resourceCountIs('AWS::SecretsManager::Secret', 1);
+  it('generates the admin secret (plus one per database role, see db-roles.test.ts) and outputs both ARNs', () => {
+    t.resourceCountIs('AWS::SecretsManager::Secret', 1 + 6);
     expect(Object.keys(t.toJSON().Outputs)).toEqual(
       expect.arrayContaining(['ClusterArn', 'SecretArn']),
     );

@@ -155,7 +155,7 @@ export class ApiStack extends Stack {
         removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
       }),
       environment: {
-        ...dbEnv(props.db),
+        ...dbEnv(props.db, 'api'),
         PLACE_INDEX_NAME: placeIndexName,
         CHECKINS_TABLE: checkins.tableName,
         TOKEN_KEYS_SECRET_ARN: props.tokenKeysSecretArn,
@@ -192,10 +192,10 @@ export class ApiStack extends Stack {
         retention: RetentionDays.ONE_MONTH,
         removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
       }),
-      environment: { ...dbEnv(props.db), CELL_INDEX_TABLE: props.cellIndexTableName },
+      environment: { ...dbEnv(props.db, 'ops'), CELL_INDEX_TABLE: props.cellIndexTableName },
       ...concurrency(reserved.repair),
     });
-    grantDb(repairFn, props.db);
+    grantDb(repairFn, props.db, 'ops');
     allow(
       repairFn,
       ['dynamodb:BatchWriteItem', 'dynamodb:PutItem', 'dynamodb:DeleteItem', 'dynamodb:UpdateItem'],
@@ -217,7 +217,7 @@ export class ApiStack extends Stack {
       treatMissingData: TreatMissingData.NOT_BREACHING,
     });
 
-    grantDb(apiFn, props.db);
+    grantDb(apiFn, props.db, 'api');
     allow(apiFn, ['geo:SearchPlaceIndexForText'], [placeIndex.attrArn]);
     grantSecretRead(apiFn, props.tokenKeysSecretArn);
     grantSecretRead(apiFn, props.deviceCredentialKeysSecretArn);

@@ -89,6 +89,8 @@ export class IngestStack extends Stack {
       throw new Error(`fanoutMode must be "queue" or "inline", got "${String(fanoutMode)}"`);
     }
 
+    // Inline mode plans in-process, so it also reads places and devices; queue mode never does.
+    const ingestDbRole = fanoutMode === 'inline' ? 'ingestInline' : 'ingest';
     const ingestFn = new NodejsFunction(this, 'IngestFunction', {
       entry: fileURLToPath(new URL('../../backend/src/ingest/handler.ts', import.meta.url)),
       // npm workspaces keep one lockfile at the repo root.
@@ -111,7 +113,7 @@ export class IngestStack extends Stack {
         NWS_USER_AGENT: 'Relay capstone (contact via GitHub DallasLendaris/Relay)',
         POLL_INTERVAL_SECONDS: '12',
         POLLS_PER_INVOCATION: '5',
-        ...dbEnv(props.db),
+        ...dbEnv(props.db, ingestDbRole),
         DELIVERY_QUEUE_URL: props.deliveryQueueUrl,
         TOKEN_KEYS_SECRET_ARN: props.tokenKeysSecretArn,
         ALERT_KEYS_SECRET_ARN: props.alertKeysSecretArn,
@@ -128,7 +130,7 @@ export class IngestStack extends Stack {
     // Explicit actions only (the bucket and table grant helpers expand to wildcards).
     allow(ingestFn, ['s3:PutObject'], [rawBucket.arnForObjects('*')]);
     allow(ingestFn, ['dynamodb:GetItem', 'dynamodb:PutItem'], [stateTable.tableArn]);
-    grantDb(ingestFn, props.db);
+    grantDb(ingestFn, props.db, ingestDbRole);
     allow(ingestFn, ['sqs:SendMessage'], [props.deliveryQueueArn, props.planQueueArn]);
     allow(ingestFn, ['s3:GetObject'], [this.zonePackBucket.arnForObjects('zones/v1/*')]);
     grantSecretRead(ingestFn, props.tokenKeysSecretArn);

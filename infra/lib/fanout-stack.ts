@@ -203,7 +203,7 @@ export class FanoutStack extends Stack {
       onFailure: new SqsDestination(shardDlq),
       logGroup: logs('ShardLogs'),
       environment: {
-        ...dbEnv(props.db),
+        ...dbEnv(props.db, 'fanout'),
         CELL_INDEX_TABLE: cellIndex.tableName,
         URGENT_QUEUE_URL: urgent.queue.queueUrl,
         STANDARD_QUEUE_URL: standard.queue.queueUrl,
@@ -213,7 +213,7 @@ export class FanoutStack extends Stack {
         PAUSED_QUEUE_URL: paused.queueUrl,
       },
     });
-    grantDb(shardFn, props.db);
+    grantDb(shardFn, props.db, 'fanout');
     grantSecretRead(shardFn, props.alertKeysSecretArn);
     grantSecretRead(shardFn, props.tokenKeysSecretArn);
     allow(shardFn, ['ssm:GetParameter'], [props.killSwitchParamArn]);
@@ -244,7 +244,7 @@ export class FanoutStack extends Stack {
       memorySize: 512,
       logGroup: logs('PlannerLogs'),
       environment: {
-        ...dbEnv(props.db),
+        ...dbEnv(props.db, 'fanout'),
         SHARD_FUNCTION_NAME: shardFn.functionName,
         ALERT_KEYS_SECRET_ARN: props.alertKeysSecretArn,
         KILL_SWITCH_PARAM: props.killSwitchParamName,
@@ -262,7 +262,7 @@ export class FanoutStack extends Stack {
     planner.addEventSource(
       new SqsEventSource(plan.queue, { batchSize: 1, reportBatchItemFailures: true }),
     );
-    grantDb(planner, props.db);
+    grantDb(planner, props.db, 'fanout');
     grantSecretRead(planner, props.alertKeysSecretArn);
     allow(planner, ['ssm:GetParameter'], [props.killSwitchParamArn]);
     allow(planner, ['sqs:SendMessage'], [paused.queueArn]);
@@ -305,9 +305,9 @@ export class FanoutStack extends Stack {
       timeout: Duration.seconds(OUTBOX_DRAINER_TIMEOUT_SECONDS),
       memorySize: 256,
       logGroup: logs('OutboxDrainerLogs'),
-      environment: { ...dbEnv(props.db), CELL_INDEX_TABLE: cellIndex.tableName },
+      environment: { ...dbEnv(props.db, 'ops'), CELL_INDEX_TABLE: cellIndex.tableName },
     });
-    grantDb(drainer, props.db);
+    grantDb(drainer, props.db, 'ops');
     allow(
       drainer,
       [
