@@ -27,8 +27,14 @@ const toPlace = (r: PlaceRow): Place => ({
   createdAt: r.created_at,
 });
 
+const NIL_UUID = '00000000-0000-0000-0000-000000000000';
+
 export class PostgresPlaceStore implements PlaceStore {
-  constructor(private readonly db: SqlExecutor) {}
+  constructor(
+    private readonly db: SqlExecutor,
+    /** Rows per page in listMatchesForCells (about 100 bytes each; 5000 stays far under 1 MB). */
+    private readonly pageSize = 5000,
+  ) {}
 
   async add(place: Place): Promise<void> {
     await this.db.query(
@@ -76,9 +82,26 @@ export class PostgresPlaceStore implements PlaceStore {
   }
 
   async listMatchesForCells(
-    _cells: string[],
+    cells: string[],
   ): Promise<Array<{ placeId: string; deviceId: string }>> {
-    // TODO(wave 4): implemented by the Postgres follow-up; the stub keeps the port contract compiling.
-    throw new Error('not implemented yet');
+    const out: Array<{ placeId: string; deviceId: string }> = [];
+    for (const part of chunk([...new Set(cells)], CELL_CHUNK)) {
+      // Keyset pagination: each page asks for ids after the last one seen, so no single
+      // response passes the Data API's 1 MB limit however many places match.
+      let after = NIL_UUID;
+      for (;;) {
+        const rows = await this.db.query<{ id: string; device_id: string }>(
+          `SELECT id, device_id FROM places
+            WHERE h3_cell = ANY(${textArrayParam(1)}) AND id > $2::uuid
+            ORDER BY id LIMIT $3::int`,
+          [JSON.stringify(part), after, this.pageSize],
+        );
+        for (const r of rows) out.push({ placeId: r.id, deviceId: r.device_id });
+        const last = rows[rows.length - 1];
+        if (!last || rows.length < this.pageSize) break;
+        after = last.id;
+      }
+    }
+    return out;
   }
 }

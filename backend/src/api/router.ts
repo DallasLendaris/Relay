@@ -101,8 +101,14 @@ function match(pattern: string[], path: string[]): Record<string, string> | null
     const p = pattern[i];
     const v = path[i];
     if (p === undefined || v === undefined) return null;
-    if (p.startsWith('{') && p.endsWith('}')) params[p.slice(1, -1)] = decodeURIComponent(v);
-    else if (p !== v) return null;
+    if (p.startsWith('{') && p.endsWith('}')) {
+      try {
+        params[p.slice(1, -1)] = decodeURIComponent(v);
+      } catch {
+        // e.g. "%E0%A4%A": a client error, not a server one.
+        throw new HttpError(400, 'invalid_request', 'Path contains invalid percent-encoding');
+      }
+    } else if (p !== v) return null;
   }
   return params;
 }

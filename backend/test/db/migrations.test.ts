@@ -9,7 +9,11 @@ describe('runMigrations', () => {
     const applied = await runMigrations(exec, MIGRATIONS_DIR, {
       skip: (f) => f.startsWith('0001_'),
     });
-    expect(applied).toEqual(['0002_devices_places.sql', '0003_alerts.sql']);
+    expect(applied).toEqual([
+      '0002_devices_places.sql',
+      '0003_alerts.sql',
+      '0004_push_token_unique.sql',
+    ]);
     const rows = await exec.query<{ name: string }>(
       'SELECT name FROM schema_migrations ORDER BY name',
       [],

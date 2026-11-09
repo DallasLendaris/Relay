@@ -227,7 +227,31 @@ describe('devices', () => {
   });
 });
 
+describe('push token reinstall', () => {
+  it('moves the token to the newest device so only one holds it', async () => {
+    const first = await register();
+    const second = await register();
+    const body = { expoPushToken: 'ExponentPushToken[same]', language: 'en' };
+    await call('PUT', '/devices/me/push-token', body, first.credential);
+    await call('PUT', '/devices/me/push-token', body, second.credential);
+    expect((await devices.get(first.deviceId))?.expoPushToken).toBeNull();
+    expect((await devices.get(second.deviceId))?.expoPushToken).toBe('ExponentPushToken[same]');
+  });
+});
+
 describe('auth and errors', () => {
+  it('returns 401 for a non-UUID device id in the credential', async () => {
+    expect((await call('GET', '/places', undefined, 'not-a-uuid.secret')).status).toBe(401);
+  });
+
+  it('returns 400, not 500, for malformed percent-encoding in a path', async () => {
+    const { credential } = await register();
+    // The spec documents no 400 for this route, so skip the spec check and call the router.
+    const res = await route(event('DELETE', '/places/%E0%A4%A', undefined, credential));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toMatchObject({ code: 'invalid_request' });
+  });
+
   it('returns 401 without credentials, with a wrong secret, an unknown device, or garbage', async () => {
     const { deviceId, credential } = await register();
     const none = await call('GET', '/places');
@@ -433,6 +457,25 @@ describe('alerts', () => {
     await alerts.save(makeAlert({ cells: ['x'] }));
     const res = await call('GET', '/alerts', undefined, credential);
     expect(res.body).toEqual({ alerts: [] });
+  });
+
+  it('shows an ended alert as expired but still returns it', async () => {
+    const { credential } = await register();
+    // Clock is 2026-11-09T12:00Z. Expired at 10:00Z with no later ends: ended.
+    const ended = makeAlert({ cells: ['x'], expires: '2026-11-09T10:00:00Z' });
+    // Expired at 10:00Z but ends at 14:00Z: still running.
+    const running = makeAlert({
+      cells: ['x'],
+      expires: '2026-11-09T10:00:00Z',
+      ends: '2026-11-09T14:00:00Z',
+    });
+    await alerts.save(ended);
+    await alerts.save(running);
+    const a = await call('GET', `/alerts/${ended.id}`, undefined, credential);
+    expect(a.status).toBe(200);
+    expect(a.body).toEqual({ ...ended, state: 'expired' });
+    const b = await call('GET', `/alerts/${running.id}`, undefined, credential);
+    expect(b.body?.['state']).toBe('active');
   });
 
   it('returns the full alert to any registered device, or 404', async () => {

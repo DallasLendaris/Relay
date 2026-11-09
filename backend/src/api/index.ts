@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Alert, components } from '@relay/shared';
 import { cellForPoint } from '../geo/index.js';
+import { effectiveState } from '../ingest/lifecycle.js';
 import type {
   AlertStore,
   Clock,
@@ -76,7 +77,10 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     if (!credential) throw fail();
     const dot = credential.indexOf('.');
     if (dot <= 0) throw fail();
-    const device = await deps.devices.get(credential.slice(0, dot));
+    // Check the id's shape first: a non-UUID would make the database cast fail (a 500).
+    const deviceId = credential.slice(0, dot);
+    if (!UUID.test(deviceId)) throw fail();
+    const device = await deps.devices.get(deviceId);
     if (!device) throw fail();
     const given = Buffer.from(sha256Hex(credential), 'hex');
     const stored = Buffer.from(device.credentialHash, 'hex');
@@ -117,7 +121,8 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     if (language !== 'en' && language !== 'es') {
       throw new HttpError(400, 'invalid_request', 'language must be "en" or "es"');
     }
-    await deps.devices.update({ ...device, expoPushToken: token, language });
+    // Moves the token here if another (reinstalled) device still holds it.
+    await deps.devices.assignPushToken(device.id, token, language);
     return noContent();
   });
 
@@ -235,7 +240,8 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     // Alerts are public information, so no per-device filtering here.
     const alert: Alert | null = UUID.test(alertId) ? await deps.alerts.get(alertId) : null;
     if (!alert) throw new HttpError(404, 'not_found', 'Alert not found');
-    return json(200, alert);
+    // Stored state only reflects the last NWS message; show "expired" once time has passed.
+    return json(200, { ...alert, state: effectiveState(alert, deps.clock.now()) });
   });
 
   return (event) => router.route(event);

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Alert } from '@relay/shared';
 import { InMemoryAlertStore } from '../../src/adapters/memory/alert-store.js';
+import { MemoryDeviceStore } from '../../src/adapters/memory/device-store.js';
+import { MemoryPlaceStore } from '../../src/adapters/memory/place-store.js';
 import { InMemorySeenStore } from '../../src/adapters/memory/seen-store.js';
 
 function alert(over: Partial<Alert>): Alert {
@@ -82,6 +84,21 @@ describe('InMemoryAlertStore', () => {
     expect(ids).toEqual(['a', 'b']);
     expect(await s.listActiveForCells([], new Date('2000-01-01T00:00:00Z'))).toEqual([]);
   });
+
+  it('excludes alerts that have ended, using time and not the stored state', async () => {
+    const s = new InMemoryAlertStore();
+    // expires 18:00-08:00 = 02:00Z next day
+    await s.save(alert({ id: 'ended', state: 'active' }));
+    await s.save(alert({ id: 'extended', state: 'updated', ends: '2026-11-10T06:00:00Z' }));
+    const at = (iso: string) => s.listActiveForCells(['c1'], new Date(iso));
+    expect((await at('2026-11-10T01:00:00Z')).map((a) => a.id).sort()).toEqual([
+      'ended',
+      'extended',
+    ]);
+    // After expires but before the later ends: only the extended one.
+    expect((await at('2026-11-10T03:00:00Z')).map((a) => a.id)).toEqual(['extended']);
+    expect(await at('2026-11-10T07:00:00Z')).toEqual([]);
+  });
 });
 
 describe('InMemorySeenStore', () => {
@@ -91,5 +108,46 @@ describe('InMemorySeenStore', () => {
     await s.mark('x', '2026-11-09T06:10:00-08:00');
     expect(await s.has('x')).toBe(true);
     expect(await s.has('y')).toBe(false);
+  });
+});
+
+describe('MemoryDeviceStore push tokens', () => {
+  const dev = (id: string, token: string | null) => ({
+    id,
+    credentialHash: id,
+    expoPushToken: token,
+    language: 'en' as const,
+    createdAt: '2026-11-09T00:00:00.000Z',
+  });
+
+  it('assignPushToken leaves one holder; clearPushToken forgets it', async () => {
+    const s = new MemoryDeviceStore();
+    await s.create(dev('a', null));
+    await s.create(dev('b', null));
+    await s.assignPushToken('a', 't', 'en');
+    await s.assignPushToken('b', 't', 'es');
+    expect((await s.get('a'))?.expoPushToken).toBeNull();
+    expect(await s.get('b')).toMatchObject({ expoPushToken: 't', language: 'es' });
+    await s.clearPushToken('t');
+    expect((await s.get('b'))?.expoPushToken).toBeNull();
+  });
+});
+
+describe('MemoryPlaceStore.listMatchesForCells', () => {
+  it('returns place and device ids for places in the cells', async () => {
+    const s = new MemoryPlaceStore();
+    const p = (id: string, h3Cell: string) => ({
+      id,
+      deviceId: `d-${id}`,
+      label: 'x',
+      shortAddress: 'x',
+      latitude: 1,
+      longitude: 1,
+      h3Cell,
+      createdAt: '2026-11-09T00:00:00.000Z',
+    });
+    await s.add(p('1', 'c1'));
+    await s.add(p('2', 'c2'));
+    expect(await s.listMatchesForCells(['c1'])).toEqual([{ placeId: '1', deviceId: 'd-1' }]);
   });
 });
