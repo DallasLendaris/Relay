@@ -237,10 +237,6 @@ describe('tables added by other migrations (granted by name when present)', () =
     // The outbox, the tombstones and the push-token move log arrive in 0008-0010. Create them the
     // way those migrations do (the outbox with a serial key), then re-run the grants.
     await db.query(
-      'CREATE TABLE IF NOT EXISTS cell_index_outbox (id bigserial PRIMARY KEY, device_id uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now())',
-      [],
-    );
-    await db.query(
       'CREATE TABLE IF NOT EXISTS deleted_devices (device_id uuid PRIMARY KEY, deleted_at timestamptz NOT NULL)',
       [],
     );
@@ -253,7 +249,7 @@ describe('tables added by other migrations (granted by name when present)', () =
     await rerunMigration();
 
     await as('relay_api', async () => {
-      await db.pg.exec(`INSERT INTO cell_index_outbox (device_id) VALUES ('${DEVICE_ID}')`);
+      await db.pg.exec(`INSERT INTO cell_index_outbox (device_id, op) VALUES ('${DEVICE_ID}', 'put')`);
       await db.pg.exec(`INSERT INTO deleted_devices VALUES ('${DEVICE_ID}', now())`);
       await db.pg.exec(`INSERT INTO push_token_moves VALUES ('h', '${DEVICE_ID}', now())`);
       await db.pg.exec("DELETE FROM push_token_moves WHERE token_hash = 'h'");
