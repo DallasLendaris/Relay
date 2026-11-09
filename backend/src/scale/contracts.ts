@@ -96,14 +96,20 @@ export interface ShardJob {
 /** Coarse H3 resolution used to shard alert areas (a res-4 cell is about 1,770 km²). */
 export const SHARD_RESOLUTION = 4;
 
-/** Maximum recipients in one SendBatch. APNs and FCM calls are made per message; 500 keeps one batch under a few seconds of sending. */
-export const SEND_BATCH_SIZE = 500;
-
 /**
- * Number of buckets a single H3 cell's devices are split into when building batches.
- * A device's bucket is stable (hash of deviceId), so re-planning produces the same batch keys.
+ * Each H3 cell's devices are split into this many stable buckets (bucket = hash(deviceId) mod 64).
+ * One SendBatch is exactly one (cell, bucket), so its key never changes when devices are added or
+ * removed elsewhere: re-planning can never double-send or skip a device because batch boundaries
+ * moved. 64 keeps the densest cells (about 20,000 devices) near 300 recipients per batch, which
+ * fits an SQS message (256 KB).
  */
-export const CELL_BUCKETS = 16;
+export const CELL_BUCKETS = 64;
+
+/** The sender sends a batch's recipients in sub-chunks of this size (concurrent HTTP/2 streams). */
+export const SENDER_CHUNK_SIZE = 100;
+
+/** Several small SendBatches may share one SQS message to cut message count in sparse areas. */
+export const MAX_BATCHES_PER_MESSAGE = 10;
 
 /**
  * A batch of recipients for one alert. Batches are deterministic: the same alert version,
@@ -114,7 +120,7 @@ export interface SendBatch {
   alertId: string;
   sourceId: string;
   relaySeverity: Alert['relaySeverity'];
-  /** `${alertId}:${relaySeverity}:${h3Cell}:${bucket}` or, for a retry of failed recipients, that plus `:r<attempt>`. */
+  /** `${alertId}:${relaySeverity}:${h3Cell}:${bucket}`; for a retry of failed recipients, that plus `:r<attempt>`. */
   batchKey: string;
   recipients: Array<{
     deviceId: string;

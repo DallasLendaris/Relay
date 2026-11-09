@@ -21,7 +21,7 @@ Shared shapes are in `backend/src/scale/contracts.ts`.
 
 1. Ingest validates, signs and saves the alert (unchanged), then publishes `AlertReady` to the plan queue instead of planning in-line. An alert counts as seen only after the publish succeeds.
 2. The **planner** re-reads and re-verifies the alert, groups its cells by res-4 parent into `ShardJob`s, and enqueues them.
-3. Each **shard worker** pages the cell index for its cells. Per cell, it splits devices into `CELL_BUCKETS` stable buckets, chunks each bucket to `SEND_BATCH_SIZE`, creates the check-in tokens (v2, with h3Cell bound in), and enqueues `SendBatch`es on the `urgent` or `standard` queue.
+3. Each **shard worker** pages the cell index for its cells. Per cell, it splits devices into `CELL_BUCKETS` stable buckets (one `SendBatch` per bucket, so batch keys never shift), creates the check-in tokens (v2, with h3Cell bound in), and enqueues `SendBatch`es on the `urgent` or `standard` queue.
 4. The **sender service** (Fargate, scaled on queue depth, urgent first):
    - claim `batchKey` (45 s lease)
    - re-check the alert's eligibility and the kill switch
