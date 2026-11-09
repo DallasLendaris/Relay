@@ -17,6 +17,7 @@ describe('runMigrations', () => {
       '0006_push_targets.sql',
       '0007_push_token_lookup_index.sql',
       '0009_cell_index_outbox.sql',
+      '0010_minimize_places_tombstones.sql',
       '0011_roles.sql',
     ]);
     const rows = await exec.query<{ name: string }>(

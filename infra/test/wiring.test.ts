@@ -277,6 +277,8 @@ describe('ApiStack', () => {
   const t = all.api;
 
   checkEnvContract('api', envOf(t, 'PLACE_INDEX_NAME'), envNamesRead('api/handler.ts'), {
+    // Optional: unset means the default (30 days); counsel decides the real period.
+    optional: ['CHECKIN_RETENTION_DAYS'],
     contract: [
       'DB_CLUSTER_ARN',
       'DB_SECRET_ARN',
@@ -333,7 +335,12 @@ describe('ApiStack', () => {
 
   it('grants exactly the cell-index, check-in and keyring actions the API needs', () => {
     const on = (needle: string) => grantedOnResource(t, needle);
-    expect(on('CheckinsTable')).toEqual(['dynamodb:GetItem', 'dynamodb:PutItem']);
+    expect(on('CheckinsTable')).toEqual([
+      'dynamodb:BatchWriteItem',
+      'dynamodb:GetItem',
+      'dynamodb:PutItem',
+      'dynamodb:Query',
+    ]);
     // The cell index is a prop (FanoutStack), so its ARN appears as a cross-stack import.
     expect(on('CellIndexTable')).toEqual(
       [
@@ -367,6 +374,7 @@ describe('ApiStack', () => {
       [
         'POST /devices',
         'PUT /devices/me/push-token',
+        'DELETE /devices/me',
         'POST /places',
         'GET /places',
         'DELETE /places/{placeId}',
@@ -615,6 +623,33 @@ describe('IAM grants cover every call the adapters make', () => {
       ]),
     );
     expect(allActions(t)).toContain('geo:SearchPlaceIndexForText');
+  });
+
+  it('check-ins table: TTL on "ttl", byDevice index (keys only) for erasure, scoped grants', () => {
+    for (const stage of [synthAll('dev').api, synthAll('prod').api]) {
+      const checkins = (Object.values(stage.findResources('AWS::DynamoDB::Table')) as any[]).find(
+        (x) => x.Properties.StreamSpecification,
+      );
+      expect(checkins.Properties.TimeToLiveSpecification).toEqual({
+        AttributeName: 'ttl',
+        Enabled: true,
+      });
+      expect(checkins.Properties.GlobalSecondaryIndexes).toEqual([
+        {
+          IndexName: 'byDevice',
+          KeySchema: [{ AttributeName: 'deviceId', KeyType: 'HASH' }],
+          Projection: { ProjectionType: 'KEYS_ONLY' },
+        },
+      ]);
+      // The Query grant is on the index only; BatchWriteItem is on the table.
+      const onIndex = statements(stage).filter((st) =>
+        JSON.stringify(resourcesOf(st)).includes('/index/byDevice'),
+      );
+      expect(onIndex.flatMap(actionsOf)).toEqual(['dynamodb:Query']);
+      expect(grantedOnResource(stage, 'CheckinsTable')).toEqual(
+        expect.arrayContaining(['dynamodb:BatchWriteItem', 'dynamodb:Query']),
+      );
+    }
   });
 
   it('aggregator: Put and Update on the totals table', () => {

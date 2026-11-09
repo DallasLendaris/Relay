@@ -43,6 +43,7 @@ import {
   type SendBatch,
   type SendQueue,
 } from '../contracts.js';
+import { errorFields } from '../../delivery/redact.js';
 import { PermanentBreaker } from './breaker.js';
 import { DeadTargetQueue } from './dead-target-queue.js';
 import { consoleMetricWriter, emfLine, type MetricWriter } from './metrics.js';
@@ -315,7 +316,7 @@ export async function processBatch(
 
   const release = async () => {
     await idempotency.release(batch.batchKey).catch((err: unknown) => {
-      logger.error('sender.release_failed', { batchKey: batch.batchKey, error: String(err) });
+      logger.error('sender.release_failed', { batchKey: batch.batchKey, ...errorFields(err) });
     });
   };
   control.release = release;
@@ -465,7 +466,7 @@ export async function processBatch(
     // Only now is the batch finished for good. If this fails the pushes already went out;
     // ack anyway (failing the message would re-send once the lease runs out).
     await idempotency.markSent(batch.batchKey, claimExpiry(alert)).catch((err: unknown) => {
-      logger.error('sender.mark_sent_failed', { batchKey: batch.batchKey, error: String(err) });
+      logger.error('sender.mark_sent_failed', { batchKey: batch.batchKey, ...errorFields(err) });
     });
 
     // Cleanup comes after markSent and is asynchronous: enqueue is synchronous and cheap.

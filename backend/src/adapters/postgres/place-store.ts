@@ -1,4 +1,5 @@
-import type { Place, PlaceStore } from '../../ports.js';
+import { cellToLatLng } from 'h3-js';
+import type { Place, PlaceErasure, PlaceStore } from '../../ports.js';
 import type { SqlExecutor } from '../../db/sql.js';
 import { insertOutboxRow, type OutboxEntry } from '../../scale/cell-index/outbox.js';
 import { CELL_CHUNK, chunk, isoUtc, textArrayParam } from './common.js';
@@ -7,30 +8,26 @@ interface PlaceRow {
   id: string;
   device_id: string;
   label: string;
-  short_address: string;
-  latitude: number;
-  longitude: number;
+  short_address: string | null;
   h3_cell: string;
   created_at: string;
 }
 
-const COLUMNS = `id, device_id, label, short_address, latitude, longitude, h3_cell,
+const COLUMNS = `id, device_id, label, short_address, h3_cell,
   ${isoUtc('created_at')} AS created_at`;
 
 const toPlace = (r: PlaceRow): Place => ({
   id: r.id,
   deviceId: r.device_id,
   label: r.label,
-  shortAddress: r.short_address,
-  latitude: r.latitude,
-  longitude: r.longitude,
+  ...(r.short_address !== null ? { shortAddress: r.short_address } : {}),
   h3Cell: r.h3_cell,
   createdAt: r.created_at,
 });
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
-export class PostgresPlaceStore implements PlaceStore {
+export class PostgresPlaceStore implements PlaceStore, PlaceErasure {
   constructor(
     private readonly db: SqlExecutor,
     /** Rows per page in listMatchesForCells (about 100 bytes each; 5000 stays far under 1 MB). */
@@ -38,17 +35,20 @@ export class PostgresPlaceStore implements PlaceStore {
   ) {}
 
   async add(place: Place, opts?: { outbox?: OutboxEntry }): Promise<void> {
+    // Only the cell's CENTER is stored (never the point the person gave): it is derived here
+    // from the cell, so no caller can pass an exact location in.
+    const [centerLat, centerLng] = cellToLatLng(place.h3Cell);
     const insert = (db: SqlExecutor) =>
       db.query(
-        `INSERT INTO places (id, device_id, label, short_address, latitude, longitude, h3_cell, created_at)
+        `INSERT INTO places (id, device_id, label, short_address, cell_center_lat, cell_center_lng, h3_cell, created_at)
        VALUES ($1::uuid, $2::uuid, $3, $4, $5::double precision, $6::double precision, $7, $8::timestamptz)`,
         [
           place.id,
           place.deviceId,
           place.label,
-          place.shortAddress,
-          place.latitude,
-          place.longitude,
+          place.shortAddress ?? null,
+          centerLat,
+          centerLng,
           place.h3Cell,
           place.createdAt,
         ],
@@ -90,6 +90,13 @@ export class PostgresPlaceStore implements PlaceStore {
       if (deleted) await insertOutboxRow(tx, deviceId, outbox);
       return deleted;
     });
+  }
+
+  async removeAllForDevice(deviceId: string): Promise<number> {
+    const rows = await this.db.query('DELETE FROM places WHERE device_id = $1::uuid RETURNING id', [
+      deviceId,
+    ]);
+    return rows.length;
   }
 
   async listForCells(cells: string[]): Promise<Place[]> {

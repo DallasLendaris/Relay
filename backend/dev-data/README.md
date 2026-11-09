@@ -8,7 +8,7 @@ Generated with seed `42` and the default counts (6 alerts, 500 check-ins, 1000 p
 
 - `alerts.json`: an array of `Alert` objects (from `@relay/shared`). Alerts cycle through Flash Flood Warning, Red Flag Warning and Heat Advisory. Every polygon sits inside Santa Clara County. All alerts are active from `2026-12-10T18:00:00Z` until six hours later. `area.h3Cells` lists the H3 cells (resolution 7) the alert covers.
 - `checkins.json`: an array of `CheckIn` objects. The check-ins are shared across the alerts. Each check-in's `h3Cell` is one of its alert's `h3Cells`, and its `checkedInAt` falls between the alert's `effective` and `expires`. Tokens are fake strings and will not verify against the real signing keys.
-- `places.json`: an array of saved places, matching the `Place` interface in `backend/src/ports.ts`. Places are spread across the county bounding box (latitude 37.10 to 37.45, longitude -122.15 to -121.60). Several places share each device id.
+- `places.json`: an array of saved places, matching the `Place` interface in `backend/src/ports.ts`. Places carry no coordinates (the app stores only the H3 cell); `h3Cell` is the cell of a random point in the county bounding box (latitude 37.10 to 37.45, longitude -122.15 to -121.60), and `shortAddress` is a made-up street text. Several places share each device id.
 
 ## Regenerate
 

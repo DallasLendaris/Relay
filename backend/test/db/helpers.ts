@@ -51,8 +51,6 @@ export const place = (over: Partial<Place> = {}): Place => ({
   deviceId: DEVICE_ID,
   label: 'Home',
   shortAddress: '1 Main St, San Jose',
-  latitude: 37.3352,
-  longitude: -121.8811,
   h3Cell: '872830828ffffff',
   createdAt: '2026-01-02T03:04:06.000Z',
   ...over,

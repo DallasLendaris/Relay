@@ -1,4 +1,4 @@
-import type { Device, DeviceStore } from '../../ports.js';
+import type { Device, DeviceErasure, DeviceStore } from '../../ports.js';
 import type { SqlExecutor } from '../../db/sql.js';
 import type { PushPlatform, PushTarget } from '../../scale/contracts.js';
 import { isoUtc } from './common.js';
@@ -21,7 +21,7 @@ function targetColumns(device: Device): [PushPlatform | null, string | null] {
   return device.expoPushToken ? ['expo', device.expoPushToken] : [null, null];
 }
 
-export class PostgresDeviceStore implements DeviceStore {
+export class PostgresDeviceStore implements DeviceStore, DeviceErasure {
   constructor(private readonly db: SqlExecutor) {}
 
   async create(device: Device): Promise<void> {
@@ -144,5 +144,31 @@ export class PostgresDeviceStore implements DeviceStore {
         WHERE id IN (SELECT id FROM hit)`,
       [token],
     );
+  }
+
+  async deleteDevice(deviceId: string, deletedAt: Date): Promise<boolean> {
+    // One statement (the Data API runs one per call): the tombstone and the delete commit
+    // together, so there is never a deleted device without a tombstone. The device's places go
+    // with it (places.device_id is ON DELETE CASCADE). Data-modifying CTEs always run to the end.
+    const rows = await this.db.query<{ deleted: number }>(
+      `WITH tomb AS (
+         INSERT INTO deleted_devices (device_id, deleted_at) VALUES ($1::uuid, $2::timestamptz)
+         ON CONFLICT (device_id) DO NOTHING
+         RETURNING device_id
+       ), gone AS (
+         DELETE FROM devices WHERE id = $1::uuid RETURNING id
+       )
+       SELECT (SELECT count(*) FROM gone)::int AS deleted, (SELECT count(*) FROM tomb) AS tombstoned`,
+      [deviceId, deletedAt.toISOString()],
+    );
+    return (rows[0]?.deleted ?? 0) > 0;
+  }
+
+  async listDeletedDevices(): Promise<string[]> {
+    const rows = await this.db.query<{ device_id: string }>(
+      'SELECT device_id FROM deleted_devices',
+      [],
+    );
+    return rows.map((r) => r.device_id);
   }
 }

@@ -226,8 +226,6 @@ describe('statewide scale path, in memory', () => {
           deviceId,
           label: 'x',
           shortAddress: 'x',
-          latitude: 37,
-          longitude: -121,
           h3Cell,
           createdAt: '2026-11-01T00:00:00Z',
         });

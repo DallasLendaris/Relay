@@ -94,8 +94,8 @@ describe.each([
   const adminId = logicalIdOf(app, app.stacks.data.secretArn);
 
   it('covers every compute principal that talks to the database', () => {
-    // api, index repair, ingest, planner, shard, delivery worker, sender
-    expect(principals.map((p) => p.id.replace(/[0-9A-F]{8}$/, '')).sort()).toHaveLength(7);
+    // api, index repair, ingest, planner, shard, outbox drainer, delivery worker, sender
+    expect(principals.map((p) => p.id.replace(/[0-9A-F]{8}$/, '')).sort()).toHaveLength(8);
   });
 
   it('gives each principal exactly one DB secret, its own role, in IAM and in DB_SECRET_ARN', () => {

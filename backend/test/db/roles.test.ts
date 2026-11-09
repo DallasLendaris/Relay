@@ -234,8 +234,8 @@ describe('relay_ops: devices and places read (repair, drainer, backfill)', () =>
 
 describe('tables added by other migrations (granted by name when present)', () => {
   it('grants tables from later migrations once a re-run finds them', async () => {
-    // The outbox, the tombstones and the push-token move log arrive in 0008-0010. Create them the
-    // way those migrations do (the outbox with a serial key), then re-run the grants.
+    // The tombstones and the push-token move log arrive in 0008 and 0010 (the outbox in 0009).
+    // Create them the way those migrations do where missing, then re-run the grants.
     await db.query(
       'CREATE TABLE IF NOT EXISTS deleted_devices (device_id uuid PRIMARY KEY, deleted_at timestamptz NOT NULL)',
       [],

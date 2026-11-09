@@ -10,6 +10,7 @@ import { LambdaClient } from '@aws-sdk/client-lambda';
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import type { SQSBatchResponse, SQSEvent } from 'aws-lambda';
+import { errorFields } from '../../delivery/redact.js';
 import { PostgresAlertStore } from '../../adapters/postgres/alert-store.js';
 import { createKillSwitch } from '../../config/kill-switch.js';
 import { clearKeyringCache, loadKeyring } from '../../config/secrets.js';
@@ -59,7 +60,7 @@ export async function runRecords<T>(
       const result = await handle(body);
       if (result.refused === 'paused') batchItemFailures.push({ itemIdentifier: record.messageId });
     } catch (err) {
-      log.error('fan-out record failed', { messageId: record.messageId, error: String(err) });
+      log.error('fan-out record failed', { messageId: record.messageId, ...errorFields(err) });
       batchItemFailures.push({ itemIdentifier: record.messageId });
     }
   }

@@ -1,7 +1,7 @@
-import type { Place, PlaceStore } from '../../ports.js';
+import type { Place, PlaceErasure, PlaceStore } from '../../ports.js';
 
 /** In-memory PlaceStore for tests and local runs. */
-export class MemoryPlaceStore implements PlaceStore {
+export class MemoryPlaceStore implements PlaceStore, PlaceErasure {
   private readonly places = new Map<string, Place>();
 
   async add(place: Place): Promise<void> {
@@ -19,6 +19,14 @@ export class MemoryPlaceStore implements PlaceStore {
     const place = this.places.get(placeId);
     if (!place || place.deviceId !== deviceId) return false;
     return this.places.delete(placeId);
+  }
+
+  async removeAllForDevice(deviceId: string): Promise<number> {
+    let removed = 0;
+    for (const [id, p] of this.places) {
+      if (p.deviceId === deviceId && this.places.delete(id)) removed++;
+    }
+    return removed;
   }
 
   async listForCells(cells: string[]): Promise<Place[]> {

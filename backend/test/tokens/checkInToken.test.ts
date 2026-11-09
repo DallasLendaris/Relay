@@ -23,8 +23,8 @@ const signed = (payload: object, secret = 'secret-one') => {
 };
 
 describe.each([
-  ['v2', makeV2, { ok: true, h3Cell: CELL }],
-  ['v1', makeV1, { ok: true, h3Cell: null }],
+  ['v2', makeV2, { ok: true, h3Cell: CELL, expiresAt: expect.any(Date) }],
+  ['v1', makeV1, { ok: true, h3Cell: null, expiresAt: expect.any(Date) }],
 ] as const)('check-in tokens (%s)', (_name, make, accepted) => {
   it('accepts a valid token for its own alert and device', () => {
     expect(verify(make())).toEqual(accepted);
@@ -101,7 +101,11 @@ describe('check-in tokens (v2 cell binding)', () => {
       { ...base, expiresAt, h3Cell: 'cell-b' },
       { id: 'k2', secret: 'secret-two' },
     );
-    expect(verify(t, {}, rotated)).toEqual({ ok: true, h3Cell: 'cell-b' });
+    expect(verify(t, {}, rotated)).toEqual({
+      ok: true,
+      h3Cell: 'cell-b',
+      expiresAt: expect.any(Date),
+    });
   });
 
   it('rejects a correctly signed v2 payload with no cell, and an unknown version', () => {
@@ -114,7 +118,11 @@ describe('check-in tokens (v2 cell binding)', () => {
 
   it('ignores a cell claim in a v1 token (v1 never yields a cell)', () => {
     const t = signed({ v: 1, a: 'alert-1', d: 'device-1', c: CELL, exp: 4_000_000_000, kid: 'k1' });
-    expect(verify(t)).toEqual({ ok: true, h3Cell: null });
+    expect(verify(t)).toEqual({
+      ok: true,
+      h3Cell: null,
+      expiresAt: expect.any(Date),
+    });
   });
 });
 

@@ -1,4 +1,4 @@
-import type { Device, DeviceStore } from '../../ports.js';
+import type { Device, DeviceErasure, DeviceStore } from '../../ports.js';
 import type { PushTarget } from '../../scale/contracts.js';
 
 /** Fills in the native target for a device that only carries the legacy Expo token. */
@@ -11,8 +11,9 @@ function normalize(device: Device): Device {
 }
 
 /** In-memory DeviceStore for tests and local runs. */
-export class MemoryDeviceStore implements DeviceStore {
+export class MemoryDeviceStore implements DeviceStore, DeviceErasure {
   private readonly devices = new Map<string, Device>();
+  private readonly tombstones = new Map<string, Date>();
 
   async create(device: Device): Promise<void> {
     if (this.devices.has(device.id)) throw new Error(`device ${device.id} already exists`);
@@ -71,5 +72,14 @@ export class MemoryDeviceStore implements DeviceStore {
         device.pushToken = null;
       }
     }
+  }
+
+  async deleteDevice(deviceId: string, deletedAt: Date): Promise<boolean> {
+    if (!this.tombstones.has(deviceId)) this.tombstones.set(deviceId, deletedAt);
+    return this.devices.delete(deviceId);
+  }
+
+  async listDeletedDevices(): Promise<string[]> {
+    return [...this.tombstones.keys()];
   }
 }
