@@ -100,12 +100,16 @@ describe('processBatch when the claim is throttled out', () => {
   it('still throws for a non-retryable claim failure', async () => {
     const t = makeDeps();
     await seedAlert(t.alerts);
+    // Keep the real store's other methods (class methods don't survive a spread).
+    const real = t.idempotency;
     t.deps.idempotency = {
-      ...t.idempotency,
       claim: async () => {
         throw new Error('boom');
       },
-    } as typeof t.deps.idempotency;
+      markSent: real.markSent.bind(real),
+      release: real.release.bind(real),
+      extend: real.extend?.bind(real),
+    };
     await expect(processBatch(makeBatch(), t.deps)).rejects.toThrow('boom');
   });
 });
