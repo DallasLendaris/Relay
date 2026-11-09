@@ -1,25 +1,13 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Alert, CheckIn, components } from '@relay/shared';
 import { cellForPoint } from '../geo/index.js';
-import {
-  QUEUE_FOR_SEVERITY,
-  type CellIndex,
-  type PushTarget,
-  type SendBatch,
-  type SendQueue,
-  type SendQueueName,
-} from '../scale/contracts.js';
+import type { CellIndex, PushTarget } from '../scale/contracts.js';
+import type { LateJoinIntent, LateJoinQueue } from '../scale/latejoin/intent.js';
+import { PushTokenInUseError } from '../scale/latejoin/push-target-rules.js';
 import type { IndexRepairMessage, IndexRepairQueue } from '../scale/cell-index/repair-queue.js';
-import {
-  deviceCellsOf,
-  syncDeviceCells,
-  type DeviceTruth,
-} from '../scale/cell-index/sync-device-cells.js';
-import { primaryCellOf } from '../scale/fanout/primary-cell.js';
+import { syncDeviceCells, type DeviceTruth } from '../scale/cell-index/sync-device-cells.js';
 import { targetOf } from '../scale/cell-index/util.js';
-import { alertEndTime } from '../delivery/eligibility.js';
 import {
-  createCheckInToken,
   createDeviceCredential,
   verifyCheckInToken,
   verifyDeviceCredential,
@@ -55,7 +43,15 @@ export interface ApiDeps {
   geocoder: Geocoder;
   /** The port plus a lookup by device (adapter classes have it; the port does not). */
   checkins: CheckInStore & CheckInLookup;
-  /** Check-in token keys by key id (kid -> secret). */
+  /**
+   * Check-in token keys by key id (kid -> secret), for VERIFYING check-ins only.
+   *
+   * Known limitation: the API reads the token keyring, which also holds the current signing key,
+   * because the check-in route has to verify tokens statelessly (no database read). A compromised
+   * API could therefore still mint check-in tokens. What it can no longer do is deliver anything:
+   * it has no permission on the send queues, so a minted token never reaches a phone. Closing the
+   * rest needs asymmetric token signing (verify key only on the API); tracked as a follow-up.
+   */
   tokenKeys: Map<string, string>;
   /** DynamoDB cell index, written through from here. Aurora stays the record. */
   cellIndex: CellIndex;
@@ -66,10 +62,12 @@ export interface ApiDeps {
   repairQueue?: IndexRepairQueue;
   /**
    * Late joiners: a device that registers a place or a push target while an alert is already
-   * active missed the fan-out (re-planning skips batches already sent), so the API sends it the
-   * active alerts itself, as single-recipient batches. Needs the send queues and a token key.
+   * active missed the fan-out (re-planning skips batches already sent). The API only asks: it
+   * enqueues a small LateJoinIntent on a queue that ONLY the late-join Lambda reads. That Lambda
+   * re-derives the device, places and alerts from Aurora and does the sending, so the API never
+   * builds a SendBatch, never mints a check-in token and has no permission on the send queues.
    */
-  lateJoin?: { sendQueue: SendQueue; tokenKey: TokenKey };
+  lateJoin?: { queue: LateJoinQueue };
   /**
    * Device credential keys by key id, for stateless credentials (see tokens/deviceCredential.ts).
    * Without it, only old two-part credentials verify.
@@ -206,61 +204,14 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
   }
 
   /**
-   * Sends the alerts already active over `cells` to one device that just registered a place or a
-   * push target. The batch key is per device and alert, so repeating this (a second place, a token
-   * refresh) is deduplicated by the sender's claim. Best effort: a failure never fails the API
-   * call. A device registered a moment before the planner reads its cell can get both this and
-   * the planned batch; both carry the alert id as collapse key, so the phone shows one.
+   * Asks the late-join Lambda to check this device for active alerts. Best effort: a failure
+   * never fails the API call (the device just waits for the next alert or a retry). Only called
+   * for a device that has a push target; the Lambda re-checks everything anyway.
    */
-  async function sendLateJoinAlerts(
-    deviceId: string,
-    target: PushTarget | null,
-    language: 'en' | 'es',
-    cells: string[],
-    /** ALL the device's cells (sorted). Defaults to `cells` (fail open: sends). */
-    deviceCells: string[] = cells,
-  ): Promise<void> {
-    const late = deps.lateJoin;
-    if (!late || !target || cells.length === 0) return;
+  async function requestLateJoin(intent: LateJoinIntent): Promise<void> {
+    if (!deps.lateJoin) return;
     try {
-      const now = deps.clock.now();
-      const active = await deps.alerts.listActiveForCells(cells, now);
-      const batches: Record<SendQueueName, SendBatch[]> = { urgent: [], standard: [] };
-      for (const alert of active) {
-        const queue = QUEUE_FOR_SEVERITY[alert.relaySeverity];
-        if (!queue) continue; // statements are in-app only
-        if (alert.state !== 'active' && alert.state !== 'updated') continue;
-        const expiresAt = alertEndTime(alert);
-        if (expiresAt.getTime() <= now.getTime()) continue;
-        const areaCells = new Set(alert.area.h3Cells);
-        if (!cells.some((c) => areaCells.has(c))) continue;
-        // Same primary-cell rule as the shard worker: the device is sent from the smallest of its
-        // cells in the alert area. A new place in any other cell adds no push: the planned
-        // fan-out already reaches the device through its primary cell.
-        const h3Cell = primaryCellOf(deviceCells, areaCells);
-        if (h3Cell === undefined || !cells.includes(h3Cell)) continue;
-        batches[queue].push({
-          alertId: alert.id,
-          sourceId: alert.sourceId,
-          relaySeverity: alert.relaySeverity,
-          batchKey: `${alert.id}:${alert.relaySeverity}:late:${deviceId}`,
-          recipients: [
-            {
-              deviceId,
-              target,
-              language,
-              checkInToken: createCheckInToken(
-                { alertId: alert.id, deviceId, h3Cell, expiresAt },
-                late.tokenKey,
-              ),
-            },
-          ],
-          attempt: 0,
-        });
-      }
-      for (const queue of ['urgent', 'standard'] as const) {
-        if (batches[queue].length > 0) await late.sendQueue.enqueue(queue, batches[queue]);
-      }
+      await deps.lateJoin.queue.enqueue(intent);
     } catch (err) {
       console.warn(
         JSON.stringify({
@@ -358,8 +309,21 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       throw new HttpError(400, 'invalid_request', 'language must be "en" or "es"');
     }
     const target = parsePushTarget(body);
-    // Moves the target here if another (reinstalled) device still holds it.
-    const { displaced } = await deps.devices.assignPushTarget(device.id, target, language);
+    // Moves the target here if another (reinstalled) device still holds it, within the move rules
+    // (scale/latejoin/push-target-rules.ts): otherwise one phone could mint unlimited identities.
+    let displaced: string[];
+    try {
+      ({ displaced } = await deps.devices.assignPushTarget(device.id, target, language));
+    } catch (err) {
+      if (err instanceof PushTokenInUseError) {
+        throw new HttpError(
+          409,
+          'push_token_in_use',
+          'This push token is attached to another active device. Try again later.',
+        );
+      }
+      throw err;
+    }
     // Keep the cell index in step. A failure here never fails the request (Aurora is the
     // record); the failed update is queued for the repair Lambda.
     await writeThrough('update_device', () => syncDevice(device.id, target, language), [
@@ -375,17 +339,8 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
         [allPlaces(otherId)],
       );
     }
-    // A device that just got a target missed any alert that is already active: send it now.
-    if (deps.lateJoin) {
-      try {
-        const cells = [
-          ...new Set((await deps.places.listForDevice(device.id)).map((p) => p.h3Cell)),
-        ].sort();
-        await sendLateJoinAlerts(device.id, target, language, cells, cells);
-      } catch {
-        /* best effort */
-      }
-    }
+    // A device that just got a target may have missed an active alert: ask the late-join Lambda.
+    await requestLateJoin({ deviceId: device.id, reason: 'push_target' });
     return noContent();
   });
 
@@ -486,13 +441,9 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       [repairPut],
     );
     const truth = seen.truth;
-    await sendLateJoinAlerts(
-      device.id,
-      truth ? truth.target : targetOf(device),
-      truth ? truth.language : device.language,
-      [place.h3Cell],
-      truth ? deviceCellsOf(truth.places) : [place.h3Cell],
-    );
+    if (truth ? truth.target : targetOf(device)) {
+      await requestLateJoin({ deviceId: device.id, placeId: place.id, reason: 'place_added' });
+    }
     return json(201, toPlaceBody(place));
   });
 

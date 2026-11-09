@@ -118,12 +118,15 @@ describe('cell-index repair outbox', () => {
 });
 
 describe('late joiners', () => {
-  it('the API has both send queue URLs and may send to them', () => {
-    const vars = fnWithEnv(dev.api, 'STANDARD_QUEUE_URL').Properties['Environment'].Variables;
-    expect(vars).toHaveProperty('URGENT_QUEUE_URL');
+  it('the API knows only the late-join queue, not the send queues', () => {
+    const vars = fnWithEnv(dev.api, 'LATEJOIN_QUEUE_URL').Properties['Environment'].Variables;
+    expect(vars).not.toHaveProperty('URGENT_QUEUE_URL');
+    expect(vars).not.toHaveProperty('STANDARD_QUEUE_URL');
     const send = statements(dev.api).filter((s) => [s.Action].flat().includes('sqs:SendMessage'));
     const resources = send.flatMap((s) => [s.Resource].flat());
-    expect(resources.length).toBeGreaterThanOrEqual(3); // repair, urgent, standard
+    // The repair queue, the late-join queue and the aggregator's own DLQ: never a send queue.
+    expect(resources).toHaveLength(3);
+    expect(JSON.stringify(resources)).not.toMatch(/Urgent|Standard/);
   });
 });
 

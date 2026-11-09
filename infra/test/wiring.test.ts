@@ -506,16 +506,18 @@ describe('all stacks', () => {
 
 describe('stack dependency order', () => {
   // config and data are roots; delivery and fanout need them; api, sender and ingest need fanout
-  // (and delivery); the edge stack comes last. Equal ranks never depend on each other.
+  // (and delivery); the late-join stack owns the intent queue the API sends to, so it comes before
+  // the API; the edge stack comes last. Equal ranks never depend on each other.
   const RANK: Record<string, number> = {
     config: 0,
     data: 0,
     delivery: 1,
     fanout: 1,
-    api: 2,
+    latejoin: 2,
+    api: 3,
     sender: 2,
     ingest: 2,
-    edge: 3,
+    edge: 4,
   };
 
   for (const stage of ['dev', 'prod'] as const) {

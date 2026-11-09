@@ -6,6 +6,7 @@ import { DeliveryStack } from './delivery-stack.js';
 import { EdgeStack, publicAlertsBucketName } from './edge-stack.js';
 import { FanoutStack } from './fanout-stack.js';
 import { IngestStack, type FanoutMode } from './ingest-stack.js';
+import { LateJoinStack } from './latejoin-stack.js';
 import { SenderStack } from './sender-stack.js';
 
 export interface RelayAppOptions {
@@ -35,7 +36,7 @@ export interface RelayAppOptions {
  * Builds every stack. bin/relay.ts and the infra tests both call it, so the tests exercise the
  * real wiring. Values flow between stacks as plain props (ARNs, names, URLs).
  *
- * Dependency order (acyclic): config -> data -> fanout -> api, sender, ingest -> edge. Delivery
+ * Dependency order (acyclic): config -> data -> fanout -> latejoin -> api, and sender, ingest -> edge. Delivery
  * sits beside fanout (it needs config and data only). Nothing depends back on edge: ingest names
  * the public-alerts bucket deterministically instead of referencing it.
  */
@@ -79,6 +80,18 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     alertKeysSecretArn: config.alertKeysSecretArn,
     ...killSwitch,
   });
+  const latejoin = new LateJoinStack(app, id('latejoin'), {
+    env,
+    stage,
+    db,
+    tokenKeysSecretArn: config.tokenKeysSecretArn,
+    alertKeysSecretArn: config.alertKeysSecretArn,
+    ...killSwitch,
+    urgentQueue: { arn: fanout.urgentQueueArn, url: fanout.urgentQueueUrl },
+    standardQueue: { arn: fanout.standardQueueArn, url: fanout.standardQueueUrl },
+    idempotencyTableName: delivery.idempotencyTableName,
+    idempotencyTableArn: delivery.idempotencyTableArn,
+  });
   const api = new ApiStack(app, id('api'), {
     env,
     stage,
@@ -88,8 +101,7 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     cellIndexTableName: fanout.cellIndexTableName,
     cellIndexTableArn: fanout.cellIndexTableArn,
     originVerifySecretArn: config.originVerifySecretArn,
-    urgentQueue: { arn: fanout.urgentQueueArn, url: fanout.urgentQueueUrl },
-    standardQueue: { arn: fanout.standardQueueArn, url: fanout.standardQueueUrl },
+    lateJoinQueue: { arn: latejoin.queueArn, url: latejoin.queueUrl },
     ...(o.capacity?.checkinsWarmWritesPerSecond !== undefined
       ? { checkinsWarmWritesPerSecond: o.capacity.checkinsWarmWritesPerSecond }
       : {}),
@@ -154,5 +166,5 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
   // Edge is deployed last: it fronts the API and the bucket that ingest writes to.
   edge.addDependency(ingest);
 
-  return { config, data, delivery, fanout, api, ingest, sender, edge };
+  return { config, data, delivery, fanout, latejoin, api, ingest, sender, edge };
 }
