@@ -242,6 +242,7 @@ export interface components {
              *     person's name in it.
              */
             label: string;
+            /** @description Free-text address, at most 200 characters, no control characters. */
             address: string;
         };
         /** @description The coordinates are used once to find the H3 cell and are not stored. */

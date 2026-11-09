@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { LIMITS } from './limits.js';
 
 /** H3 resolution used everywhere (saved places, alert areas, check-in roll-ups). */
 export const H3_RESOLUTION = 7;
@@ -20,22 +21,25 @@ export const AlertStateSchema = z.enum(['active', 'updated', 'cancelled', 'expir
 /** ISO 8601 date-time string. */
 const dateTime = z.string().datetime({ offset: true });
 
-const position = z.array(z.number());
+// Every array and string below takes external (NWS) input, so each has a bound; see limits.ts.
+const short = z.string().max(LIMITS.alertShortMax);
+const position = z.array(z.number()).max(3);
+const ring = z.array(position).max(LIMITS.maxRingPositions);
 const GeoPolygonSchema = z.object({
   type: z.literal('Polygon'),
-  coordinates: z.array(z.array(position)),
+  coordinates: z.array(ring).max(LIMITS.maxPolygonRings),
 });
 const GeoMultiPolygonSchema = z.object({
   type: z.literal('MultiPolygon'),
-  coordinates: z.array(z.array(z.array(position))),
+  coordinates: z.array(z.array(ring).max(LIMITS.maxPolygonRings)).max(LIMITS.maxMultiPolygonParts),
 });
 
 export const AlertSchema = z.object({
   id: z.string().uuid(),
   source: z.enum(['nws', 'usgs', 'ipaws']),
-  sourceId: z.string(),
-  event: z.string(),
-  eventCode: z.string().nullable(),
+  sourceId: short,
+  event: short,
+  eventCode: short.nullable(),
   relaySeverity: RelaySeveritySchema,
   capSeverity: CapSeveritySchema,
   urgency: z.enum(['Immediate', 'Expected', 'Future', 'Past', 'Unknown']),
@@ -43,13 +47,13 @@ export const AlertSchema = z.object({
   status: z.enum(['Actual', 'Exercise', 'System', 'Test', 'Draft']),
   messageType: z.enum(['Alert', 'Update', 'Cancel', 'Ack', 'Error']),
   state: AlertStateSchema,
-  references: z.array(z.object({ sourceId: z.string(), sent: dateTime })),
+  references: z.array(z.object({ sourceId: short, sent: dateTime })).max(LIMITS.maxReferences),
   area: z.object({
-    description: z.string(),
+    description: z.string().max(LIMITS.alertTextMax),
     geometry: z.union([GeoPolygonSchema, GeoMultiPolygonSchema]).nullable(),
-    ugcCodes: z.array(z.string()),
-    sameCodes: z.array(z.string()),
-    h3Cells: z.array(z.string()),
+    ugcCodes: z.array(short).max(LIMITS.maxUgcCodes),
+    sameCodes: z.array(short).max(LIMITS.maxSameCodes),
+    h3Cells: z.array(short).max(LIMITS.maxH3Cells),
   }),
   sent: dateTime,
   effective: dateTime,
@@ -58,14 +62,22 @@ export const AlertSchema = z.object({
   ends: dateTime.nullable(),
   /** Text exactly as published by the agency. */
   official: z.object({
-    headline: z.string().nullable(),
-    description: z.string(),
-    instruction: z.string().nullable(),
-    senderName: z.string(),
-    language: z.string(),
+    headline: short.nullable(),
+    description: z.string().max(LIMITS.alertTextMax),
+    instruction: z.string().max(LIMITS.alertTextMax).nullable(),
+    senderName: short,
+    language: short,
   }),
   /** Relay-written plain-language summaries. Always label them as a Relay summary in the UI. May be empty. */
-  summaries: z.array(z.object({ language: z.string(), whatToDo: z.string(), text: z.string() })),
+  summaries: z
+    .array(
+      z.object({
+        language: short,
+        whatToDo: z.string().max(LIMITS.alertTextMax),
+        text: z.string().max(LIMITS.alertTextMax),
+      }),
+    )
+    .max(LIMITS.maxSummaries),
   /** Set once Relay validates the alert signature. */
   signature: z.string().nullable(),
   /**

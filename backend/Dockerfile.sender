@@ -2,6 +2,16 @@
 #   docker build --platform linux/arm64 -f backend/Dockerfile.sender .
 # Two stages: install + bundle with esbuild, then copy the single bundle into a slim runtime.
 
+# DEP-3: the base image is pinned by digest so a moved tag cannot change what we ship.
+# TODO(DEP-3): the digest could not be resolved when this was written (Docker Hub was not
+# reachable from the build sandbox), and a digest must never be guessed. Run
+#   backend/scripts/pin-node-digest.sh
+# on a machine with Docker or network access to registry-1.docker.io. It resolves the digest of the
+# node:22-slim index (the --platform flag picks arm64 from it) and rewrites both FROM lines to
+# node:22-slim@sha256:<digest>. Dependabot (docker ecosystem, .github/dependabot.yml) keeps the
+# digest current afterwards. infra/test/supply-chain.test.ts fails if a FROM line is neither
+# digest-pinned nor covered by this TODO marker, so the marker must go when the digest lands.
+
 FROM --platform=linux/arm64 node:22-slim AS build
 WORKDIR /app
 
@@ -17,9 +27,12 @@ COPY backend backend
 RUN npm run build:shared
 
 # One ESM file. The banner gives bundled CommonJS dependencies a working require().
+# DEP-2: --sources-content=false keeps the source map (file names, line and column mappings, so
+# `node --enable-source-maps` still prints readable stack traces) but does not embed the source
+# text in it. The map is the only extra file in the runtime stage; it holds no code.
 RUN npx esbuild backend/src/scale/sender/main.ts \
       --bundle --platform=node --target=node22 --format=esm \
-      --minify --sourcemap \
+      --minify --sourcemap --sources-content=false \
       --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
       --outfile=/out/sender.mjs
 
@@ -27,7 +40,8 @@ FROM --platform=linux/arm64 node:22-slim
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build /out/sender.mjs /out/sender.mjs.map ./
-# The base image ships a non-root "node" user (uid 1000).
+# The base image ships a non-root "node" user (uid 1000). The ECS task definition also sets
+# user 1000:1000 and a read-only root filesystem (SEC-C-14), so nothing here may write to disk.
 USER node
 # Fargate sends SIGTERM and waits 30 s; node runs as PID 1 and handles it in main.ts.
 CMD ["node", "--enable-source-maps", "--max-old-space-size=1536", "sender.mjs"]

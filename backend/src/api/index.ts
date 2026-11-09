@@ -1,5 +1,16 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import type { Alert, CheckIn, components } from '@relay/shared';
+import {
+  ApnsTokenSchema,
+  ExpoTokenSchema,
+  FcmTokenSchema,
+  LIMITS,
+  PlaceAddressSchema,
+  PlaceLabelSchema,
+  hasControlChars,
+  type Alert,
+  type CheckIn,
+  type components,
+} from '@relay/shared';
 import { cellForPoint } from '../geo/index.js';
 import type { CellIndex, PushTarget } from '../scale/contracts.js';
 import type { CellIndexOutbox } from '../scale/cell-index/outbox.js';
@@ -110,14 +121,11 @@ export interface ApiDeps {
 }
 
 export const MAX_PLACES_PER_DEVICE = 5;
-const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
+const MAX_IDEMPOTENCY_KEY_LENGTH = LIMITS.idempotencyKeyMax;
 
 type PlaceBody = components['schemas']['Place'];
 type AlertSummary = components['schemas']['AlertSummary'];
 
-const PUSH_TOKEN = /^Expo(nent)?PushToken\[[^\]\s]+\]$/;
-const APNS_TOKEN = /^[0-9a-fA-F]{64,200}$/;
-const FCM_TOKEN = /^[A-Za-z0-9_:-]{100,4096}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const sha256Hex = (s: string): string => createHash('sha256').update(s).digest('hex');
@@ -134,6 +142,10 @@ function requireObject(body: unknown): Record<string, unknown> {
 function nonEmptyString(v: unknown, name: string): string {
   if (typeof v !== 'string' || v.trim() === '') {
     throw new HttpError(400, 'invalid_request', `${name} must be a non-empty string`);
+  }
+  // NUL and other control characters never belong in client text; Postgres rejects NUL (a 500).
+  if (hasControlChars(v.trim())) {
+    throw new HttpError(400, 'invalid_request', `${name} must not contain control characters`);
   }
   return v.trim();
 }
@@ -163,7 +175,7 @@ function parsePushTarget(body: Record<string, unknown>): PushTarget {
   const bad = (message: string) => new HttpError(400, 'invalid_push_token', message);
   if (legacy) {
     const token = body['expoPushToken'];
-    if (typeof token !== 'string' || !PUSH_TOKEN.test(token)) {
+    if (typeof token !== 'string' || !ExpoTokenSchema.safeParse(token).success) {
       throw bad('expoPushToken must look like ExponentPushToken[...]');
     }
     return { platform: 'expo', token };
@@ -175,14 +187,17 @@ function parsePushTarget(body: Record<string, unknown>): PushTarget {
   }
   if (typeof token !== 'string') throw bad('token must be a string');
   if (platform === 'ios') {
-    if (!APNS_TOKEN.test(token)) throw bad('ios token must be 64 to 200 hex characters');
+    if (!ApnsTokenSchema.safeParse(token).success)
+      throw bad('ios token must be 64 to 200 hex characters');
     return { platform, token: token.toLowerCase() }; // hex is case-insensitive; one spelling
   }
   if (platform === 'android') {
-    if (!FCM_TOKEN.test(token)) throw bad('android token must be 100 to 4096 token characters');
+    if (!FcmTokenSchema.safeParse(token).success)
+      throw bad('android token must be 100 to 4096 token characters');
     return { platform, token };
   }
-  if (!PUSH_TOKEN.test(token)) throw bad('expo token must look like ExponentPushToken[...]');
+  if (!ExpoTokenSchema.safeParse(token).success)
+    throw bad('expo token must look like ExponentPushToken[...]');
   return { platform, token };
 }
 
@@ -508,7 +523,7 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     const device = await authenticate(req);
     const body = requireObject(req.body);
     const label = nonEmptyString(body['label'], 'label');
-    if (label.length > MAX_LABEL_LENGTH) {
+    if (!PlaceLabelSchema.safeParse(label).success) {
       throw new HttpError(
         400,
         'invalid_request',
@@ -538,7 +553,16 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     let h3Cell: string;
     let shortAddress: string | undefined;
     if (hasAddress) {
-      const found = await deps.geocoder.geocode(nonEmptyString(body['address'], 'address'));
+      const address = nonEmptyString(body['address'], 'address');
+      // Bounded before the geocoder: Amazon Location bills per request and per long query.
+      if (!PlaceAddressSchema.safeParse(address).success) {
+        throw new HttpError(
+          400,
+          'invalid_request',
+          `address must be at most ${LIMITS.addressMax} characters`,
+        );
+      }
+      const found = await deps.geocoder.geocode(address);
       if (!found) throw new HttpError(400, 'address_not_found', 'Could not find that address');
       if (found.state !== 'CA') {
         throw new HttpError(422, 'outside_california', 'Relay supports California addresses only');
@@ -714,6 +738,9 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       throw new HttpError(400, 'unsupported_status', 'status "need_help" is not supported yet');
     }
     const token = nonEmptyString(body['token'], 'token');
+    if (token.length > LIMITS.checkInTokenMax) {
+      throw new HttpError(400, 'invalid_request', 'token is too long');
+    }
     const idempotencyKey = nonEmptyString(body['idempotencyKey'], 'idempotencyKey');
     if (idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
       throw new HttpError(400, 'invalid_request', 'idempotencyKey is too long');

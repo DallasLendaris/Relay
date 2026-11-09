@@ -215,6 +215,10 @@ export class SenderStack extends Stack {
 
     taskDef.addContainer('sender', {
       image,
+      // SEC-C-14: the process writes no files (no temp dir, no disk cache; logs go to stdout), so
+      // the root filesystem is read-only. If a future dependency needs scratch space, add a task
+      // volume mounted at /tmp instead of lifting this. The non-root user comes from the image (USER node).
+      readonlyRootFilesystem: true,
       stopTimeout: Duration.seconds(SENDER_STOP_TIMEOUT_SECONDS),
       logging: new AwsLogDriver({ streamPrefix: 'sender', logGroup }),
       environment: {

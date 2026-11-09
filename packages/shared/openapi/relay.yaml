@@ -362,6 +362,7 @@ components:
       properties:
         expoPushToken:
           type: string
+          maxLength: 200
         language:
           type: string
           enum: [en, es]
@@ -375,6 +376,8 @@ components:
           enum: [ios, android, expo]
         token:
           type: string
+          minLength: 64
+          maxLength: 4096
           description: |
             ios: APNs device token, 64 to 200 hex characters.
             android: FCM registration token, 100 to 4096 characters of A-Z a-z 0-9 _ : -.
@@ -396,6 +399,9 @@ components:
             person's name in it.
         address:
           type: string
+          minLength: 1
+          maxLength: 200
+          description: Free-text address, at most 200 characters, no control characters.
 
     CreatePlaceByCoordinates:
       type: object
@@ -491,8 +497,10 @@ components:
           $ref: '#/components/schemas/CheckInStatus'
         token:
           type: string
+          maxLength: 1024
         idempotencyKey:
           type: string
+          maxLength: 200
 
     CreateCheckInResponse:
       type: object
@@ -762,7 +770,9 @@ components:
           format: date-time
         token:
           type: string
+          maxLength: 1024
         idempotencyKey:
           type: string
+          maxLength: 200
         h3Cell:
           type: string
