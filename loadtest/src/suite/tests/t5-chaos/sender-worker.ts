@@ -376,16 +376,16 @@ runWorkerMain(async () => {
     };
 
     // The deployed wiring (sender/main.ts): the gate holds dead-target clears until the breaker
-    // has evidence and re-queues them (never clears) when it finds a misconfiguration. Its 60 s
-    // hold runs on the virtual clock.
+    // holds every dead-target clear (DEAD_TARGET_HOLD_MS) and, per platform, clears it or re-queues
+    // it (never clears) when that platform looks misconfigured. The hold runs on the virtual clock.
     gateClock.lastSubmitAt = 0;
     gateClock.lastDecisionAt = 0;
     gateClock.holdMs = realMs(vc, DEAD_TARGET_HOLD_MS);
     const gate = createDeadTargetGate(deps, { holdMs: gateClock.holdMs });
     deps.deadTargetGate = {
-      submit: (group, verdict) => {
+      submit: (group) => {
         if (group.recipients.length > 0) gateClock.lastSubmitAt = Date.now();
-        gate.submit(group, verdict);
+        gate.submit(group);
       },
     };
 
