@@ -148,6 +148,8 @@ export type BatchReason =
   | 'duplicate'
   | 'leased'
   | 'claim_throttled'
+  /** claim() failed with something other than a throttle; the message is left for redelivery. */
+  | 'claim_failed'
   | 'alert_missing'
   | 'unsigned'
   | 'paused'
@@ -501,6 +503,52 @@ function topErrors(results: NativePushResult[]): Record<string, number> {
   return Object.fromEntries([...counts].sort((a, b) => b[1] - a[1]).slice(0, 3));
 }
 
+const TRANSIENT_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'EPIPE',
+  'EAI_AGAIN',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT_TIMEOUT',
+]);
+const TRANSIENT_NAMES = new Set([
+  'TimeoutError',
+  'AbortError',
+  'RequestTimeout',
+  'RequestTimeoutException',
+  'NetworkingError',
+  'ServiceUnavailable',
+  'InternalServerError',
+]);
+
+/**
+ * A network or server-side failure worth simply retrying later: socket errors, timeouts, an AWS
+ * SDK error marked retryable or answered with a 5xx. Not a bug, a validation or a permission error.
+ */
+export function isTransientError(err: unknown, depth = 0): boolean {
+  if (err === null || typeof err !== 'object') return false;
+  const e = err as {
+    name?: unknown;
+    code?: unknown;
+    message?: unknown;
+    status?: unknown;
+    $retryable?: unknown;
+    $metadata?: { httpStatusCode?: unknown };
+    cause?: unknown;
+  };
+  if (typeof e.code === 'string' && TRANSIENT_CODES.has(e.code)) return true;
+  if (typeof e.name === 'string' && TRANSIENT_NAMES.has(e.name)) return true;
+  if (e.$retryable !== undefined && e.$retryable !== null) return true;
+  const status = typeof e.status === 'number' ? e.status : e.$metadata?.httpStatusCode;
+  if (typeof status === 'number' && status >= 500) return true;
+  if (typeof e.message === 'string' && /socket hang up|\btimed? ?out\b/i.test(e.message)) {
+    return true;
+  }
+  return depth < 4 && e.cause !== undefined && isTransientError(e.cause, depth + 1);
+}
+
 export async function processBatch(
   batch: SendBatch,
   deps: SenderDeps,
@@ -517,9 +565,19 @@ export async function processBatch(
   } catch (err) {
     // The store retried its own throttles and gave up (PERF-4b). No claim was taken, so there is
     // nothing to release: leave this batch's message to be redelivered, never crash the message.
-    if ((err as { retryable?: unknown } | null)?.retryable !== true) throw err;
-    logger.warn('sender.claim_throttled', { batchKey: batch.batchKey, ...errorFields(err) });
-    return outcome(false, 'claim_throttled');
+    if ((err as { retryable?: unknown } | null)?.retryable === true) {
+      logger.warn('sender.claim_throttled', { batchKey: batch.batchKey, ...errorFields(err) });
+      return outcome(false, 'claim_throttled');
+    }
+    // A transient transport failure (connection reset, timeout, a 5xx). Whether a claim was taken
+    // is unknown, so do not release: if it was, it runs out with its lease and the redelivered
+    // message re-claims it (inheriting any progress). Leaving the message un-acked is what a
+    // throw would do, without counting the batch as failed. Anything else (a bug, a wrong table,
+    // no permission) still throws, loudly, as before.
+    if (!isTransientError(err)) throw err;
+    logger.error('sender.claim_failed', { batchKey: batch.batchKey, ...errorFields(err) });
+    write(emfLine('ClaimFailed', 1, deps.clock.now().getTime()));
+    return outcome(false, 'claim_failed');
   }
   if (claim === 'sent') return outcome(true, 'duplicate');
   if (claim === 'leased') return outcome(false, 'leased'); // another attempt is live; retry later
