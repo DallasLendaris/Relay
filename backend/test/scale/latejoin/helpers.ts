@@ -9,6 +9,7 @@ import { createApi, type ApiEvent } from '../../../src/api/index.js';
 import type { Logger } from '../../../src/delivery/types.js';
 import { cellForPoint } from '../../../src/geo/index.js';
 import { MemoryCellIndex } from '../../../src/scale/cell-index/index.js';
+import type { CellIndex } from '../../../src/scale/contracts.js';
 import { MemorySendQueue } from '../../../src/scale/fanout/queues.js';
 import {
   MemoryLateJoinQueue,
@@ -73,7 +74,14 @@ export function captureLogger(): { logger: Logger; lines: string[] } {
  * The whole path in memory: the API (which only enqueues intents), the late-join core (which
  * does the sending) and the check-in route, all on shared stores and one movable clock.
  */
-export function harness(opts: { verifyAlert?: (a: Alert) => boolean; paused?: boolean } = {}) {
+export function harness(
+  opts: {
+    verifyAlert?: (a: Alert) => boolean;
+    paused?: boolean;
+    /** The index the API writes through to (default: a fresh in-memory one). */
+    cellIndex?: CellIndex;
+  } = {},
+) {
   const time = { now: START };
   const clock = { now: () => time.now };
   const devices = new MemoryDeviceStore(clock);
@@ -83,6 +91,7 @@ export function harness(opts: { verifyAlert?: (a: Alert) => boolean; paused?: bo
   const idempotency = new MemoryIdempotencyStore(clock);
   const sendQueue = new MemorySendQueue();
   const intents = new MemoryLateJoinQueue();
+  const cellIndex = opts.cellIndex ?? new MemoryCellIndex();
   const { logger, lines } = captureLogger();
   const control = { paused: opts.paused ?? false, enqueueFails: false };
 
@@ -111,7 +120,7 @@ export function harness(opts: { verifyAlert?: (a: Alert) => boolean; paused?: bo
     alerts,
     geocoder: { geocode: async () => null },
     checkins,
-    cellIndex: new MemoryCellIndex(),
+    cellIndex,
     lateJoin: { queue: intents },
     tokenKeys: new Map([[TOKEN_KEY.id, TOKEN_KEY.secret]]),
     deviceCredentialKeys: new Map([[CREDENTIAL_KEY.id, CREDENTIAL_KEY.secret]]),
@@ -161,6 +170,7 @@ export function harness(opts: { verifyAlert?: (a: Alert) => boolean; paused?: bo
     idempotency,
     sendQueue,
     intents,
+    cellIndex,
     deps,
     control,
     lines,

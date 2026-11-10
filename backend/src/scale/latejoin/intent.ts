@@ -10,12 +10,26 @@ import { SendMessageCommand, type SQSClient } from '@aws-sdk/client-sqs';
 export interface LateJoinIntent {
   deviceId: string;
   placeId?: string;
-  reason: 'place_added' | 'push_target';
+  /**
+   * 'outbox': the cell-index outbox drainer has just put this device in the index, so the planned
+   * fan-out may not have seen it whatever its place's age says; the "place predates the alert"
+   * skip is off for it (the per-target claim still prevents duplicates).
+   */
+  reason: 'place_added' | 'push_target' | 'outbox';
+  /**
+   * ISO time the intent was FIRST enqueued. Set when the Lambda parks an intent during a pause,
+   * so the 24 h give-up counts from the original request, not from the latest re-enqueue.
+   */
+  enqueuedAt?: string;
 }
 
-/** The API's only way to cause a late-join send. Only the API has permission to send to it. */
+/**
+ * The only way to cause a late-join send. The API, the outbox drainer and the late-join Lambda
+ * itself (to park an intent while delivery is paused) have permission to send to it.
+ */
 export interface LateJoinQueue {
-  enqueue(intent: LateJoinIntent): Promise<void>;
+  /** `delaySeconds` (SQS maximum 900) hides the message for that long. */
+  enqueue(intent: LateJoinIntent, opts?: { delaySeconds?: number }): Promise<void>;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -28,22 +42,39 @@ export function isLateJoinIntent(v: unknown): v is LateJoinIntent {
   );
 }
 
+/** How long a paused intent keeps being parked before it is given up on. */
+export const PARK_GIVE_UP_MS = 24 * 60 * 60 * 1000;
+
 export class SqsLateJoinQueue implements LateJoinQueue {
   constructor(
     private readonly sqs: Pick<SQSClient, 'send'>,
     private readonly queueUrl: string,
   ) {}
-  async enqueue(intent: LateJoinIntent): Promise<void> {
+  async enqueue(intent: LateJoinIntent, opts?: { delaySeconds?: number }): Promise<void> {
     await this.sqs.send(
-      new SendMessageCommand({ QueueUrl: this.queueUrl, MessageBody: JSON.stringify(intent) }),
+      new SendMessageCommand({
+        QueueUrl: this.queueUrl,
+        MessageBody: JSON.stringify(intent),
+        ...(opts?.delaySeconds
+          ? {
+              DelaySeconds: Math.min(MAX_DELAY_SECONDS, Math.max(0, Math.floor(opts.delaySeconds))),
+            }
+          : {}),
+      }),
     );
   }
 }
 
+/** SQS caps a message delay at 15 minutes. */
+export const MAX_DELAY_SECONDS = 900;
+
 /** For tests and local runs. */
 export class MemoryLateJoinQueue implements LateJoinQueue {
   readonly intents: LateJoinIntent[] = [];
-  async enqueue(intent: LateJoinIntent): Promise<void> {
+  /** Every enqueue ever made, with its delay (never consumed, unlike `intents`). */
+  readonly log: Array<{ intent: LateJoinIntent; delaySeconds: number }> = [];
+  async enqueue(intent: LateJoinIntent, opts?: { delaySeconds?: number }): Promise<void> {
     this.intents.push(intent);
+    this.log.push({ intent, delaySeconds: opts?.delaySeconds ?? 0 });
   }
 }

@@ -77,7 +77,13 @@ export async function syncDeviceCells(
   for (let pass = 1; pass <= maxPasses; pass++) {
     const truth = await input.load();
     if (!truth) {
-      // The device is gone, and its places with it (cascade).
+      // The device is gone (erased), and its places with it (cascade). Whatever an earlier pass of
+      // this call wrote for it goes too: erasure racing a place add must not leave an entry that
+      // points at a deleted device.
+      for (const [placeId, h3Cell] of written) {
+        await index.remove(h3Cell, input.deviceId, placeId);
+      }
+      written.clear();
       if (input.removed) {
         await index.remove(input.removed.h3Cell, input.deviceId, input.removed.placeId);
       }

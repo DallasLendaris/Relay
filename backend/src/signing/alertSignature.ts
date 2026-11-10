@@ -77,9 +77,68 @@ function assertKid(kid: string): void {
   }
 }
 
+/** The order of the P-256 group; (n - 1) / 2 is the largest "low" S. */
+const P256_N = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+const P256_HALF_N = P256_N >> 1n;
+
+interface DerSig {
+  r: bigint;
+  s: bigint;
+}
+
+/** Strict parse of SEQUENCE { INTEGER r, INTEGER s } (short-form lengths: P-256 fits). */
+function parseDerSignature(der: Uint8Array): DerSig | null {
+  const b = Buffer.from(der);
+  if (b.length < 8 || b[0] !== 0x30 || b[1] !== b.length - 2 || b[1] === undefined) return null;
+  let off = 2;
+  const ints: bigint[] = [];
+  for (let i = 0; i < 2; i++) {
+    if (b[off] !== 0x02) return null;
+    const len = b[off + 1];
+    if (len === undefined || len === 0 || off + 2 + len > b.length) return null;
+    ints.push(BigInt(`0x${b.subarray(off + 2, off + 2 + len).toString('hex')}`));
+    off += 2 + len;
+  }
+  if (off !== b.length) return null;
+  const [r, s] = ints;
+  return r === undefined || s === undefined ? null : { r, s };
+}
+
+function derInt(v: bigint): Buffer {
+  let hex = v.toString(16);
+  if (hex.length % 2) hex = `0${hex}`;
+  let body = Buffer.from(hex, 'hex');
+  if (body.length === 0 || (body[0] ?? 0) >= 0x80) body = Buffer.concat([Buffer.of(0), body]);
+  return Buffer.concat([Buffer.of(0x02, body.length), body]);
+}
+
+function encodeDerSignature({ r, s }: DerSig): Buffer {
+  const body = Buffer.concat([derInt(r), derInt(s)]);
+  return Buffer.concat([Buffer.of(0x30, body.length), body]);
+}
+
+/** True when the DER signature parses and its S is at most n/2 (the canonical "low-S" form). */
+export function isLowS(der: Uint8Array): boolean {
+  const sig = parseDerSignature(der);
+  return sig !== null && sig.s > 0n && sig.s <= P256_HALF_N;
+}
+
+/**
+ * Rewrites a high-S signature to its low-S twin (s -> n - s); a low-S one is returned as is.
+ * KMS may return either form. (r, s) and (r, n - s) both verify, so verifiers insist on low-S
+ * (see verifyAlertSignature) and signers normalize with this. Throws on a non-DER input.
+ */
+export function toLowS(der: Uint8Array): Buffer {
+  const sig = parseDerSignature(der);
+  if (!sig) throw new Error('signature is not a DER ECDSA signature');
+  return sig.s <= P256_HALF_N
+    ? Buffer.from(der)
+    : encodeDerSignature({ r: sig.r, s: P256_N - sig.s });
+}
+
 const withSignature = (alert: Alert, kid: string, der: Buffer): Alert => ({
   ...alert,
-  signature: `${SIGNATURE_VERSION}.${kid}.${der.toString('base64url')}`,
+  signature: `${SIGNATURE_VERSION}.${kid}.${toLowS(der).toString('base64url')}`,
 });
 
 /** Returns a copy of the alert with signature = `v2.<kid>.<base64url DER ECDSA>`. */
@@ -112,6 +171,9 @@ export function verifyAlertSignature(alert: Alert, keys: AlertPublicKeys): Signa
     if (given.toString('base64url') !== tag) return { ok: false, reason: 'malformed' };
     const key = keys.get(kid);
     if (key === undefined) return { ok: false, reason: 'unknown_key' };
+    // Malleability: (r, s) and (r, n - s) both verify, so a second valid string for the same
+    // alert could be minted from a captured one. Only the low-S form is accepted.
+    if (!isLowS(given)) return { ok: false, reason: 'bad_signature' };
     // OpenSSL rejects non-DER (re-encoded) ECDSA signatures.
     const ok = cryptoVerify('sha256', canonicalAlertBytes(alert), key, given);
     return ok ? { ok: true } : { ok: false, reason: 'bad_signature' };
@@ -141,9 +203,32 @@ export function createAlertVerifier(keys: AlertPublicKeys): AlertVerifier {
     const sig: unknown = alert.signature;
     if (typeof sig === 'string' && sig !== '' && verified.get(alert) === sig) return true;
     const ok = verifyAlertSignature(alert, keys).ok;
-    if (ok && typeof sig === 'string') verified.set(alert, sig);
+    // The memo trusts the OBJECT, so the object must not change afterwards: freeze it (deeply)
+    // before remembering it. A later in-place write then throws instead of riding the memo.
+    // An alert that cannot be frozen (accessor properties) is simply not memoized.
+    if (ok && typeof sig === 'string' && deepFreeze(alert)) verified.set(alert, sig);
     return ok;
   };
+}
+
+/** Freezes a value and everything reachable by data properties. False if it has accessors. */
+function deepFreeze(root: object): boolean {
+  const stack: object[] = [root];
+  const seen = new Set<object>();
+  let plain = true;
+  while (stack.length > 0) {
+    const o = stack.pop() as object;
+    if (seen.has(o)) continue;
+    seen.add(o);
+    for (const k of Reflect.ownKeys(o)) {
+      const d = Object.getOwnPropertyDescriptor(o, k);
+      if (!d) continue;
+      if (d.get || d.set) plain = false;
+      else if (d.value !== null && typeof d.value === 'object') stack.push(d.value as object);
+    }
+    Object.freeze(o);
+  }
+  return plain;
 }
 
 /** Parses a DER SubjectPublicKeyInfo (what KMS GetPublicKey returns) into a P-256 key. */

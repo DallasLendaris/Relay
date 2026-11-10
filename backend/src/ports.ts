@@ -210,6 +210,13 @@ export interface IdempotencyStore {
    * in which case the caller must stop work on the key.
    */
   extend?(key: string, leaseUntil: Date): Promise<boolean>;
+  /**
+   * Read a key without touching it: 'sent' (marked sent, or written before leases existed),
+   * 'leased' (another attempt holds a live lease) or 'absent' (never claimed, released, or its
+   * lease ran out unsent). A strongly consistent read. Unlike claim-then-release it never makes
+   * the real sender see 'leased', so a probe cannot delay an urgent batch.
+   */
+  peek?(key: string): Promise<'absent' | 'leased' | 'sent'>;
 }
 
 export interface PushMessage {

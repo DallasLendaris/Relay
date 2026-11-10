@@ -3,7 +3,8 @@
  * sender) one of the few identities allowed to send to the urgent and standard send queues.
  *
  * Env: DB_CLUSTER_ARN, DB_SECRET_ARN, DB_NAME, URGENT_QUEUE_URL, STANDARD_QUEUE_URL,
- * IDEMPOTENCY_TABLE, ALERT_VERIFY_KEYS, TOKEN_KEYS_SECRET_ARN, KILL_SWITCH_PARAM.
+ * IDEMPOTENCY_TABLE, ALERT_VERIFY_KEYS, TOKEN_KEYS_SECRET_ARN, KILL_SWITCH_PARAM, and
+ * LATEJOIN_QUEUE_URL (its own queue: it parks intents there while delivery is paused).
  */
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { RDSDataClient } from '@aws-sdk/client-rds-data';
@@ -21,7 +22,14 @@ import type { Logger } from '../../delivery/types.js';
 import { alertVerifierFromEnv } from '../../signing/kms.js';
 import { createCheckInToken } from '../../tokens/index.js';
 import { SqsSendQueue } from '../sender/sqs-send-queue.js';
-import { isLateJoinIntent } from './intent.js';
+import {
+  isLateJoinIntent,
+  MAX_DELAY_SECONDS,
+  PARK_GIVE_UP_MS,
+  SqsLateJoinQueue,
+  type LateJoinIntent,
+  type LateJoinQueue,
+} from './intent.js';
 import { processLateJoin, type LateJoinDeps, type LateJoinResult } from './latejoin.js';
 
 const logger: Logger = {
@@ -35,7 +43,7 @@ const logger: Logger = {
  * our keyring cache filled, so refresh the keys once and run again (claims make the rerun safe).
  */
 export async function runIntent(
-  intent: { deviceId: string },
+  intent: { deviceId: string; reason?: string },
   deps: LateJoinDeps,
   refresh?: () => Promise<LateJoinDeps>,
 ): Promise<LateJoinResult> {
@@ -44,22 +52,57 @@ export async function runIntent(
   return result;
 }
 
+export interface ParkOptions {
+  /** The late-join queue itself: a paused intent goes back to it with a delay. */
+  queue: LateJoinQueue;
+  /** Delay between parks, seconds (SQS maximum 900). Default 900. */
+  delaySeconds?: number;
+  /** Give up this long after the intent was first enqueued. Default 24 h. */
+  giveUpMs?: number;
+}
+
 /**
  * Per record: a body that is not an intent goes back to the queue (and the DLQ after the retry
- * limit, where the alarm sees it); a failure retries; a paused kill switch retries.
+ * limit, where the alarm sees it); a failure retries.
+ *
+ * A paused kill switch PARKS the intent: it is re-enqueued with a delay of up to 15 minutes,
+ * carrying its original enqueue time, and the record is then done. Retrying the record instead
+ * would burn its receive count (20 x 180 s is an hour) and send the intent to the DLQ during a
+ * long pause, so those devices would never get the alert after unpause. A parked intent is given
+ * up on only 24 hours after it was first enqueued (an alert is long over by then); that is logged
+ * as an error. If the re-enqueue itself fails the record fails and retries as before.
  */
 export const buildLateJoinHandler =
-  (deps: LateJoinDeps, refresh?: () => Promise<LateJoinDeps>) =>
+  (deps: LateJoinDeps, refresh?: () => Promise<LateJoinDeps>, park?: ParkOptions) =>
   async (event: SQSEvent): Promise<SQSBatchResponse> => {
     const batchItemFailures: SQSBatchResponse['batchItemFailures'] = [];
     for (const record of event.Records) {
       try {
         const body: unknown = JSON.parse(record.body);
         if (!isLateJoinIntent(body)) throw new Error('message is not a late-join intent');
-        // Only the device id is used; see processLateJoin.
-        const result = await runIntent({ deviceId: body.deviceId }, deps, refresh);
-        if (result.refused === 'paused')
-          batchItemFailures.push({ itemIdentifier: record.messageId });
+        // Only the device id (and the advisory reason) is used; see processLateJoin.
+        const result = await runIntent(
+          { deviceId: body.deviceId, ...(body.reason === 'outbox' ? { reason: 'outbox' } : {}) },
+          deps,
+          refresh,
+        );
+        if (result.refused === 'paused') {
+          if (!park) {
+            batchItemFailures.push({ itemIdentifier: record.messageId });
+            continue;
+          }
+          const now = deps.clock.now().getTime();
+          const first = firstEnqueuedMs(body, record.attributes?.SentTimestamp, now);
+          if (now - first >= (park.giveUpMs ?? PARK_GIVE_UP_MS)) {
+            deps.logger.error('latejoin.paused_expired', { messageId: record.messageId });
+            continue;
+          }
+          const parked: LateJoinIntent = { ...body, enqueuedAt: new Date(first).toISOString() };
+          await park.queue.enqueue(parked, {
+            delaySeconds: Math.min(MAX_DELAY_SECONDS, park.delaySeconds ?? MAX_DELAY_SECONDS),
+          });
+          deps.logger.info('latejoin.parked', { messageId: record.messageId });
+        }
       } catch (err) {
         deps.logger.error('latejoin.record_failed', {
           messageId: record.messageId,
@@ -71,6 +114,18 @@ export const buildLateJoinHandler =
     return { batchItemFailures };
   };
 
+/** When the intent was first enqueued: our own stamp, else SQS's send time, else now. */
+function firstEnqueuedMs(
+  intent: LateJoinIntent,
+  sentTimestamp: string | undefined,
+  now: number,
+): number {
+  const own = intent.enqueuedAt ? Date.parse(intent.enqueuedAt) : NaN;
+  if (Number.isFinite(own)) return Math.min(own, now);
+  const sqs = Number(sentTimestamp);
+  return Number.isFinite(sqs) && sqs > 0 ? Math.min(sqs, now) : now;
+}
+
 const LATEJOIN_ENV = [
   'DB_CLUSTER_ARN',
   'DB_SECRET_ARN',
@@ -81,6 +136,7 @@ const LATEJOIN_ENV = [
   'ALERT_VERIFY_KEYS',
   'TOKEN_KEYS_SECRET_ARN',
   'KILL_SWITCH_PARAM',
+  'LATEJOIN_QUEUE_URL',
 ] as const;
 
 function build(env: Record<string, string | undefined>) {
@@ -124,11 +180,18 @@ function build(env: Record<string, string | undefined>) {
         createCheckInToken({ alertId, deviceId, h3Cell, expiresAt }, tokenKeys.current),
     };
   };
+  const park: ParkOptions = {
+    queue: new SqsLateJoinQueue(new SQSClient({}), e.LATEJOIN_QUEUE_URL),
+  };
   return async (event: SQSEvent) =>
-    buildLateJoinHandler(await withKeys(), async () => {
-      clearKeyringCache();
-      return withKeys();
-    })(event);
+    buildLateJoinHandler(
+      await withKeys(),
+      async () => {
+        clearKeyringCache();
+        return withKeys();
+      },
+      park,
+    )(event);
 }
 
 // Clients are built once per container; a failed build is not cached, so the next call retries.

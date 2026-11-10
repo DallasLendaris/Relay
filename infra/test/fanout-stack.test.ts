@@ -368,6 +368,7 @@ describe('FanoutStack', () => {
         'DB_CLUSTER_ARN',
         'DB_NAME',
         'DB_SECRET_ARN',
+        'LATEJOIN_QUEUE_URL',
       ]);
       const roleRef = (drainerFn().Properties.Role['Fn::GetAtt'] as string[])[0];
       const st = (Object.values(t.findResources('AWS::IAM::Policy')) as Res[])
@@ -377,7 +378,10 @@ describe('FanoutStack', () => {
       for (const a of ['rds-data:ExecuteStatement', 'dynamodb:PutItem', 'dynamodb:DeleteItem']) {
         expect(actions).toContain(a);
       }
-      expect(actions).not.toContain('sqs:SendMessage');
+      // It may send to the late-join queue (and nothing else) to ask for a late join.
+      const sends = st.filter((x) => actionsOf([x]).includes('sqs:SendMessage'));
+      expect(sends).toHaveLength(1);
+      expect(JSON.stringify(sends[0]?.['Resource'])).toContain('-latejoin');
     });
 
     it('alarms (a plain alarm) when an outbox row reaches 10 attempts', () => {

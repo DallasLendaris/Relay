@@ -60,4 +60,8 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
     existing.until = leaseUntil.getTime();
     return true;
   }
+
+  async peek(key: string): Promise<'absent' | 'leased' | 'sent'> {
+    return this.live(key)?.state ?? 'absent';
+  }
 }

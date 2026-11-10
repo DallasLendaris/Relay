@@ -37,16 +37,25 @@ export interface LateJoinStackProps extends StackProps {
 
 export const LATEJOIN_TIMEOUT_SECONDS = 30;
 export const LATEJOIN_DEFAULT_CONCURRENCY = 20;
-/** A paused kill switch makes the Lambda retry the record; 20 x ~3 min is about an hour. */
+/**
+ * Receives before the DLQ. A paused kill switch does NOT use this: the Lambda parks the intent
+ * by re-enqueueing it with a 15 minute delay and gives up only after 24 hours.
+ */
 export const LATEJOIN_MAX_RECEIVE_COUNT = 20;
+/**
+ * The intent queue's name is fixed so the cell-index outbox drainer (FanoutStack, which this stack
+ * depends on) can address it without a cross-stack reference (that would be a cycle).
+ */
+export const latejoinQueueName = (stage: string) => `relay-${stage}-latejoin`;
 
 /**
  * Late joiners (SEC-C-1, SEC-A-1, REL-12). The API asks, this stack acts:
  *
- *   API -- LateJoinIntent {deviceId, placeId?, reason} --> late-join queue (this stack, relay-<stage>-latejoin)
+ *   API or outbox drainer -- LateJoinIntent {deviceId, placeId?, reason} --> late-join queue (this stack, relay-<stage>-latejoin)
  *       --> late-join Lambda --> urgent / standard send queues (one single-recipient batch)
  *
- * Only the API can send to the intent queue, and only this Lambda consumes it. The Lambda reads
+ * Only the API, the outbox drainer (FanoutStack) and this Lambda itself (parking an intent while
+ * delivery is paused) can send to the intent queue, and only this Lambda consumes it. The Lambda reads
  * nothing from the intent but the device id: it re-reads the device, places and active alerts
  * from Aurora, verifies each alert's signature, applies the primary-cell rule and push policy,
  * claims one check-in token per push target per alert, rate-limits, mints the v2 token and
@@ -67,6 +76,7 @@ export class LateJoinStack extends Stack {
       retentionPeriod: Duration.days(14),
     });
     const queue = new Queue(this, 'LateJoinQueue', {
+      queueName: latejoinQueueName(props.stage),
       encryption: QueueEncryption.SQS_MANAGED,
       visibilityTimeout: Duration.seconds(LATEJOIN_TIMEOUT_SECONDS * 6),
       deadLetterQueue: { queue: dlq, maxReceiveCount: LATEJOIN_MAX_RECEIVE_COUNT },
@@ -93,6 +103,8 @@ export class LateJoinStack extends Stack {
         ...alertVerifyEnv(props.alertSigning),
         TOKEN_KEYS_SECRET_ARN: props.tokenKeysSecretArn,
         KILL_SWITCH_PARAM: props.killSwitchParamName,
+        // Its own queue: a paused intent is re-enqueued here with a delay.
+        LATEJOIN_QUEUE_URL: queue.queueUrl,
       },
     });
     // Consume the intent queue (the event source grants receive/delete on it).
@@ -103,7 +115,11 @@ export class LateJoinStack extends Stack {
         reportBatchItemFailures: true,
       }),
     );
-    allow(fn, ['sqs:SendMessage'], [props.urgentQueue.arn, props.standardQueue.arn]);
+    allow(
+      fn,
+      ['sqs:SendMessage'],
+      [props.urgentQueue.arn, props.standardQueue.arn, queue.queueArn],
+    );
     grantDb(fn, props.db, 'latejoin');
     grantSecretRead(fn, props.tokenKeysSecretArn);
     grantAlertVerify(fn, props.alertSigning);

@@ -33,8 +33,11 @@ export interface LateJoinDeps {
   alerts: Pick<AlertStore, 'listActiveForCells'>;
   /** Alert signature check (alert keys). An alert that fails is never late-joined. */
   verifyAlert(alert: Alert): boolean;
-  /** The sender's idempotency table: batch claims, per-target claims and rate-limit slots. */
-  idempotency: IdempotencyStore;
+  /**
+   * The sender's idempotency table: batch claims, per-target claims and rate-limit slots.
+   * `peek` is required: the "was the batch sent?" probe must not claim the batch key.
+   */
+  idempotency: IdempotencyStore & Required<Pick<IdempotencyStore, 'peek'>>;
   sendQueue: SendQueue;
   makeCheckInToken(alertId: string, deviceId: string, h3Cell: string, expiresAt: Date): string;
   isDeliveryPaused(): Promise<boolean>;
@@ -89,7 +92,8 @@ const emptyResult = (): LateJoinResult => ({
  *      batch key (fanout helpers) is claimed AND the device's place and push target both predate
  *      the alert (`alert.sent`, which is never later than the planner's read). A device that
  *      registered after the alert was sent can be missing from an already-sent batch, so it is
- *      NOT skipped: a duplicate push (same collapse key) is better than a missed one.
+ *      NOT skipped: a duplicate push (same collapse key) is better than a missed one. The same
+ *      holds for an intent with `reason: 'outbox'` (the drainer indexed the device late).
  *   3. SEC-A-1: claim `${alertId}:pt:${sha256(platform+token)}`. One check-in token per physical
  *      push target per alert, however many device identities the phone made. 'sent' = skip.
  *   4. Rate limit: 5 sends per push target per hour (slots in the same table).
@@ -97,7 +101,7 @@ const emptyResult = (): LateJoinResult => ({
  *      enqueue fails, release both and throw so SQS redelivers the intent.
  */
 export async function processLateJoin(
-  intent: { deviceId: string },
+  intent: { deviceId: string; reason?: string },
   deps: LateJoinDeps,
 ): Promise<LateJoinResult> {
   const result = emptyResult();
@@ -141,7 +145,13 @@ export async function processLateJoin(
     const h3Cell = primaryCellOf(deviceCells, areaCells);
     if (h3Cell === undefined) continue; // not in this alert's area (the store matches loosely)
 
-    if (await wasPlanned(alert, h3Cell, device.id, places, meta, deps.idempotency, now)) {
+    // An 'outbox' intent means the index learned of this device late (the API's write-through
+    // failed and the drainer redid it), so the fan-out may not have seen it even though its
+    // place predates the alert: no skip. The per-target claim below still stops a duplicate.
+    if (
+      intent.reason !== 'outbox' &&
+      (await wasPlanned(alert, h3Cell, device.id, places, meta, deps.idempotency))
+    ) {
       result.skipped.planned++;
       continue;
     }
@@ -161,8 +171,7 @@ async function wasPlanned(
   deviceId: string,
   places: ReadonlyArray<{ h3Cell: string; createdAt: string }>,
   meta: PushTargetMeta | null,
-  idempotency: IdempotencyStore,
-  now: Date,
+  idempotency: Required<Pick<IdempotencyStore, 'peek'>>,
 ): Promise<boolean> {
   const sent = Date.parse(alert.sent);
   const placeAt = Math.min(
@@ -172,15 +181,10 @@ async function wasPlanned(
   if (!meta || !Number.isFinite(sent) || !Number.isFinite(placeAt)) return false;
   if (!(placeAt < sent && meta.changedAt.getTime() < sent)) return false;
 
-  // The key the shard worker used for this device's (cell, bucket). claim() is the only read the
-  // port offers: if we win it nobody has touched the batch, so give it straight back.
+  // The key the shard worker used for this device's (cell, bucket). A pure read: claiming it to
+  // probe would make the real sender see 'leased' and delay an urgent batch.
   const key = `${alert.id}:${alert.relaySeverity}:${h3Cell}:${bucketFor(deviceId)}`;
-  const claim = await idempotency.claim(key, new Date(now.getTime() + 5_000));
-  if (claim === 'claimed') {
-    await idempotency.release(key);
-    return false;
-  }
-  return true; // 'sent' or 'leased': that batch was planned and is sent or being sent
+  return (await idempotency.peek(key)) !== 'absent'; // 'sent' or 'leased': planned
 }
 
 async function sendOne(
