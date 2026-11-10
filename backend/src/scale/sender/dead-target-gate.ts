@@ -110,7 +110,20 @@ export class DeadTargetGate {
       this.divert('breaker_open');
       return;
     }
-    if (this.opts.breaker.samples >= this.minSamples) {
+    const breaker = this.opts.breaker;
+    if (breaker.samples >= this.minSamples) {
+      // `verdict` was computed when this batch settled; the batch then awaited its re-enqueue and
+      // markSent while other batches went on recording. Never clear on that stale verdict alone:
+      // judge the window as it is now. With >= 200 samples looksSystemic is exactly the rolling
+      // rule, i.e. the verdict the next batch would get. These dead targets were not retried by
+      // the sender (its verdict was closed), so they join the held ones and are re-queued.
+      if (breaker.looksSystemic) {
+        if (dead.recipients.length > 0) {
+          this.held.push({ ...dead, recipients: [...dead.recipients] });
+        }
+        this.divert('breaker_open_since_settled');
+        return;
+      }
       this.release('evidence');
       for (const d of dead.recipients) this.opts.queue.enqueue(d.deviceId, d.target);
       return;

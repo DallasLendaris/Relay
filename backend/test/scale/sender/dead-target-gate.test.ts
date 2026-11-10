@@ -227,6 +227,87 @@ describe('dead-target hold: misconfiguration with small batches', () => {
   });
 });
 
+describe('dead-target hold: stale verdict (t5 d regression)', () => {
+  it('the breaker crosses the threshold from other batches before this batch submits: 0 cleared, all re-queued', async () => {
+    let misconfigured = true;
+    // 45% of tokens look dead; batch A has 2 of 5.
+    const looksDead = (tok: string) =>
+      tok.startsWith('A') ? tok === 'A0' || tok === 'A1' : Number(tok.slice(1)) % 20 < 9;
+    const s = await setup((tok) => misconfigured && looksDead(tok));
+    const a = makeBatch({ batchKey: 'a:warning:cellA:0' }, 5);
+    a.recipients = a.recipients.map((r, i) => ({
+      ...r,
+      deviceId: `A${i}`,
+      target: { platform: 'ios', token: `A${i}` } as PushTarget,
+    }));
+
+    // A settles first (closed verdict: 5 results, nowhere near 200), then stalls in markSent.
+    let unblock!: () => void;
+    const blocked = new Promise<void>((r) => (unblock = r));
+    let aAtMarkSent = false;
+    const realMarkSent = s.t.idempotency.markSent.bind(s.t.idempotency);
+    s.t.idempotency.markSent = async (k, e) => {
+      if (k === a.batchKey) {
+        aAtMarkSent = true;
+        await blocked;
+      }
+      return realMarkSent(k, e);
+    };
+    const pa = processBatch(a, s.t.deps);
+    await waitFor(() => aAtMarkSent);
+
+    // Meanwhile other batches push the window past 200 samples at about 45% permanent.
+    const others = smallBatches(70, rng(21));
+    for (const b of others) await processBatch(b, s.t.deps);
+    expect(s.breaker.samples).toBeGreaterThanOrEqual(200);
+    expect(s.breaker.looksSystemic).toBe(true);
+    await s.gate.settle(1000);
+
+    unblock();
+    expect(await pa).toMatchObject({ ack: true, permanentFailed: 2 }); // A's own (stale) view
+    expect(await s.gate.settle(1000)).toBe(0);
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(s.cleared).toEqual([]);
+    expect(
+      s.lines.find(
+        (l) =>
+          l.msg === 'sender.dead_targets_requeued' &&
+          l.fields?.['reason'] === 'breaker_open_since_settled',
+      )?.fields,
+    ).toMatchObject({ count: 2 });
+    const aHeld = heldBatches(s).filter((h) => h.batch.batchKey === `${a.batchKey}:h1`);
+    expect(aHeld.flatMap((h) => h.batch.recipients.map((r) => r.deviceId))).toEqual(['A0', 'A1']);
+    // Every recipient that looked dead is on the queue (held re-queue or breaker retry).
+    const queued = new Set(
+      s.t.sendQueue.enqueued
+        .flatMap((e) => e.batches.flatMap((b) => b.recipients))
+        .map((r) => r.deviceId),
+    );
+    for (const r of [a, ...others].flatMap((b) => b.recipients)) {
+      if (looksDead(r.target.token)) expect(queued.has(r.deviceId), r.deviceId).toBe(true);
+    }
+
+    // The fix lands: everyone, A0 and A1 included, is delivered exactly once.
+    misconfigured = false;
+    await drain(s);
+    for (const r of [a, ...others].flatMap((b) => b.recipients)) {
+      expect(s.delivered.get(r.target.token), r.deviceId).toBe(1);
+    }
+    expect(s.cleared).toEqual([]);
+  });
+
+  it('a stale closed verdict with a healthy window still clears normally', async () => {
+    const s = await setup((tok) => tok === 'd3'); // well under 1%
+    const batches = smallBatches(70, rng(21));
+    for (const b of batches) await processBatch(b, s.t.deps);
+    expect(s.breaker.samples).toBeGreaterThanOrEqual(200);
+    await waitFor(() => s.cleared.length === 1);
+    expect(s.cleared).toEqual(['d3']);
+    expect(heldBatches(s)).toHaveLength(0);
+  });
+});
+
 describe('dead-target hold: normal dead-token churn', () => {
   it('5% dead tokens, batches of 2-5: every dead token is cleared and the breaker never opens', async () => {
     const isDead = (tok: string) => Number(tok.slice(1)) % 20 === 7; // exactly 5%
