@@ -6,7 +6,7 @@
 import type { SuiteContext } from '../../types.js';
 import { CA_RING, countyRing } from './seed-data.js';
 
-export type ScenarioKey = 'a' | 'b' | 'c' | 'd' | 'e';
+export type ScenarioKey = 'a' | 'b' | 'c' | 'd' | 'e' | 'f';
 
 export interface T2Overrides {
   /** T2_SCENARIOS, e.g. "a,c". Default all. */
@@ -21,6 +21,10 @@ export interface T2Overrides {
   devicesSweep?: number;
   /** T2_SWEEP, e.g. "1,2,4,8"; the full sender count is always added. */
   sweep?: number[];
+  /** T2_DEVICES_DENSE: scenario f total devices (default 200,000; smoke 25,000). */
+  devicesDense?: number;
+  /** T2_DENSE_CELL_DEVICES: of those, devices in the ONE dense res-7 cell (default 150,000; smoke 22,000). */
+  denseCellDevices?: number;
   /** T2_SENDERS (default ctx.workers / 2, at least 2). */
   senders?: number;
   /** T2_SHARD_WORKERS (default ctx.workers / 3, at least 2). */
@@ -28,9 +32,10 @@ export interface T2Overrides {
   /** T2_SEED (default 1). */
   seed?: number;
   /**
-   * T2_FCM_RATE_MODE. 'fleet' (default): each sender's per-project bucket is 9,000/s divided by
-   * the sender count (FCM_PROJECT_RATE_PER_SEC set for the fleet, as docs/scale-quotas.md
-   * assumes). 'per-task': every sender uses the 9,000/s default, as infra deploys it today.
+   * T2_FCM_RATE_MODE. 'per-task' (default): the deployed code path. Each sender builds its rate
+   * with fcmRateFromEnv(env, FixedFleetSize(senderCount)): the 9,000/s fleet budget divided by
+   * the running sender count, read through the sender's rateProvider. 'fleet' (legacy): the
+   * fixed per-task override FCM_PROJECT_RATE_PER_SEC = 9,000 / senders.
    */
   fcmRateMode?: 'fleet' | 'per-task';
   /** T2_SWEEP_PROJECTS: Firebase projects in the sweep, so FCM quota never caps it (default 16). */
@@ -49,8 +54,10 @@ export interface T2Overrides {
 export interface Scenario {
   key: string;
   name: string;
-  region: 'county' | 'state';
+  region: 'county' | 'state' | 'dense';
   devices: number;
+  /** Region 'dense': devices in the one dense cell (the rest are normal county density). */
+  denseDevices?: number;
   projects: number;
   senders: number;
   ring: Array<[number, number]>;
@@ -64,6 +71,8 @@ export interface T2Config {
   devicesA: number;
   devicesB: number;
   devicesState: number;
+  devicesDense: number;
+  denseCellDevices: number;
   devicesSweep: number;
   sweep: number[];
   senders: number;
@@ -103,8 +112,8 @@ export function resolveConfig(ctx: SuiteContext, o: T2Overrides = {}): T2Config 
   const w = Math.max(2, ctx.workers);
   const scenarios = (
     o.scenarios ??
-    (envList('T2_SCENARIOS') as ScenarioKey[] | undefined) ?? ['a', 'b', 'c', 'd', 'e']
-  ).filter((s): s is ScenarioKey => ['a', 'b', 'c', 'd', 'e'].includes(s));
+    (envList('T2_SCENARIOS') as ScenarioKey[] | undefined) ?? ['a', 'b', 'c', 'd', 'e', 'f']
+  ).filter((s): s is ScenarioKey => ['a', 'b', 'c', 'd', 'e', 'f'].includes(s));
   const senders = o.senders ?? envNum('T2_SENDERS') ?? (smoke ? 2 : Math.max(2, Math.floor(w / 2)));
   const shardWorkers =
     o.shardWorkers ?? envNum('T2_SHARD_WORKERS') ?? (smoke ? 2 : Math.max(2, Math.floor(w / 6)));
@@ -134,7 +143,7 @@ export function resolveConfig(ctx: SuiteContext, o: T2Overrides = {}): T2Config 
   const rateMode =
     o.fcmRateMode ??
     (process.env['T2_FCM_RATE_MODE'] as T2Config['fcmRateMode'] | undefined) ??
-    'fleet';
+    'per-task';
   if (rateMode !== 'fleet' && rateMode !== 'per-task') {
     throw new Error('T2_FCM_RATE_MODE must be fleet or per-task');
   }
@@ -145,6 +154,9 @@ export function resolveConfig(ctx: SuiteContext, o: T2Overrides = {}): T2Config 
     devicesA,
     devicesB: o.devicesB ?? envNum('T2_DEVICES_B') ?? (smoke ? 10_000 : 1_900_000),
     devicesState: o.devicesState ?? envNum('T2_DEVICES_STATE') ?? (smoke ? 20_000 : 10_000_000),
+    devicesDense: o.devicesDense ?? envNum('T2_DEVICES_DENSE') ?? (smoke ? 25_000 : 200_000),
+    denseCellDevices:
+      o.denseCellDevices ?? envNum('T2_DENSE_CELL_DEVICES') ?? (smoke ? 22_000 : 150_000),
     devicesSweep: o.devicesSweep ?? envNum('T2_DEVICES_SWEEP') ?? devicesA,
     sweep,
     senders,
@@ -209,6 +221,19 @@ export function scenarioList(cfg: T2Config): Scenario[] {
       areaName: stateArea,
     });
   for (const k of cfg.scenarios) {
+    if (k === 'f') {
+      out.push({
+        key: 'f',
+        name: 'f) dense city cell, 4 FCM projects',
+        region: 'dense',
+        devices: cfg.devicesDense,
+        denseDevices: Math.min(cfg.denseCellDevices, cfg.devicesDense),
+        projects: 4,
+        senders: cfg.scale === 'smoke' ? cfg.senders : Math.min(11, cfg.senders),
+        ring: countyRing(),
+        areaName: 'Santa Clara County (bounding box)',
+      });
+    }
     if (k === 'a') county('a', 'a) county, 1 FCM project', cfg.devicesA, 1, cfg.senders);
     if (k === 'b') county('b', 'b) county (large), 1 FCM project', cfg.devicesB, 1, cfg.senders);
     if (k === 'c') state('c', 'c) statewide, 1 FCM project', 1);

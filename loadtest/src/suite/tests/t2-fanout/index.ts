@@ -19,7 +19,10 @@ import { cellToParent } from 'h3-js';
 import type { Alert } from '@relay/shared';
 import { InMemoryAlertStore } from '../../../../../backend/src/adapters/memory/alert-store.js';
 import { DEFAULT_FCM_PROJECT_RATE } from '../../../../../backend/src/adapters/push/fcm-projects.js';
-import type { ShardJob } from '../../../../../backend/src/scale/contracts.js';
+import {
+  DENSE_CELL_RECIPIENTS,
+  type ShardJob,
+} from '../../../../../backend/src/scale/contracts.js';
 import { CachedAlertReader } from '../../../../../backend/src/scale/fanout/alert-cache.js';
 import { planShards } from '../../../../../backend/src/scale/fanout/planner.js';
 import type { ShardResult } from '../../../../../backend/src/scale/fanout/shard-worker.js';
@@ -55,6 +58,8 @@ import {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const file = (name: string) => path.join(HERE, name);
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** SQS allows 256 KB per message; the plan is to stay under 240 KB. */
+const SQS_BODY_LIMIT_KB = 240;
 const round = (n: number, d = 0) => Math.round(n * 10 ** d) / 10 ** d;
 
 export type { T2Overrides } from './config.js';
@@ -73,8 +78,9 @@ async function ensureSeed(
   cfg: T2Config,
   region: Region,
   devices: number,
+  denseDevices = 0,
 ): Promise<SeedInfo> {
-  const dir = seedDirFor(ctx.dataDir, region, devices, cfg.seed);
+  const dir = seedDirFor(ctx.dataDir, region, devices, cfg.seed, denseDevices);
   const cached = readManifest(dir);
   if (cached && cached.devices === devices && cached.format === SEED_FORMAT) {
     ctx.log(`t2: seed ${region} ${devices} devices cached`, { dir });
@@ -83,8 +89,8 @@ async function ensureSeed(
   const t0 = performance.now();
   rmSync(dir, { recursive: true, force: true });
   ensureDir(dir);
-  const chunks = region === 'county' ? 1 : Math.ceil(devices / STATE_CHUNK);
-  const procs = Math.max(1, Math.min(ctx.workers, 8, region === 'county' ? 2 : chunks));
+  const chunks = region !== 'state' ? 1 : Math.ceil(devices / STATE_CHUNK);
+  const procs = Math.max(1, Math.min(ctx.workers, 8, region !== 'state' ? 2 : chunks));
   ctx.log(`t2: seeding ${region} ${devices} devices (${chunks} chunk(s), ${procs} process(es))`);
   const workers = await Promise.all(
     Array.from({ length: procs }, (_, i) =>
@@ -105,6 +111,7 @@ async function ensureSeed(
             devices,
             seed: cfg.seed,
             chunk,
+            denseDevices,
           });
           totals.entries += r.entries;
           totals.ios += r.ios;
@@ -239,6 +246,10 @@ interface BrokerStats {
   producerWaitMs: number;
   idemKeys: number;
   idemOps: number;
+  /** Largest SQS message body the shard workers or senders sent, bytes. */
+  maxBodyBytes: number;
+  /** Messages whose body was over 240 KB (SQS allows 256 KB). */
+  overBudgetMessages: number;
 }
 
 interface PlatformStats {
@@ -306,12 +317,14 @@ export interface ScenarioRaw {
   broker: BrokerStats;
   mocks: MockStats;
   senders: SenderStats[];
+  /** peakBufferedRecipients is the largest of any one shard job; the rest are sums. */
   shardTotals: Omit<ShardResult, 'refused' | 'continuedAt'> & {
     failedJobs: number;
     refused: number;
   };
   eo: ReturnType<typeof exactlyOnce>;
   fcmRatePerSender: number;
+  fcmRateSource: string;
   error?: string;
 }
 
@@ -340,9 +353,7 @@ async function runScenario(
     ),
   ]);
   for (const w of infra.all()) w.mark();
-  const fcmRatePerSender =
-    cfg.fcmRateMode === 'fleet' ? DEFAULT_FCM_PROJECT_RATE / sc.senders : DEFAULT_FCM_PROJECT_RATE;
-  await Promise.all(
+  const started = await Promise.all(
     active.map((w, i) => {
       const a = infra.apns[i % infra.apns.length];
       return w.request('start', {
@@ -350,11 +361,14 @@ async function runScenario(
         apnsUrl: a?.url,
         apnsCert: a?.cert,
         fcm: projects.map((id) => ({ projectId: id, url: infra.fcmUrls.get(id) })),
-        fcmRatePerSec: fcmRatePerSender,
+        senderCount: sc.senders,
+        fcmRateMode: cfg.fcmRateMode,
         concurrency: cfg.senderConcurrency,
       });
     }),
   );
+  const fcmRatePerSender = (started[0] as { fcmRate: number }).fcmRate;
+  const fcmRateSource = (started[0] as { fcmRateSource: string }).fcmRateSource;
   ctx.log(
     `t2: ${sc.name}: ${sc.devices} devices, ${alert.area.h3Cells.length} alert cells, ${sc.senders} senders, ${sc.projects} FCM project(s)`,
   );
@@ -362,6 +376,9 @@ async function runScenario(
   // ----- AlertReady -> the real planner -> shard jobs (dispatched like async Lambda invokes) -----
   const jobs: ShardJob[] = [];
   const shardTotals = {
+    denseCells: 0,
+    coveredBuckets: 0,
+    peakBufferedRecipients: 0,
     cells: 0,
     entries: 0,
     skippedNoTarget: 0,
@@ -389,6 +406,12 @@ async function runScenario(
         shardTotals.duplicates += r.duplicates;
         shardTotals.recipients += r.recipients;
         shardTotals.batches += r.batches;
+        shardTotals.denseCells += r.denseCells ?? 0;
+        shardTotals.coveredBuckets += r.coveredBuckets ?? 0;
+        shardTotals.peakBufferedRecipients = Math.max(
+          shardTotals.peakBufferedRecipients,
+          r.peakBufferedRecipients ?? 0,
+        );
         return;
       } catch (err) {
         // Lambda retries a failed async invoke twice.
@@ -609,6 +632,7 @@ async function runScenario(
     shardTotals,
     eo,
     fcmRatePerSender,
+    fcmRateSource,
     ...(error || jobError ? { error: error ?? `shard job failed: ${jobError}` } : {}),
   };
 }
@@ -686,6 +710,23 @@ export function toScenarioResult(r: ScenarioRaw): ScenarioResult {
     },
     { name: 'dead tokens (unregistered)', value: r.mocks.unregistered, unit: 'tokens' },
     { name: 'SQS messages sent', value: r.broker.sentMessages, unit: 'messages' },
+    {
+      name: 'largest SQS message body',
+      value: round(r.broker.maxBodyBytes / 1024, 1),
+      unit: 'KB',
+      target: { op: '<=', value: SQS_BODY_LIMIT_KB },
+    },
+    { name: 'dense cells (sent in parts)', value: r.shardTotals.denseCells, unit: 'cells' },
+    {
+      name: 'dense buckets already covered by an earlier normal batch',
+      value: r.shardTotals.coveredBuckets,
+      unit: 'buckets',
+    },
+    {
+      name: 'peak buffered recipients (largest single shard job)',
+      value: r.shardTotals.peakBufferedRecipients,
+      unit: 'recipients',
+    },
     { name: 'SQS redeliveries', value: r.broker.redeliveries, unit: 'messages' },
     { name: 'broker backlog peak', value: r.broker.peakBytesMb, unit: 'MB' },
     {
@@ -737,7 +778,29 @@ export function toScenarioResult(r: ScenarioRaw): ScenarioResult {
     { name: 'no recipient given up', ok: gaveUp === 0, detail: `${gaveUp}` },
     { name: 'no message dead-lettered', ok: r.broker.dlq === 0, detail: `${r.broker.dlq}` },
     { name: 'breaker stayed closed', ok: breaker === 0, detail: `${breaker} open events` },
+    {
+      name: `every SQS message body <= ${SQS_BODY_LIMIT_KB} KB`,
+      ok: r.broker.maxBodyBytes <= SQS_BODY_LIMIT_KB * 1024,
+      detail: `largest ${round(r.broker.maxBodyBytes / 1024, 1)} KB, ${r.broker.overBudgetMessages} message(s) over`,
+    },
   ];
+  if (sc.region === 'dense') {
+    // Streaming bound: a dense cell never holds more than about DENSE_CELL_RECIPIENTS recipients
+    // (plus unflushed batches and the other cells in flight), however many devices it has.
+    const bound = 3 * DENSE_CELL_RECIPIENTS;
+    checks.push(
+      {
+        name: 'dense path taken (a cell was sent in parts)',
+        ok: r.shardTotals.denseCells >= 1,
+        detail: `${r.shardTotals.denseCells} dense cell(s), ${sc.denseDevices} devices in the dense cell`,
+      },
+      {
+        name: `peak buffered recipients per shard job <= ${bound.toLocaleString('en-US')} (3 x DENSE_CELL_RECIPIENTS)`,
+        ok: r.shardTotals.peakBufferedRecipients <= bound,
+        detail: `${r.shardTotals.peakBufferedRecipients} recipients in the dense cell's shard job`,
+      },
+    );
+  }
   const notes: string[] = [];
   const mockCpu = Math.max(r.cpuPct['mock-apns'] ?? 0, r.cpuPct['mock-fcm'] ?? 0);
   if ((r.cpuPct['broker'] ?? 0) > 85) {
@@ -762,6 +825,13 @@ export function toScenarioResult(r: ScenarioRaw): ScenarioResult {
         .join(', ')}`,
     );
   }
+  if (sc.region === 'dense') {
+    notes.push(
+      `Dense cell: ${sc.denseDevices} of ${sc.devices} devices in one res-7 cell; shard-worker peak RSS ${r.peakRss['shard-worker'] ?? 0} MB; ` +
+        `peak buffered ${r.shardTotals.peakBufferedRecipients} recipients in one shard job; largest SQS body ${round(r.broker.maxBodyBytes / 1024, 1)} KB.`,
+    );
+  }
+  notes.push(`FCM rate per sender per project: ${r.fcmRateSource}.`);
   notes.push(
     `Per-sender pushes: ${r.perSenderOk.join(', ')}; sender CPU %: ${r.senderCpu.join(', ')}`,
   );
@@ -863,9 +933,9 @@ export async function runT2(ctx: SuiteContext, overrides: T2Overrides = {}): Pro
     // Seeds first (they use all cores), then the long-lived processes.
     const seeds = new Map<string, SeedInfo>();
     for (const sc of scenarios) {
-      const k = `${sc.region}-${sc.devices}`;
+      const k = `${sc.region}-${sc.devices}-${sc.denseDevices ?? 0}`;
       if (!seeds.has(k)) {
-        const info = await ensureSeed(ctx, cfg, sc.region, sc.devices);
+        const info = await ensureSeed(ctx, cfg, sc.region, sc.devices, sc.denseDevices ?? 0);
         seeds.set(k, info);
       }
     }
@@ -881,7 +951,7 @@ export async function runT2(ctx: SuiteContext, overrides: T2Overrides = {}): Pro
     });
     const reported = new Set<string>();
     for (const [i, sc] of scenarios.entries()) {
-      const k = `${sc.region}-${sc.devices}`;
+      const k = `${sc.region}-${sc.devices}-${sc.denseDevices ?? 0}`;
       const s = seeds.get(k) as SeedInfo;
       // Seed time is reported once, on the first scenario that uses the seed.
       const seed = reported.has(k) ? { ...s, seedMs: 0 } : s;
@@ -925,7 +995,7 @@ export const t2: SuiteTest = {
   id: 't2',
   title: 'Multi-process fan-out (planner, shard workers, senders, mock APNs/FCM)',
   description:
-    'Real planner, shard worker and sender code in separate processes against mock APNs/FCM: county 1M and 1.9M, statewide 10M with 1 and 8 FCM projects, and a sender-count sweep.',
-  estimatedMinutes: 40,
+    'Real planner, shard worker and sender code in separate processes against mock APNs/FCM: county 1M and 1.9M, statewide 10M with 1 and 8 FCM projects, a sender-count sweep, and a dense city cell (150,000 devices in one cell).',
+  estimatedMinutes: 45,
   run: (ctx) => runT2(ctx),
 };

@@ -9,8 +9,10 @@
  * Routes (JSON over HTTP on 127.0.0.1): see the switch in `route`.
  */
 import { MemoryIdempotencyStore } from '../../../../../backend/src/adapters/memory/idempotency-store.js';
+import { SENDER_CHUNK_SIZE } from '../../../../../backend/src/scale/contracts.js';
 import { runWorkerMain, sendMessage } from '../../lib/child.js';
 import {
+  CHUNK_CONCURRENCY,
   HttpError,
   isDeadToken,
   json,
@@ -120,6 +122,15 @@ runWorkerMain(async () => {
       return batches.reduce((n, b) => n + (b.recipients?.length ?? 0), 0);
     } catch {
       return 0;
+    }
+  };
+
+  const batchSizes = (body: string): number[] => {
+    try {
+      const batches = JSON.parse(body) as Array<{ recipients?: unknown[] }>;
+      return batches.map((b) => b.recipients?.length ?? 0);
+    } catch {
+      return [];
     }
   };
 
@@ -272,12 +283,33 @@ runWorkerMain(async () => {
         const sender = query.get('sender') ?? '';
         let messages = 0;
         let recipients = 0;
+        let batches = 0;
+        let multiChunkBatches = 0;
+        // Most one crash can duplicate: a multi-chunk batch loses at most the chunks being sent
+        // (chunk concurrency x chunk size, never more than its recipients); a single-chunk batch
+        // records no progress, so it can be sent again whole.
+        let chunkBound = 0;
         for (const f of inflight.values()) {
           if (f.sender !== sender) continue;
           messages++;
           recipients += recipientsOf(f.msg.body);
+          for (const n of batchSizes(f.msg.body)) {
+            batches++;
+            if (n > SENDER_CHUNK_SIZE) {
+              multiChunkBatches++;
+              chunkBound += Math.min(n, SENDER_CHUNK_SIZE * CHUNK_CONCURRENCY);
+            } else chunkBound += n;
+          }
         }
-        return { messages, recipients };
+        return { messages, recipients, batches, multiChunkBatches, chunkBound };
+      }
+      case 'POST /idem/recordChunk': {
+        const { key, chunk, redo } = json<{ key: string; chunk: number; redo: number[] }>(body);
+        return idem.recordChunk(key, { chunk, redo }).then((ok) => ({ ok }));
+      }
+      case 'POST /idem/progress': {
+        const { key } = json<{ key: string }>(body);
+        return idem.claimedProgress(key).then((progress) => ({ progress }));
       }
       case 'GET /stats': {
         let cleared = 0;

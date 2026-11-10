@@ -17,7 +17,7 @@ import { TOKEN_KEY, verifierFromPem } from './alert.js';
 import { serve } from './proc.js';
 import { DiskCellIndex, SeedReader, parseLine } from './seed-data.js';
 import { HashList } from './verify.js';
-import { BrokerClient, QUEUE_URLS, fakeSqs } from './wire.js';
+import { BrokerClient, QUEUE_URLS, RemoteIdempotencyStore, fakeSqs } from './wire.js';
 
 let broker: BrokerClient | undefined;
 let verify: AlertVerifier | undefined;
@@ -58,6 +58,8 @@ serve({
       logger,
       cellIndex,
       sendQueue: new SqsSendQueue(fakeSqs(broker, 'producer'), QUEUE_URLS),
+      // Dense cells tombstone each bucket's normal key in the sender's idempotency store.
+      idempotency: new RemoteIdempotencyStore(broker),
       makeCheckInToken: (alertId, deviceId, h3Cell, expiresAt) =>
         createCheckInToken({ alertId, deviceId, expiresAt, h3Cell }, TOKEN_KEY),
     });

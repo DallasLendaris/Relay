@@ -26,13 +26,15 @@ import { FcmSender } from '../../../../../backend/src/adapters/push/fcm-sender.j
 import { RoutingPushSender } from '../../../../../backend/src/adapters/push/routing-push-sender.js';
 import { createKillSwitch } from '../../../../../backend/src/config/kill-switch.js';
 import type { Logger } from '../../../../../backend/src/delivery/types.js';
-import type { IdempotencyStore } from '../../../../../backend/src/ports.js';
+import type { ChunkProgress, IdempotencyStore } from '../../../../../backend/src/ports.js';
 import { createAlertVerifier } from '../../../../../backend/src/signing/index.js';
 import { CachedAlertStore } from '../../../../../backend/src/scale/sender/cached-alerts.js';
 import { SenderConsumer } from '../../../../../backend/src/scale/sender/consumer.js';
 import { DeadTargetQueue } from '../../../../../backend/src/scale/sender/dead-target-queue.js';
+import { DEAD_TARGET_HOLD_MS } from '../../../../../backend/src/scale/sender/dead-target-gate.js';
 import {
   SENDER_LEASE_MS,
+  createDeadTargetGate,
   processBatch,
   type BatchOutcome,
   type SenderDeps,
@@ -41,6 +43,7 @@ import { SqsSendQueue } from '../../../../../backend/src/scale/sender/sqs-send-q
 import { PermanentBreaker } from '../../../../../backend/src/scale/sender/breaker.js';
 import { runWorkerMain, sendMessage } from '../../lib/child.js';
 import {
+  CHUNK_CONCURRENCY,
   HttpError,
   call,
   json,
@@ -78,6 +81,18 @@ export interface SenderTally {
   deadEnqueuedAfterBreaker: number;
   logEvents: Record<string, number>;
   deadFlushLeft: number;
+  /** Recipients the dead-target gate re-queued (breaker found a misconfiguration): sum of `count`. */
+  deadRequeuedRecipients: number;
+  /** Every decision of the dead-target gate: re-queue or clear, why, how many, breaker state. */
+  gateDecisions: Array<{
+    kind: 'requeued' | 'released';
+    reason: string;
+    count: number;
+    samples: number;
+    rollingRate: number;
+  }>;
+  /** Retry batches of held recipients handled (key `<batchKey>:held:r<n>`). */
+  heldRetryBatches: number;
 }
 
 const fresh = (id: string): SenderTally => ({
@@ -95,6 +110,9 @@ const fresh = (id: string): SenderTally => ({
   deadEnqueuedAfterBreaker: 0,
   logEvents: {},
   deadFlushLeft: 0,
+  deadRequeuedRecipients: 0,
+  gateDecisions: [],
+  heldRetryBatches: 0,
 });
 
 /** The idempotency store as the broker's HTTP API, with the real store's throttle-retry budget. */
@@ -149,17 +167,34 @@ class HttpIdempotencyStore implements IdempotencyStore {
     });
     return r.ok;
   }
+  async recordChunk(key: string, progress: ChunkProgress): Promise<boolean> {
+    const r = await call<{ ok: boolean }>(this.broker, 'POST', '/idem/recordChunk', {
+      key,
+      chunk: progress.chunk,
+      redo: progress.redo,
+    });
+    return r.ok;
+  }
+  async claimedProgress(key: string): Promise<ChunkProgress[]> {
+    const r = await call<{ progress: ChunkProgress[] }>(this.broker, 'POST', '/idem/progress', {
+      key,
+    });
+    return r.progress;
+  }
 }
 
 // The real kill switch writes an EMF metric line to stdout on every read; keep the console quiet.
 console.log = () => undefined;
 
 runWorkerMain(async () => {
+  /** Real ms of the last held-dead-target submit / the last gate decision, and the hold window. */
+  const gateClock = { lastSubmitAt: 0, lastDecisionAt: 0, holdMs: 0 };
   let running: {
     consumer: SenderConsumer;
     run: Promise<void>;
     tally: SenderTally;
     deadTargets: DeadTargetQueue;
+    gate: ReturnType<typeof createDeadTargetGate>;
     closers: Array<() => void>;
   } | null = null;
 
@@ -178,11 +213,37 @@ runWorkerMain(async () => {
     const vc = b.vclock;
     let breakerOpened = false;
     const logger: Logger = {
-      info: () => undefined,
+      // Info lines are only counted when a scenario reports them.
+      info: (m, fields) => {
+        if (m === 'sender.batch_resumed' || m === 'sender.dead_targets_released') {
+          tally.logEvents[m] = (tally.logEvents[m] ?? 0) + 1;
+        }
+        if (m === 'sender.dead_targets_released') {
+          gateClock.lastDecisionAt = Date.now();
+          tally.gateDecisions.push({
+            kind: 'released',
+            reason: String(fields?.['reason']),
+            count: Number(fields?.['count'] ?? 0),
+            samples: Number(fields?.['samples'] ?? 0),
+            rollingRate: Number(fields?.['rollingRate'] ?? 0),
+          });
+        }
+      },
       warn: (m) => void (tally.logEvents[m] = (tally.logEvents[m] ?? 0) + 1),
-      error: (m) => {
+      error: (m, fields) => {
         tally.logEvents[m] = (tally.logEvents[m] ?? 0) + 1;
         if (m === 'delivery.permanent_breaker_open') breakerOpened = true;
+        if (m === 'sender.dead_targets_requeued') {
+          tally.deadRequeuedRecipients += Number(fields?.['count'] ?? 0);
+          tally.gateDecisions.push({
+            kind: 'requeued',
+            reason: String(fields?.['reason']),
+            count: Number(fields?.['count'] ?? 0),
+            samples: Number(fields?.['samples'] ?? 0),
+            rollingRate: Number(fields?.['rollingRate'] ?? 0),
+          });
+          gateClock.lastDecisionAt = Date.now();
+        }
       },
     };
 
@@ -306,10 +367,25 @@ runWorkerMain(async () => {
         },
       },
       breaker: new PermanentBreaker(),
+      chunkConcurrency: CHUNK_CONCURRENCY,
       clock: vclock(vc),
       logger,
       writeMetric: () => undefined,
       invalidateAlert: (id) => alerts.invalidate(id),
+    };
+
+    // The deployed wiring (sender/main.ts): the gate holds dead-target clears until the breaker
+    // has evidence and re-queues them (never clears) when it finds a misconfiguration. Its 60 s
+    // hold runs on the virtual clock.
+    gateClock.lastSubmitAt = 0;
+    gateClock.lastDecisionAt = 0;
+    gateClock.holdMs = realMs(vc, DEAD_TARGET_HOLD_MS);
+    const gate = createDeadTargetGate(deps, { holdMs: gateClock.holdMs });
+    deps.deadTargetGate = {
+      submit: (group, verdict) => {
+        if (group.recipients.length > 0) gateClock.lastSubmitAt = Date.now();
+        gate.submit(group, verdict);
+      },
     };
 
     const consumer = new SenderConsumer({
@@ -321,6 +397,7 @@ runWorkerMain(async () => {
           const o = await processBatch(batch, deps, control);
           tally.batches++;
           if (batch.attempt > 0) tally.retryBatches++;
+          if (batch.batchKey.includes(':held:')) tally.heldRetryBatches++;
           tally.byReason[o.reason] = (tally.byReason[o.reason] ?? 0) + 1;
           tally.sent += o.sent;
           tally.permanentFailed += o.permanentFailed;
@@ -352,6 +429,7 @@ runWorkerMain(async () => {
       run,
       tally,
       deadTargets,
+      gate,
       closers: [() => apns.close(), () => fcm.close()],
     };
   };
@@ -362,12 +440,23 @@ runWorkerMain(async () => {
       await start(json<StartBody>(body));
       return { ok: true };
     }
+    if (method === 'GET' && path === '/gate') {
+      // Held dead targets still undecided (the gate decides by sample count or after its hold).
+      const g = gateClock;
+      const undecided =
+        running !== null &&
+        g.lastSubmitAt > g.lastDecisionAt &&
+        Date.now() - g.lastSubmitAt < g.holdMs + 1_000;
+      return { undecided };
+    }
     if (method === 'POST' && path === '/stop') {
       const r = running;
       if (!r) return { tally: null };
       running = null;
       r.consumer.stop();
       await r.run;
+      r.gate.shutdown(); // decide on held clears now, so the flush below includes them
+      await r.gate.settle(5_000); // re-queues of held recipients go first
       r.tally.deadFlushLeft = await r.deadTargets.flush(15_000);
       for (const c of r.closers) c();
       return { tally: r.tally };

@@ -9,7 +9,14 @@ import { generateKeyPairSync } from 'node:crypto';
 import type { Alert } from '@relay/shared';
 import { InMemoryAlertStore } from '../../../../../backend/src/adapters/memory/alert-store.js';
 import { ApnsSender } from '../../../../../backend/src/adapters/push/apns-sender.js';
-import { FcmProjectSender } from '../../../../../backend/src/adapters/push/fcm-projects.js';
+import {
+  FixedFleetSize,
+  fcmRateFromEnv,
+} from '../../../../../backend/src/adapters/push/fleet-size.js';
+import {
+  DEFAULT_FCM_PROJECT_RATE,
+  FcmProjectSender,
+} from '../../../../../backend/src/adapters/push/fcm-projects.js';
 import { FcmSender } from '../../../../../backend/src/adapters/push/fcm-sender.js';
 import { RoutingPushSender } from '../../../../../backend/src/adapters/push/routing-push-sender.js';
 import type { Logger } from '../../../../../backend/src/delivery/types.js';
@@ -115,7 +122,10 @@ interface StartOptions {
   apnsUrl: string;
   apnsCert: string;
   fcm: Array<{ projectId: string; url: string }>;
-  fcmRatePerSec: number;
+  /** Running sender tasks, what the ECS DescribeServices runningCount would say. */
+  senderCount: number;
+  /** 'per-task': fleet budget / senderCount; 'fleet' (legacy): fixed FCM_PROJECT_RATE_PER_SEC. */
+  fcmRateMode: 'per-task' | 'fleet';
   concurrency: number;
 }
 
@@ -157,12 +167,19 @@ serve({
         }),
     );
     r.closers.push(() => apns.close(), ...fcmSenders.map((f) => () => f.close()));
+    // The deployed path (sender/main.ts): fcmRateFromEnv over a fleet size source. Here the fleet
+    // size is fixed at the number of sender processes (ECS runningCount in AWS).
+    const rateEnv: Record<string, string | undefined> =
+      p.fcmRateMode === 'fleet'
+        ? { FCM_PROJECT_RATE_PER_SEC: String(DEFAULT_FCM_PROJECT_RATE / p.senderCount) }
+        : {};
+    const fcmRate = fcmRateFromEnv(rateEnv, new FixedFleetSize(p.senderCount));
     const android = new FcmProjectSender({
       projects: p.fcm.map((f, i) => ({
         projectId: f.projectId,
         sender: fcmSenders[i] as FcmSender,
       })),
-      ratePerSecond: p.fcmRatePerSec,
+      rateProvider: fcmRate.provider,
       logger,
     });
     const iosCounted = new Counting(apns, r.ios, r);
@@ -216,7 +233,10 @@ serve({
       writeMetric: () => {},
     });
     r.done = r.consumer.run();
-    return true;
+    return {
+      fcmRate: android.ratePerSecond,
+      fcmRateSource: `${fcmRate.mode === 'fleet' ? 'fleet budget / FixedFleetSize' : 'fixed override'} (${p.fcmRateMode}), ${android.ratePerSecond.toFixed(1)}/s per project per sender`,
+    };
   },
   stop: async () => {
     const r = run;

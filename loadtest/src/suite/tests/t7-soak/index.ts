@@ -9,7 +9,7 @@
  *   load driver                  check-ins, place add/remove, push-token changes, device erasure
  * The parent (this file) runs the alert script, samples every process every 10 s, and judges the run.
  *
- * Full: 60 minutes (RELAY_SOAK_MINUTES overrides), 300,000 devices, an alert event every 4 minutes,
+ * Full: 60 minutes (RELAY_SOAK_MINUTES overrides, e.g. 30 for the targeted rerun), 300,000 devices, an alert event every 4 minutes,
  * 500 check-ins/s, 20 place changes/s, 5 push-token changes/s, 1 erasure/s.
  * Smoke: 60 seconds, 3,000 devices, the same script and rates scaled down.
  */
@@ -55,6 +55,9 @@ import {
 import type { EpochReply, EpochRequest } from './mock.js';
 
 const here = (name: string): string => fileURLToPath(new URL(`./${name}`, import.meta.url));
+
+/** Processes that are test code, not Relay: their heap is reported but never fails the run. */
+const UNCOUNTED_PROCS = ['load'] as const;
 
 // ---------- configuration ----------
 
@@ -526,10 +529,18 @@ export const t7Soak: SuiteTest = {
     const loops: LoopReport[] = [];
     for (const n of names) {
       const rows = run.filter((s) => s.proc === n);
-      leaks.push(leakReport(n, rows, tStart, { durationS, markS, limitPct: 20, floorMb: 8 }));
+      leaks.push(
+        leakReport(n, rows, tStart, {
+          durationS,
+          markS,
+          limitPct: 20,
+          floorMb: 8,
+          uncounted: UNCOUNTED_PROCS,
+        }),
+      );
       loops.push(loopReport(n, rows, 200, sampleS));
     }
-    const leakers = leaks.filter((l) => l.leak);
+    const leakers = leaks.filter((l) => l.leak && l.counted);
     const stalled = loops.filter((l) => l.overLimitS > 60);
 
     const csvPath = join(ctx.outDir, 't7-samples.csv');
@@ -604,7 +615,7 @@ export const t7Soak: SuiteTest = {
     ];
     for (const l of leaks) {
       metrics.push({
-        name: `heap slope ${l.proc}`,
+        name: `heap slope ${l.proc} (last third)${l.counted ? '' : ', not counted: test code'}`,
         value: Math.round(l.slopeMbPerHour * 10) / 10,
         unit: 'MB/h',
       });
@@ -650,9 +661,14 @@ export const t7Soak: SuiteTest = {
         detail: `${errors}${((loadStats['errorSamples'] ?? []) as string[]).length ? `: ${((loadStats['errorSamples'] ?? []) as string[]).slice(0, 3).join(' | ')}` : ''}`,
       },
       {
-        name: `heap after GC grows less than 20% from the ${fmt(markS / 60, 1)}-minute mark to the end${longRun}`,
+        name: `heap after GC grows less than 20% over the last third of the run (a plateau is fine; the load driver is test code and not counted)${longRun}`,
         ok: !enforce || leakers.length === 0,
-        detail: leaks.map((l) => `${l.proc} ${fmt(l.growthPct, 1)}%`).join(', '),
+        detail: leaks
+          .map(
+            (l) =>
+              `${l.proc} ${fmt(l.lastThirdGrowthPct, 1)}% (${fmt(l.lastThirdGrowthMb, 1)} MB)${l.counted ? '' : ' not counted'}`,
+          )
+          .join(', '),
       },
       {
         name: `event-loop delay p99 over 200 ms for no more than 60 s${enforce ? '' : ' (not enforced in a short run)'}`,
@@ -677,7 +693,7 @@ export const t7Soak: SuiteTest = {
       notes: [
         ...notes,
         `Samples: ${csvPath} (${samples.length} rows: RSS, heapUsed after GC, event-loop delay p99, cache sizes per process).`,
-        `Leak rule: fail when a process's heap after GC grows more than 20% (and more than 8 MB) between the ${fmt(markS / 60, 1)}-minute mark and the end (least-squares fit); the MB/h slope uses the second half of the run.`,
+        `Leak rule: fail when a process's heap after GC grows more than 20% (and more than 8 MB) between the ${fmt(markS / 60, 1)}-minute mark and the end (least-squares fit); the verdict and the MB/h slope use the last third of the run, so the fan-out process's alert cache and the stand-ins count as expected bounded growth only if they plateau. The load driver (${UNCOUNTED_PROCS.join(', ')}) is test code: reported, not counted.`,
         ...(enforce
           ? []
           : [
@@ -708,8 +724,8 @@ export const t7Soak: SuiteTest = {
     ];
     md.push('## Memory and event loop per process', '');
     md.push(
-      '| Process | RSS MB (first / middle / last) | Heap after GC MB (first / middle / last) | Heap slope MB/h | Growth from mark | Loop delay p99, max (ms) | Seconds over 200 ms |',
-      '| --- | --- | --- | ---: | ---: | ---: | ---: |',
+      '| Process | RSS MB (first / middle / last) | Heap after GC MB (first / middle / last) | Heap slope MB/h (last third) | Growth, last third | Growth from mark | Loop delay p99, max (ms) | Seconds over 200 ms |',
+      '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |',
     );
     for (const n of names) {
       const rows = run.filter((s) => s.proc === n);
@@ -718,7 +734,7 @@ export const t7Soak: SuiteTest = {
       const l = leaks.find((x) => x.proc === n);
       const p = loops.find((x) => x.proc === n);
       md.push(
-        `| ${n} | ${fmt(r1)} / ${fmt(r2)} / ${fmt(r3)} | ${fmt(h1)} / ${fmt(h2)} / ${fmt(h3)} | ${fmt(l?.slopeMbPerHour ?? 0, 1)} | ${fmt(l?.growthPct ?? 0, 1)}% | ${fmt(p?.maxP99Ms ?? 0, 1)} | ${p?.overLimitS ?? 0} |`,
+        `| ${n}${l && !l.counted ? ' (not counted)' : ''} | ${fmt(r1)} / ${fmt(r2)} / ${fmt(r3)} | ${fmt(h1)} / ${fmt(h2)} / ${fmt(h3)} | ${fmt(l?.slopeMbPerHour ?? 0, 1)} | ${fmt(l?.lastThirdGrowthPct ?? 0, 1)}% | ${fmt(l?.growthPct ?? 0, 1)}% | ${fmt(p?.maxP99Ms ?? 0, 1)} | ${p?.overLimitS ?? 0} |`,
       );
     }
     md.push(

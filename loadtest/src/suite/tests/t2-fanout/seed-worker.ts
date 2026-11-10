@@ -19,6 +19,7 @@ import { serve } from './proc.js';
 import {
   deviceLines,
   ensureDir,
+  generateDenseCell,
   generateStateChunk,
   type GenDevice,
   type Region,
@@ -39,7 +40,14 @@ function* countyDevices(devices: number, seed: number): Generator<GenDevice> {
 }
 
 serve({
-  gen: (p: { dir: string; region: Region; devices: number; seed: number; chunk: number }) => {
+  gen: (p: {
+    dir: string;
+    region: Region;
+    devices: number;
+    seed: number;
+    chunk: number;
+    denseDevices?: number;
+  }) => {
     const tmp = path.join(p.dir, 'tmp', `c${p.chunk}`);
     ensureDir(tmp);
     const buffers = new Map<string, { parts: string[]; size: number }>();
@@ -53,10 +61,16 @@ serve({
     let ios = 0;
     let android = 0;
     let multiCell = 0;
+    const dense = Math.min(p.devices, p.denseDevices ?? 0);
     const source =
       p.region === 'county'
         ? countyDevices(p.devices, p.seed)
-        : generateStateChunk(p.seed, p.chunk, p.devices);
+        : p.region === 'dense'
+          ? (function* () {
+              yield* countyDevices(p.devices - dense, p.seed);
+              yield* generateDenseCell(p.seed, p.devices - dense, dense);
+            })()
+          : generateStateChunk(p.seed, p.chunk, p.devices);
     for (const d of source) {
       if (d.platform === 'ios') ios++;
       else android++;

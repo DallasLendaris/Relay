@@ -42,8 +42,8 @@ describe('suite t2: multi-process fan-out (smoke)', () => {
     expect(r.error).toBeUndefined();
     expect(failed).toEqual([]);
     expect(r.verdict).toBe('pass');
-    // a, b, c, d, sweep points 1 and 2, sweep summary.
-    expect(r.scenarios.map((s) => s.name[0])).toEqual(['a', 'b', 'c', 'd', 'e', 'e', 'e']);
+    // a, b, c, d, sweep points 1 and 2, f (dense cell), sweep summary.
+    expect(r.scenarios.map((s) => s.name[0])).toEqual(['a', 'b', 'c', 'd', 'e', 'e', 'f', 'e']);
     const metric = (scenario: number, name: string) =>
       r.scenarios[scenario]?.metrics.find((m) => m.name === name)?.value ?? -1;
     expect(metric(0, 'devices in alert area')).toBe(5_000);
@@ -52,6 +52,11 @@ describe('suite t2: multi-process fan-out (smoke)', () => {
     expect(metric(2, 'devices in alert area')).toBeLessThan(20_000);
     expect(metric(0, 'seed time')).toBeGreaterThan(0);
     expect(metric(4, 'seed time')).toBe(0); // the sweep reuses the county seed
+    // f: one dense cell sent in parts, SQS bodies within budget, buffering bounded.
+    expect(metric(6, 'devices in alert area')).toBe(25_000);
+    expect(metric(6, 'dense cells (sent in parts)')).toBeGreaterThanOrEqual(1);
+    expect(metric(6, 'largest SQS message body')).toBeLessThanOrEqual(240);
+    expect(metric(6, 'peak buffered recipients (largest single shard job)')).toBeGreaterThan(0);
     expect(existsSync(path.join(outDir, 't2.md'))).toBe(true);
     expect(readFileSync(path.join(outDir, 't2.md'), 'utf8')).toContain('Sender scaling');
   }, 120_000);

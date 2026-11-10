@@ -33,15 +33,23 @@ export function leastSquares(xs: number[], ys: number[]): Fit {
 export interface LeakReport {
   proc: string;
   samples: number;
-  /** Slope of heapUsed after GC over the second half of the run, MB per hour. */
+  /** Slope of heapUsed after GC over the last third of the run, MB per hour (what the verdict uses). */
   slopeMbPerHour: number;
-  /** Fitted heap at the mark and at the end, over [mark, end]. */
+  /** Fitted growth over the last third, MB and % of the fitted heap where the last third starts. */
+  lastThirdGrowthMb: number;
+  lastThirdGrowthPct: number;
+  /** Fitted heap at the mark and at the end, over [mark, end] (reported; not the verdict). */
   heapAtMarkMb: number;
   heapAtEndMb: number;
   growthMb: number;
   growthPct: number;
-  /** True when growth is over the percentage limit and over the absolute floor. */
+  /**
+   * True when the heap still grows over the last third of the run by more than the percentage limit
+   * and the absolute floor: a cache or stand-in that filled up and plateaued is not a leak.
+   */
   leak: boolean;
+  /** False for a process that is test code, not Relay (reported, but left out of the verdict). */
+  counted: boolean;
 }
 
 export interface LeakOptions {
@@ -52,17 +60,23 @@ export interface LeakOptions {
   limitPct: number;
   /** Ignore growth smaller than this (a 20% rise of a 15 MB heap is not a leak). */
   floorMb: number;
+  /** Processes that do not count toward the verdict (the load driver is test code). Default none. */
+  uncounted?: readonly string[];
 }
 
 export function leakReport(proc: string, rows: Sample[], t0: number, o: LeakOptions): LeakReport {
   const xs = rows.map((r) => (r.t - t0) / 1000);
   const ys = rows.map((r) => r.heapMb);
-  const half = o.durationS / 2;
-  const second = xs.map((x, i) => [x, ys[i] ?? 0] as const).filter(([x]) => x >= half);
-  const slope2 = leastSquares(
-    second.map((p) => p[0]),
-    second.map((p) => p[1]),
-  ).slope;
+  const thirdStart = (o.durationS * 2) / 3;
+  const last = xs.map((x, i) => [x, ys[i] ?? 0] as const).filter(([x]) => x >= thirdStart);
+  const fitLast = leastSquares(
+    last.map((p) => p[0]),
+    last.map((p) => p[1]),
+  );
+  const lastEnd = Math.max(thirdStart, xs[xs.length - 1] ?? thirdStart);
+  const lastGrowth = fitLast.slope * (lastEnd - thirdStart);
+  const lastStartHeap = fitLast.intercept + fitLast.slope * thirdStart;
+  const lastPct = lastStartHeap > 0 ? (lastGrowth / lastStartHeap) * 100 : 0;
   const after = xs.map((x, i) => [x, ys[i] ?? 0] as const).filter(([x]) => x >= o.markS);
   const fit = leastSquares(
     after.map((p) => p[0]),
@@ -76,12 +90,15 @@ export function leakReport(proc: string, rows: Sample[], t0: number, o: LeakOpti
   return {
     proc,
     samples: rows.length,
-    slopeMbPerHour: slope2 * 3600,
+    slopeMbPerHour: fitLast.slope * 3600,
+    lastThirdGrowthMb: lastGrowth,
+    lastThirdGrowthPct: lastPct,
     heapAtMarkMb: atMark,
     heapAtEndMb: atEnd,
     growthMb: growth,
     growthPct: pct,
-    leak: after.length >= 3 && pct > o.limitPct && growth > o.floorMb,
+    leak: last.length >= 3 && lastPct > o.limitPct && lastGrowth > o.floorMb,
+    counted: !(o.uncounted ?? []).includes(proc),
   };
 }
 
