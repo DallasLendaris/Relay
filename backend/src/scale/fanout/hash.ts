@@ -20,3 +20,22 @@ export function fnv1a32(input: string): number {
 export function bucketFor(deviceId: string): number {
   return fnv1a32(deviceId) % CELL_BUCKETS;
 }
+
+/**
+ * The stable part (0 to DENSE_PARTS - 1 = 15) of a device in a dense cell: its id's first character
+ * read as a lowercase hex digit. Two properties matter:
+ *  - balanced for UUIDs (lowercase hex, as Postgres prints them): 16 equal parts;
+ *  - monotone (never decreasing) in the cell index's sort order (sk = `${deviceId}#${placeId}`,
+ *    compared by code unit), for ANY id: other characters map to the nearest hex digit below them.
+ *    So a cell index page stream finishes part p before part p + 1 starts, and the shard worker
+ *    can emit part p and free it. Non-hex ids still work, only less evenly.
+ * Changing this moves devices between dense batch keys (double send on re-plan): hash.test.ts pins it.
+ */
+export function densePartFor(deviceId: string): number {
+  const c = deviceId.charCodeAt(0);
+  if (!(c >= 0x30)) return 0; // empty, or below '0'
+  if (c <= 0x39) return c - 0x30; // '0'-'9'
+  if (c < 0x61) return 9; // between '9' and 'a' (includes upper case)
+  if (c <= 0x66) return c - 0x61 + 10; // 'a'-'f'
+  return 15;
+}

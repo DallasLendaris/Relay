@@ -13,6 +13,7 @@
  */
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { RDSDataClient } from '@aws-sdk/client-rds-data';
+import { ECSClient } from '@aws-sdk/client-ecs';
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { DynamoIdempotencyStore } from '../../adapters/aws/dynamo-idempotency-store.js';
@@ -27,7 +28,8 @@ import {
   validateApnsSecret,
   validateFcmServiceAccounts,
   FcmProjectSender,
-  DEFAULT_FCM_PROJECT_RATE,
+  fcmRateFromEnv,
+  fleetSizeFromEnv,
   parseFcmProjectIds,
 } from '../../adapters/push/index.js';
 import { ExpoPushSender } from '../../adapters/expo/expo-push-sender.js';
@@ -100,9 +102,29 @@ async function main(): Promise<void> {
   if (fcmProjectIds.length > 0 && fcmProjectIds.join(',') !== secretIds.join(',')) {
     throw new Error('FCM_PROJECT_IDS does not match the project_id list in the FCM secret');
   }
-  const fcmRate = Number(process.env['FCM_PROJECT_RATE_PER_SEC'] ?? DEFAULT_FCM_PROJECT_RATE);
-  if (!Number.isFinite(fcmRate) || fcmRate <= 0) {
-    throw new Error('FCM_PROJECT_RATE_PER_SEC must be a positive number');
+  // Each task's FCM rate is the fleet budget divided by the running sender tasks (an explicit
+  // FCM_PROJECT_RATE_PER_SEC overrides that). Recomputed every few seconds as the fleet scales.
+  const fleetSize = fleetSizeFromEnv(
+    process.env,
+    () => new ECSClient({}),
+    (err) =>
+      logger.warn('fcm.fleet_size_failed', { error: err instanceof Error ? err.name : 'Error' }),
+  );
+  const fcmRate = fcmRateFromEnv(process.env, fleetSize);
+  await fleetSize.refresh();
+  const fcmSender = new FcmProjectSender({
+    projects: fcmAccounts.map((serviceAccount) => ({
+      projectId: serviceAccount.project_id ?? '',
+      sender: new FcmSender({ serviceAccount, logger }),
+    })),
+    rateProvider: fcmRate.provider,
+    logger,
+  });
+  logger.info('fcm.rate', { mode: fcmRate.mode, ratePerSecond: fcmSender.ratePerSecond });
+  if (fcmRate.mode === 'fleet') {
+    setInterval(() => {
+      void fleetSize.refresh().then(() => fcmSender.refreshRate());
+    }, 5_000).unref();
   }
 
   const alerts = new CachedAlertStore(new PostgresAlertStore(db));
@@ -130,14 +152,7 @@ async function main(): Promise<void> {
         bundleId: apns.bundleId,
         sandbox: apns.sandbox,
       }),
-      android: new FcmProjectSender({
-        projects: fcmAccounts.map((serviceAccount) => ({
-          projectId: serviceAccount.project_id ?? '',
-          sender: new FcmSender({ serviceAccount, logger }),
-        })),
-        ratePerSecond: fcmRate,
-        logger,
-      }),
+      android: fcmSender,
       // Development builds only (Expo is limited to about 600 pushes per second per project).
       expo: new ExpoNativeAdapter(new ExpoPushSender()),
     }),

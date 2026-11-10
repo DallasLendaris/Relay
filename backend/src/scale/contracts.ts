@@ -118,29 +118,70 @@ export const SHARD_RESOLUTION = 4;
 
 /**
  * Each H3 cell's devices are split into this many stable buckets (bucket = hash(deviceId) mod 64).
- * One SendBatch is exactly one (cell, bucket), so its key never changes when devices are added or
- * removed elsewhere: re-planning can never double-send or skip a device because batch boundaries
- * moved. 64 keeps the densest cells (about 20,000 devices) near 300 recipients per batch, which
- * fits an SQS message (256 KB).
+ * In a normal cell one SendBatch is exactly one (cell, bucket), so its key never changes when
+ * devices are added or removed elsewhere: re-planning can never double-send or skip a device
+ * because batch boundaries moved. 64 keeps cells of up to about 20,000 devices near 300
+ * recipients per batch, well inside BATCH_BYTE_BUDGET. Denser cells: see DENSE_CELL_RECIPIENTS.
  */
 export const CELL_BUCKETS = 64;
+
+/**
+ * A cell with more sendable devices than this (or any bucket whose batch would exceed
+ * BATCH_BYTE_BUDGET) is "dense". Real metro cells (LA, SF, San Diego) hold 75,000-150,000 devices:
+ * one (cell, bucket) batch of that is about 2,300 recipients, 0.5 MB, over the SQS message limit.
+ *
+ * A dense cell splits every bucket into DENSE_PARTS fixed parts by the first character of the
+ * device id (fanout/hash.ts densePartFor: balanced for UUIDs, and monotone in cell-index sort
+ * order, so the shard worker streams the cell part by part instead of holding it in memory).
+ * Key: `${alertId}:${relaySeverity}:${h3Cell}:${bucket}.${part}/${DENSE_PARTS}`.
+ *
+ * Exactly-once when a cell changes tier between two plans of the same alert version (devices
+ * added or removed): there are only two tiers, and before any part of bucket b is enqueued the
+ * shard worker claims the bucket's normal key `...:${bucket}` and marks it sent (a tombstone),
+ * after first marking `...:${bucket}:dense`. So
+ *  - normal plan, then dense re-plan: if the normal batch was already sent (or is being sent) the
+ *    claim fails and the bucket is skipped (it is covered); if it is still queued, the tombstone
+ *    makes the sender drop it as a duplicate and the parts carry its devices.
+ *  - dense plan, then normal re-plan: the normal key is tombstoned, so the sender drops it.
+ *  - dense, then dense again: part keys depend only on (bucket, first character), so they repeat.
+ * A crash between the two marks fails toward a duplicate push, never a miss. Late-join peeks the
+ * normal key, which the tombstone makes read as planned. See shard-worker.ts.
+ */
+export const DENSE_CELL_RECIPIENTS = 20_000;
+export const DENSE_PARTS = 16;
+
+/**
+ * Serialized-size budget of one SendBatch (JSON, check-in tokens included). The shard worker
+ * measures batches against it; it leaves room under the 256 KB SQS limit for the message array.
+ */
+export const BATCH_BYTE_BUDGET = 200 * 1024;
 
 /** The sender sends a batch's recipients in sub-chunks of this size (concurrent HTTP/2 streams). */
 export const SENDER_CHUNK_SIZE = 100;
 
-/** Several small SendBatches may share one SQS message to cut message count in sparse areas. */
+/**
+ * Several small SendBatches may share one SQS message to cut message count in sparse areas. Packing
+ * (fanout/pack.ts) also caps a message by measured bytes, not only by this count.
+ */
 export const MAX_BATCHES_PER_MESSAGE = 10;
 
 /**
  * A batch of recipients for one alert. Batches are deterministic: the same alert version,
- * cell and bucket always produce the same batchKey, so re-planning never double-sends.
- * The sender claims `batchKey` (lease → markSent) in the IdempotencyStore before sending.
+ * cell and bucket (and, in a dense cell, part) always produce the same batchKey, so re-planning
+ * never double-sends. The sender claims `batchKey` (lease → markSent) in the IdempotencyStore
+ * before sending.
  */
 export interface SendBatch {
   alertId: string;
   sourceId: string;
   relaySeverity: Alert['relaySeverity'];
-  /** `${alertId}:${relaySeverity}:${h3Cell}:${bucket}`; for a retry of failed recipients, that plus `:r<attempt>`. */
+  /**
+   * Normal cell: `${alertId}:${relaySeverity}:${h3Cell}:${bucket}`. Dense cell (DENSE_CELL_RECIPIENTS):
+   * `...:${bucket}.${part}/${DENSE_PARTS}`. A batch still over the byte budget (pathological: about
+   * 800+ recipients in one part) is halved into `<key>:s<path>` (path of 0/1 digits; not stable if
+   * devices are added). Late join: `${alertId}:${relaySeverity}:late:<hash>`. A retry of failed
+   * recipients is any of these plus `:r<attempt>`.
+   */
   batchKey: string;
   recipients: Array<{
     deviceId: string;

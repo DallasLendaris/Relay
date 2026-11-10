@@ -23,6 +23,12 @@ import { TokenBucket } from './token-bucket.js';
 /** Default per-project send rate: 9,000/s = 540,000/min, under the 600,000/min default quota. */
 export const DEFAULT_FCM_PROJECT_RATE = 9_000;
 
+/**
+ * Default per-project budget for the whole sender fleet: each task gets this divided by the number
+ * of running sender tasks, so the fleet as a whole stays under the project quota at any size.
+ */
+export const DEFAULT_FCM_PROJECT_FLEET_RATE = DEFAULT_FCM_PROJECT_RATE;
+
 /** Parses FCM_PROJECT_IDS (comma-separated). Empty or unset: no projects configured. */
 export function parseFcmProjectIds(raw: string | undefined): string[] {
   const ids = (raw ?? '')
@@ -53,6 +59,11 @@ export interface FcmProjectSenderOptions {
   projects: ReadonlyArray<{ projectId: string; sender: NativePushSender }>;
   /** Sends per second per project. Default 9,000. */
   ratePerSecond?: number;
+  /**
+   * Returns this task's per-project rate; when given it replaces `ratePerSecond`. Called at
+   * construction and by refreshRate(), so a fleet-wide budget can follow the fleet size.
+   */
+  rateProvider?: () => number;
   logger?: Logger;
   /** Injectable for tests. */
   now?: () => number;
@@ -72,7 +83,7 @@ export class FcmProjectSender implements NativePushSender {
     const first = opts.projects[0];
     if (!first) throw new Error('FcmProjectSender needs at least one project');
     this.defaultProject = first.projectId;
-    const rate = opts.ratePerSecond ?? DEFAULT_FCM_PROJECT_RATE;
+    const rate = this.currentRate();
     for (const p of opts.projects) {
       if (this.byProject.has(p.projectId)) throw new Error('duplicate FCM project id');
       this.byProject.set(p.projectId, {
@@ -80,6 +91,23 @@ export class FcmProjectSender implements NativePushSender {
         bucket: new TokenBucket(rate, rate, opts.now, opts.sleep),
       });
     }
+  }
+
+  private currentRate(): number {
+    const rate = this.opts.rateProvider?.() ?? this.opts.ratePerSecond ?? DEFAULT_FCM_PROJECT_RATE;
+    return Number.isFinite(rate) && rate > 0 ? rate : DEFAULT_FCM_PROJECT_RATE;
+  }
+
+  /** Re-reads the rate provider and applies it to every project bucket. Returns the new rate. */
+  refreshRate(): number {
+    const rate = this.currentRate();
+    for (const e of this.byProject.values()) e.bucket.setRate(rate, Math.max(1, rate));
+    return rate;
+  }
+
+  /** The current per-project rate of this task, in sends per second. */
+  get ratePerSecond(): number {
+    return this.byProject.values().next().value?.bucket.ratePerSecond ?? this.currentRate();
   }
 
   /** The project ids this sender serves, in configuration order. */

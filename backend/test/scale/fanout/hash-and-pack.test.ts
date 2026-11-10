@@ -1,15 +1,25 @@
+import { randomUUID } from 'node:crypto';
+import type { SendMessageBatchCommand } from '@aws-sdk/client-sqs';
 import { describe, expect, it } from 'vitest';
 import {
   CELL_BUCKETS,
+  DENSE_PARTS,
   MAX_BATCHES_PER_MESSAGE,
   type SendBatch,
 } from '../../../src/scale/contracts.js';
-import { bucketFor, fnv1a32 } from '../../../src/scale/fanout/hash.js';
+import { bucketFor, densePartFor, fnv1a32 } from '../../../src/scale/fanout/hash.js';
 import {
   MAX_MESSAGE_BYTES,
+  OversizeBatchError,
   packBatches,
   serializeMessage,
+  splitToFit,
 } from '../../../src/scale/fanout/pack.js';
+import {
+  SqsSendQueue as FanoutSqsSendQueue,
+  sendBodies,
+} from '../../../src/scale/fanout/queues.js';
+import { SqsSendQueue as SenderSqsSendQueue } from '../../../src/scale/sender/sqs-send-queue.js';
 import { target } from './helpers.js';
 
 describe('fnv1a32', () => {
@@ -89,5 +99,104 @@ describe('packBatches', () => {
 
   it('returns nothing for nothing', () => {
     expect(packBatches([])).toEqual([]);
+  });
+});
+
+describe('densePartFor', () => {
+  it('pins the part of each first character (part keys must never move)', () => {
+    const parts = '0123456789abcdef'.split('').map((c) => densePartFor(`${c}000-uuid`));
+    expect(parts).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(densePartFor('')).toBe(0);
+    expect(densePartFor('-x')).toBe(0);
+    expect(densePartFor('A1')).toBe(9);
+    expect(densePartFor('dev-1')).toBe(13);
+    expect(densePartFor('zeta')).toBe(15);
+    expect(DENSE_PARTS).toBe(16);
+  });
+
+  it('never decreases in cell-index sort order, for any ids (so a cell streams part by part)', () => {
+    const ids = Array.from({ length: 2_000 }, (_, i) =>
+      String.fromCharCode(32 + ((i * 7919) % 95), 32 + (i % 95)),
+    ).sort();
+    for (let i = 1; i < ids.length; i++) {
+      expect(densePartFor(ids[i] as string)).toBeGreaterThanOrEqual(
+        densePartFor(ids[i - 1] as string),
+      );
+    }
+  });
+
+  it('is balanced for UUIDs', () => {
+    const counts = new Array<number>(16).fill(0);
+    for (let i = 0; i < 16_000; i++) counts[densePartFor(randomUUID())]!++;
+    expect(Math.min(...counts)).toBeGreaterThan(800);
+    expect(Math.max(...counts)).toBeLessThan(1200);
+  });
+});
+
+describe('oversize guards', () => {
+  it('packBatches splits a single batch larger than a message into `:s` pieces that fit', () => {
+    // 1,500 recipients is about 400 KB: the old packer gave it a message of its own, which SQS
+    // rejects (over 256 KB), so those devices were never sent.
+    const big = batch(7, 1_500);
+    expect(Buffer.byteLength(JSON.stringify(big))).toBeGreaterThan(256 * 1024);
+    const messages = packBatches([batch(1, 3), big, batch(2, 3)]);
+    for (const m of messages) {
+      expect(Buffer.byteLength(serializeMessage(m))).toBeLessThanOrEqual(MAX_MESSAGE_BYTES);
+    }
+    const flat = messages.flat();
+    const pieces = flat.filter((b) => b.batchKey.startsWith(`${big.batchKey}:s`));
+    expect(pieces.length).toBeGreaterThanOrEqual(2);
+    expect(pieces.flatMap((b) => b.recipients)).toEqual(big.recipients);
+    expect(flat[0]?.batchKey).toBe('a:warning:cell:1');
+    // Deterministic for the same batch.
+    expect(
+      packBatches([big])
+        .flat()
+        .map((b) => b.batchKey),
+    ).toEqual(pieces.map((b) => b.batchKey));
+  });
+
+  it('splitToFit throws a clear error when one recipient alone is too big', () => {
+    const one = batch(1, 1);
+    expect(() => splitToFit(one, 100)).toThrow(OversizeBatchError);
+    expect(() => splitToFit(one, 100)).toThrow(/a:warning:cell:1 is \d+ bytes with one recipient/);
+  });
+
+  it('sendBodies refuses a body over the SQS limit before sending anything', async () => {
+    let calls = 0;
+    const sqs = {
+      send: async () => {
+        calls++;
+        return {};
+      },
+    } as never;
+    await expect(
+      sendBodies(sqs, 'url', ['ok', 'x'.repeat(256 * 1024 + 1)], async () => {}),
+    ).rejects.toThrow(/over the 262144 byte limit/);
+    expect(calls).toBe(0);
+  });
+
+  it.each([
+    ['fan-out', (s: never) => new FanoutSqsSendQueue(s, { urgent: 'U', standard: 'S' })],
+    ['sender re-queue', (s: never) => new SenderSqsSendQueue(s, { urgent: 'U', standard: 'S' })],
+  ])('%s SqsSendQueue packs by bytes: every message and request fits', async (_, make) => {
+    const requests: string[][] = [];
+    const sqs = {
+      send: async (cmd: SendMessageBatchCommand) => {
+        requests.push((cmd.input.Entries ?? []).map((e) => e.MessageBody ?? ''));
+        return {};
+      },
+    } as never;
+    // Ten 100 KB batches: packed by count alone they were one 1 MB message.
+    const batches = Array.from({ length: 10 }, (_, i) => batch(i, 230));
+    await make(sqs).enqueue('urgent', batches);
+    const bodies = requests.flat();
+    expect(bodies.length).toBeGreaterThan(1);
+    for (const b of bodies) expect(Buffer.byteLength(b)).toBeLessThanOrEqual(MAX_MESSAGE_BYTES);
+    for (const r of requests) {
+      expect(r.reduce((n, b) => n + Buffer.byteLength(b), 0)).toBeLessThanOrEqual(256 * 1024);
+    }
+    const sent = bodies.flatMap((b) => JSON.parse(b) as SendBatch[]);
+    expect(sent.map((b) => b.batchKey)).toEqual(batches.map((b) => b.batchKey));
   });
 });
