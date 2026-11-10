@@ -337,6 +337,7 @@ function mergeTallies(list: SenderTally[]): SenderTally {
     batches: 0,
     retryBatches: 0,
     thrown: 0,
+    thrownErrors: {},
     byReason: {},
     sent: 0,
     permanentFailed: 0,
@@ -366,6 +367,8 @@ function mergeTallies(list: SenderTally[]): SenderTally {
     out.deadEnqueuedBeforeBreaker += t.deadEnqueuedBeforeBreaker;
     out.deadEnqueuedAfterBreaker += t.deadEnqueuedAfterBreaker;
     out.deadFlushLeft += t.deadFlushLeft;
+    for (const [k, v] of Object.entries(t.thrownErrors ?? {}))
+      out.thrownErrors[k] = (out.thrownErrors[k] ?? 0) + v;
     for (const [k, v] of Object.entries(t.byReason)) out.byReason[k] = (out.byReason[k] ?? 0) + v;
     for (const [k, v] of Object.entries(t.logEvents))
       out.logEvents[k] = (out.logEvents[k] ?? 0) + v;
@@ -911,7 +914,13 @@ function buildDefs(sizes: Sizes): Def[] {
         {
           name: 'no sender crash or failed batch',
           ok: r.sum.thrown === 0 && sumLog(r, 'sender.message_failed') === 0,
-          detail: `${r.sum.thrown} batches threw`,
+          detail: `${r.sum.thrown} batches threw${
+            r.sum.thrown > 0
+              ? ` (${Object.entries(r.sum.thrownErrors)
+                  .map(([k, v]) => `${v}x ${k}`)
+                  .join('; ')})`
+              : ''
+          }; claim_failed ${reasons['claim_failed'] ?? 0}`,
         },
       );
       return {

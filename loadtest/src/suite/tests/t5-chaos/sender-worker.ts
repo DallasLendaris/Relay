@@ -70,6 +70,8 @@ export interface SenderTally {
   batches: number;
   retryBatches: number;
   thrown: number;
+  /** Error name: message of thrown batches (first 80 chars), counted. */
+  thrownErrors: Record<string, number>;
   byReason: Record<string, number>;
   sent: number;
   permanentFailed: number;
@@ -100,6 +102,7 @@ const fresh = (id: string): SenderTally => ({
   batches: 0,
   retryBatches: 0,
   thrown: 0,
+  thrownErrors: {},
   byReason: {},
   sent: 0,
   permanentFailed: 0,
@@ -407,6 +410,9 @@ runWorkerMain(async () => {
           return o;
         } catch (err) {
           tally.thrown++;
+          const e = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+          const k = e.slice(0, 80);
+          tally.thrownErrors[k] = (tally.thrownErrors[k] ?? 0) + 1;
           throw err;
         }
       },
