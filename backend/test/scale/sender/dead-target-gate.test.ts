@@ -102,7 +102,7 @@ async function drain(s: Setup): Promise<number> {
 
 const heldBatches = (s: Setup) =>
   s.t.sendQueue.enqueued.flatMap((e) =>
-    e.batches.filter((b) => b.batchKey.includes(':held:')).map((b) => ({ ...e, batch: b })),
+    e.batches.filter((b) => /:h\d+$/.test(b.batchKey)).map((b) => ({ ...e, batch: b })),
   );
 
 describe('dead-target hold: misconfiguration with small batches', () => {
@@ -142,9 +142,9 @@ describe('dead-target hold: misconfiguration with small batches', () => {
     expect(emf.some((m) => 'DeadTargetHeldDropped' in m)).toBe(false);
     for (const h of held) {
       // The normal retry scheme on its own `:held` base, same queue and context, budget kept.
-      const src = batches.find((b) => h.batch.batchKey.startsWith(`${b.batchKey}:held:`));
+      const src = batches.find((b) => h.batch.batchKey === `${b.batchKey}:h1`);
       expect(src, h.batch.batchKey).toBeDefined();
-      expect(h.batch.batchKey).toBe(`${src?.batchKey}:held:r1`);
+      expect(h.batch.batchKey).toBe(`${src?.batchKey}:h1`);
       expect(h.batch.attempt).toBe(1);
       expect(h.batch).toMatchObject({
         alertId: src?.alertId,
@@ -185,14 +185,14 @@ describe('dead-target hold: misconfiguration with small batches', () => {
     expect(heldBatches(s).length).toBeGreaterThan(0);
   });
 
-  it('a held retry is itself retried on the :held base, never colliding with the batch’s own :r<n>', () => {
+  it('a held re-queue key appends `:h<attempt+1>` to the whole key, never stripping anything', () => {
     const b = makeBatch({ batchKey: 'a:warning:c:0' });
-    expect(heldRetryKey(b)).toBe('a:warning:c:0:held:r1');
+    expect(heldRetryKey(b)).toBe('a:warning:c:0:h1');
     expect(heldRetryKey({ ...b, batchKey: 'a:warning:c:0:r2', attempt: 2 })).toBe(
-      'a:warning:c:0:held:r3',
+      'a:warning:c:0:r2:h3',
     );
-    expect(heldRetryKey({ ...b, batchKey: 'a:warning:c:0:held:r1', attempt: 1 })).toBe(
-      'a:warning:c:0:held:r2',
+    expect(heldRetryKey({ ...b, batchKey: 'a:warning:c:0:h1', attempt: 1 })).toBe(
+      'a:warning:c:0:h1:h2',
     );
   });
 
@@ -279,19 +279,33 @@ describe('dead-target hold: normal dead-token churn', () => {
     expect(s.timer.armed).toBe(false);
   });
 
-  it('little traffic that looks systemic (>= 20 permanents, > 20%) is re-queued on timeout', async () => {
-    // 8 batches of 4 with 3 dead each: 24 of 32 permanent, but no batch reaches 20 permanents.
+  it('little traffic that looks systemic (>= 100 results, >= 20 permanents, > 20%) is re-queued on timeout', async () => {
+    // 25 batches of 4 with 3 dead each: 75 of 100 permanent, no batch reaches 20 permanents,
+    // and the window is under the rolling rule's 200.
     const s = await setup((tok) => Number(tok.slice(1)) % 4 !== 0);
-    for (const b of smallBatches(8, () => 0.6)) await processBatch(b, s.t.deps);
+    for (const b of smallBatches(25, () => 0.6)) await processBatch(b, s.t.deps);
     expect(s.lines.some((l) => l.msg === 'delivery.permanent_breaker_open')).toBe(false);
     s.timer.fire();
     expect(await s.gate.settle(1000)).toBe(0);
     expect(s.cleared).toEqual([]);
     expect(s.lines.find((l) => l.msg === 'sender.dead_targets_requeued')?.fields).toMatchObject({
+      count: 75,
+      reason: 'hold_timeout',
+    });
+    expect(heldBatches(s).reduce((n, h) => n + h.batch.recipients.length, 0)).toBe(75);
+  });
+
+  it('too few results to judge (under 100) at timeout: clears are released normally', async () => {
+    // 8 batches of 4 with 3 dead each: 24 of 32 permanent, but only 32 results of evidence.
+    const s = await setup((tok) => Number(tok.slice(1)) % 4 !== 0);
+    for (const b of smallBatches(8, () => 0.6)) await processBatch(b, s.t.deps);
+    s.timer.fire();
+    await waitFor(() => s.cleared.length === 24);
+    expect(s.lines.find((l) => l.msg === 'sender.dead_targets_released')?.fields).toMatchObject({
       count: 24,
       reason: 'hold_timeout',
     });
-    expect(heldBatches(s).reduce((n, h) => n + h.batch.recipients.length, 0)).toBe(24);
+    expect(heldBatches(s)).toHaveLength(0);
   });
 
   it('shutdown decides at once, so the final queue flush includes the released clears', async () => {

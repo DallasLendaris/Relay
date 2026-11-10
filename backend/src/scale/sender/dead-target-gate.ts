@@ -9,12 +9,18 @@ export const DEAD_TARGET_HOLD_MS = 60_000;
 
 type Recipient = SendBatch['recipients'][number];
 
+/** What a held group keeps of its source batch: everything but the recipient list. */
+export type HeldSource = Pick<
+  SendBatch,
+  'alertId' | 'sourceId' | 'relaySeverity' | 'batchKey' | 'attempt'
+>;
+
 /**
  * Dead targets held from one settled batch, with what is needed to re-queue them: the batch they
- * came from (its recipients are not used) and its retry deadline (alert end or 30 min budget).
+ * came from (without its recipients) and its retry deadline (alert end or 30 min budget).
  */
 export interface HeldGroup {
-  batch: SendBatch;
+  source: HeldSource;
   firstAttemptMs: number;
   deadlineMs: number;
   recipients: Recipient[];
@@ -62,7 +68,7 @@ export interface DeadTargetGateOptions {
  *     the recipients the open breaker turns into retries, so they are delivered once the
  *     misconfiguration is fixed, within the same 30-minute retry budget;
  *   - if `holdMs` passes first (little traffic), the gate decides on what it has: re-queue when
- *     the window looks systemic (>= 20 permanents and > 20%), otherwise release. The next dead
+ *     the window looks systemic (>= 100 results, >= 20 permanents, > 20%), otherwise release. The next dead
  *     targets start a new hold. shutdown() makes the same decision at once; settle() then waits
  *     for the re-queue writes.
  *

@@ -28,36 +28,36 @@ describe('MemoryIdempotencyStore: sub-chunk progress', () => {
     const { state, store } = setup();
     expect(await store.claim('k', later(45_000))).toBe('claimed');
     expect(await store.claimedProgress('k')).toEqual([]);
-    expect(await store.recordChunk('k', { chunk: 0, redo: [] })).toBe(true);
-    expect(await store.recordChunk('k', { chunk: 2, redo: [5, 9] })).toBe(true);
+    expect(await store.recordChunk('k', { set: 'ab', chunk: 0, redo: [] })).toBe(true);
+    expect(await store.recordChunk('k', { set: 'ab', chunk: 2, redo: [5, 9] })).toBe(true);
     // The sender dies; the lease runs out; a redelivery claims again (another process).
     state.now = later(46_000);
     expect(await store.claim('k', later(91_000))).toBe('claimed');
     expect(await store.claimedProgress('k')).toEqual([
-      { chunk: 0, redo: [] },
-      { chunk: 2, redo: [5, 9] },
+      { set: 'ab', chunk: 0, redo: [] },
+      { set: 'ab', chunk: 2, redo: [5, 9] },
     ]);
   });
 
   it('progress is only recorded under our own live claim', async () => {
     const { state, store } = setup();
-    expect(await store.recordChunk('k', { chunk: 0, redo: [] })).toBe(false); // never claimed
+    expect(await store.recordChunk('k', { set: 'ab', chunk: 0, redo: [] })).toBe(false); // never claimed
     await store.claim('k', later(45_000));
     state.now = later(46_000);
     await store.claim('k', later(91_000)); // re-claim after expiry: a new attempt
-    expect(await store.recordChunk('k', { chunk: 1, redo: [] })).toBe(true);
+    expect(await store.recordChunk('k', { set: 'ab', chunk: 1, redo: [] })).toBe(true);
     await store.markSent('k', later(3_600_000));
-    expect(await store.recordChunk('k', { chunk: 2, redo: [] })).toBe(false); // sent: not a lease
+    expect(await store.recordChunk('k', { set: 'ab', chunk: 2, redo: [] })).toBe(false); // sent: not a lease
   });
 
   it('release keeps the progress for the next claim; without progress it deletes as before', async () => {
     const { store } = setup();
     await store.claim('k', later(45_000));
-    await store.recordChunk('k', { chunk: 1, redo: [3] });
+    await store.recordChunk('k', { set: 'ab', chunk: 1, redo: [3] });
     await store.release('k');
     expect(await store.peek('k')).toBe('absent');
     expect(await store.claim('k', later(45_000))).toBe('claimed'); // at once, no lease wait
-    expect(await store.claimedProgress('k')).toEqual([{ chunk: 1, redo: [3] }]);
+    expect(await store.claimedProgress('k')).toEqual([{ set: 'ab', chunk: 1, redo: [3] }]);
 
     await store.claim('j', later(45_000));
     await store.release('j');
@@ -68,7 +68,7 @@ describe('MemoryIdempotencyStore: sub-chunk progress', () => {
   it('markSent ends the progress; a sent key is never claimed, and retry keys are separate', async () => {
     const { state, store } = setup();
     await store.claim('k', later(45_000));
-    await store.recordChunk('k', { chunk: 0, redo: [] });
+    await store.recordChunk('k', { set: 'ab', chunk: 0, redo: [] });
     await store.markSent('k', later(60_000));
     expect(await store.claim('k', later(45_000))).toBe('sent');
     expect(await store.claim('k:r1', later(45_000))).toBe('claimed');
@@ -89,24 +89,26 @@ describe('DynamoIdempotencyStore: sub-chunk progress', () => {
   };
 
   it('encodes one set element per chunk and decodes it back', () => {
-    expect(encodeChunkProgress({ chunk: 3, redo: [] })).toBe('3:');
-    expect(encodeChunkProgress({ chunk: 12, redo: [0, 7, 99] })).toBe('12:0,7,99');
-    expect(decodeChunkProgress('12:0,7,99')).toEqual({ chunk: 12, redo: [0, 7, 99] });
-    expect(decodeChunkProgress('3:')).toEqual({ chunk: 3, redo: [] });
+    expect(encodeChunkProgress({ set: 'ab', chunk: 3, redo: [] })).toBe('ab@3:');
+    expect(encodeChunkProgress({ set: 'ab', chunk: 12, redo: [0, 7, 99] })).toBe('ab@12:0,7,99');
+    expect(decodeChunkProgress('ab@12:0,7,99')).toEqual({ set: 'ab', chunk: 12, redo: [0, 7, 99] });
+    expect(decodeChunkProgress('ab@3:')).toEqual({ set: 'ab', chunk: 3, redo: [] });
     expect(decodeChunkProgress('junk')).toBeUndefined();
+    // Progress without a recipient fingerprint is never trusted.
+    expect(decodeChunkProgress('3:')).toBeUndefined();
   });
 
   it('recordChunk ADDs to the sentChunks set, guarded by our own lease', async () => {
     const { mock, store } = setup();
     mock.on(PutCommand).resolves({});
-    expect(await store.recordChunk('k', { chunk: 0, redo: [] })).toBe(false); // not ours: no call
+    expect(await store.recordChunk('k', { set: 'ab', chunk: 0, redo: [] })).toBe(false); // not ours: no call
     expect(mock.commandCalls(UpdateCommand)).toHaveLength(0);
     await store.claim('k', later(45_000));
     const put = mock.commandCalls(PutCommand)[0]?.args[0].input;
     expect(put).toMatchObject({ ReturnValues: 'ALL_OLD' });
     const attemptId = put?.Item?.['attemptId'];
     mock.on(UpdateCommand).resolves({});
-    expect(await store.recordChunk('k', { chunk: 2, redo: [4, 8] })).toBe(true);
+    expect(await store.recordChunk('k', { set: 'ab', chunk: 2, redo: [4, 8] })).toBe(true);
     expect(mock.commandCalls(UpdateCommand)[0]?.args[0].input).toMatchObject({
       TableName: 'tbl',
       Key: { pk: 'k' },
@@ -115,11 +117,11 @@ describe('DynamoIdempotencyStore: sub-chunk progress', () => {
       ExpressionAttributeValues: {
         ':leased': 'leased',
         ':attempt': attemptId,
-        ':p': new Set(['2:4,8']),
+        ':p': new Set(['ab@2:4,8']),
       },
     });
     mock.on(UpdateCommand).rejects(lost()); // a newer attempt owns the key
-    expect(await store.recordChunk('k', { chunk: 3, redo: [] })).toBe(false);
+    expect(await store.recordChunk('k', { set: 'ab', chunk: 3, redo: [] })).toBe(false);
   });
 
   it('a claim over an expired lease inherits its progress and writes it back onto the new lease', async () => {
@@ -130,15 +132,15 @@ describe('DynamoIdempotencyStore: sub-chunk progress', () => {
         state: 'leased',
         attemptId: 'old',
         leaseUntil: NOW.getTime() - 1,
-        sentChunks: new Set(['0:', '1:17', '1:', 'bad']),
+        sentChunks: new Set(['ab@0:', 'ab@1:17', 'ab@1:', 'bad', '2:']),
       },
     });
     mock.on(UpdateCommand).resolves({});
     expect(await store.claim('k', later(45_000))).toBe('claimed');
     expect(await store.claimedProgress('k')).toEqual([
-      { chunk: 0, redo: [] },
-      { chunk: 1, redo: [17] },
-      { chunk: 1, redo: [] },
+      { set: 'ab', chunk: 0, redo: [] },
+      { set: 'ab', chunk: 1, redo: [17] },
+      { set: 'ab', chunk: 1, redo: [] },
     ]);
     const attemptId = mock.commandCalls(PutCommand)[0]?.args[0].input.Item?.['attemptId'];
     const restore = mock.commandCalls(UpdateCommand)[0]?.args[0].input;
@@ -147,7 +149,7 @@ describe('DynamoIdempotencyStore: sub-chunk progress', () => {
       ExpressionAttributeValues: { ':attempt': attemptId },
     });
     expect([...(restore?.ExpressionAttributeValues?.[':p'] as Set<string>)].sort()).toEqual(
-      ['0:', '1:', '1:17', 'bad'].sort(),
+      ['ab@0:', 'ab@1:', 'ab@1:17', 'bad', '2:'].sort(),
     );
     // A fresh key: no progress, no extra write.
     const fresh = setup();
@@ -164,7 +166,7 @@ describe('DynamoIdempotencyStore: sub-chunk progress', () => {
     mock.on(DeleteCommand).resolves({});
     await store.claim('k', later(45_000));
     const attemptId = mock.commandCalls(PutCommand)[0]?.args[0].input.Item?.['attemptId'];
-    await store.recordChunk('k', { chunk: 0, redo: [] });
+    await store.recordChunk('k', { set: 'ab', chunk: 0, redo: [] });
     await store.release('k');
     expect(mock.commandCalls(DeleteCommand)).toHaveLength(0);
     expect(mock.commandCalls(UpdateCommand)[1]?.args[0].input).toMatchObject({

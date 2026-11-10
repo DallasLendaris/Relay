@@ -27,6 +27,8 @@ export const ROLLING_WINDOW = 1000;
 export const ROLLING_RATE_LIMIT = 0.2;
 export const ROLLING_MIN_SAMPLES = 200;
 export const ROLLING_MIN_PERMANENT = 20;
+/** Fewest results looksSystemic judges (hold timeout / shutdown decisions). */
+export const SYSTEMIC_MIN_SAMPLES = 100;
 
 export interface BreakerVerdict {
   open: boolean;
@@ -71,12 +73,17 @@ export class PermanentBreaker {
     return this.filled === 0 ? 0 : this.permanents / this.filled;
   }
   /**
-   * The rolling rule judged on whatever the window holds, minimum sample size aside: at least
-   * ROLLING_MIN_PERMANENT permanents and above ROLLING_RATE_LIMIT. Used when held dead targets
-   * must be decided before the window is full enough (hold timeout, shutdown).
+   * The rolling rule with a smaller minimum sample (SYSTEMIC_MIN_SAMPLES instead of 200): at
+   * least ROLLING_MIN_PERMANENT permanents and above ROLLING_RATE_LIMIT. Used when held dead
+   * targets must be decided before the window is full (hold timeout, shutdown). With fewer
+   * results than that there is no evidence either way, so the caller clears normally.
    */
   get looksSystemic(): boolean {
-    return this.permanents >= ROLLING_MIN_PERMANENT && this.rollingRate > ROLLING_RATE_LIMIT;
+    return (
+      this.filled >= SYSTEMIC_MIN_SAMPLES &&
+      this.permanents >= ROLLING_MIN_PERMANENT &&
+      this.rollingRate > ROLLING_RATE_LIMIT
+    );
   }
 
   private push(v: 0 | 1): void {
