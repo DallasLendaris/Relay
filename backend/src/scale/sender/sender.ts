@@ -166,8 +166,17 @@ export function blindRecheckDelaySeconds(
   );
   const room = Math.floor((deadlineMs - nowMs) / 1000) - BLIND_RECHECK_DEADLINE_MARGIN_SECONDS;
   const delay = Math.min(wanted, room);
-  return delay >= BLIND_RECHECK_DELAY_SECONDS ? delay : undefined;
+  if (delay >= BLIND_RECHECK_DELAY_SECONDS) return delay;
+  // Under 120 s of room: one last, shorter re-check at deadline - 30 s, so a fix that lands late in
+  // the budget (or before a short alert ends) still delivers. Only while the count bound has room:
+  // this replaces nothing in the bound above, it is never more than the 4th blind push.
+  if (delay >= BLIND_RECHECK_FINAL_MIN_SECONDS && blindSoFar < MAX_PUSHES_PER_DEAD_TOKEN - 2) {
+    return delay;
+  }
+  return undefined;
 }
+/** Shortest last blind re-check (lands at deadline - 30 s when under 120 s of room is left). */
+export const BLIND_RECHECK_FINAL_MIN_SECONDS = 10;
 /** Wait before re-reading an alert whose signature failed (an update may have just committed). */
 const REREAD_DELAY_MS = 200;
 /** Default number of sub-chunks in flight per batch. */

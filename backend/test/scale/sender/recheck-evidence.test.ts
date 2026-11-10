@@ -433,7 +433,10 @@ describe('a misconfiguration that outlasts fresh evidence is re-checked until th
         for (let blind = 0; ; blind++) {
           const d = blindRecheckDelaySeconds(blind, blind + 1, now, budget, () => r);
           if (d === undefined) break;
-          expect(d).toBeGreaterThanOrEqual(BLIND_RECHECK_DELAY_SECONDS);
+          // Shorter than 120 s only for the last one, landing at deadline - 30 s.
+          if (d < BLIND_RECHECK_DELAY_SECONDS) {
+            expect(now + d * 1000).toBe(budget - 30_000 - ((budget - now) % 1000));
+          }
           now += d * 1000;
           expect(now).toBeLessThan(budget); // every re-check lands before the deadline
           pushes++;
@@ -443,6 +446,20 @@ describe('a misconfiguration that outlasts fresh evidence is re-checked until th
       }
     }
     expect(MAX_PUSHES_PER_DEAD_TOKEN).toBe(6);
+  });
+});
+
+describe('a short room still gets one last re-check (review 3, S1)', () => {
+  it('with under 120 s left before the deadline, one final re-check lands at deadline - 30 s', () => {
+    const deadline = 600_000; // alert ends at 10 min
+    // :u3 decided at 7.1 min + hold: 2.4 min left, wanted 480 s → clamped to the last 30 s margin.
+    const d3 = blindRecheckDelaySeconds(2, 3, 456_000, deadline, () => 0);
+    expect(d3).toBe(114);
+    // A decision with 90 s left (past the 120 s rule) still gets a final one at deadline - 30 s.
+    expect(blindRecheckDelaySeconds(1, 2, 510_000, deadline, () => 0)).toBe(60);
+    // Under 10 s of room, or the count bound spent: give up (token kept).
+    expect(blindRecheckDelaySeconds(1, 2, 565_000, deadline, () => 0)).toBeUndefined();
+    expect(blindRecheckDelaySeconds(4, 5, 510_000, deadline, () => 0)).toBeUndefined();
   });
 });
 
