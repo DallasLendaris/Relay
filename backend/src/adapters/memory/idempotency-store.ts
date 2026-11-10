@@ -1,4 +1,4 @@
-import type { ChunkProgress, Clock, IdempotencyStore } from '../../ports.js';
+import type { ChunkProgress, Clock, IdempotencyStore, KeyInspection } from '../../ports.js';
 
 interface Entry {
   state: 'leased' | 'sent';
@@ -8,6 +8,8 @@ interface Entry {
   attempt: number;
   /** Sub-chunk progress (recordChunk); kept across an expired lease or a release. */
   progress?: ChunkProgress[];
+  /** Member set stored by markSent's detail or markPlanned (G5). */
+  members?: Uint8Array;
 }
 
 /**
@@ -49,14 +51,37 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
     return 'claimed';
   }
 
-  async markSent(key: string, expiresAt: Date): Promise<void> {
+  async markSent(key: string, expiresAt: Date, detail?: { members?: Uint8Array }): Promise<void> {
     const attempt = this.attempts.get(key);
     this.attempts.delete(key);
     this.inherited.delete(key);
     const existing = this.live(key);
     // Never overwrite a key a different attempt already marked sent.
     if (existing?.state === 'sent' && existing.attempt !== attempt) return;
-    this.entries.set(key, { state: 'sent', until: expiresAt.getTime(), attempt: attempt ?? 0 });
+    this.entries.set(key, {
+      state: 'sent',
+      until: expiresAt.getTime(),
+      attempt: attempt ?? 0,
+      ...(detail?.members ? { members: new Uint8Array(detail.members) } : {}),
+    });
+  }
+
+  async markPlanned(key: string, members: Uint8Array | null, expiresAt: Date): Promise<void> {
+    // Unconditional, like the DynamoDB PutItem: a later plan's record replaces an earlier one.
+    this.entries.set(key, {
+      state: 'sent',
+      until: expiresAt.getTime(),
+      attempt: 0,
+      ...(members ? { members: new Uint8Array(members) } : {}),
+    });
+  }
+
+  async inspect(key: string): Promise<KeyInspection> {
+    const e = this.live(key);
+    if (!e) return { state: 'absent' };
+    return e.state === 'sent' && e.members
+      ? { state: 'sent', members: new Uint8Array(e.members) }
+      : { state: e.state };
   }
 
   async release(key: string): Promise<void> {
