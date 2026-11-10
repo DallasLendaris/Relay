@@ -29,8 +29,14 @@ export interface EcsFleetSizeOptions {
   ttlMs?: number;
   /** Up to this fraction of the ttl is added at random, so tasks do not poll in lockstep. */
   jitter?: number;
-  /** Used before the first successful read. Default 1. */
-  initial?: number;
+  /**
+   * Fleet size to assume until the first successful read and whenever reads have failed for longer
+   * than `staleAfterMs`. Fail safe: use the fleet maximum, so each task sends budget / max, which
+   * is slow but never over quota. Default 100.
+   */
+  fallback?: number;
+  /** Reads failing for this long put the source in fallback. Default 60 s. */
+  staleAfterMs?: number;
   onError?: (err: unknown) => void;
   now?: () => number;
   random?: () => number;
@@ -43,6 +49,7 @@ export interface EcsFleetSizeOptions {
  */
 export class EcsFleetSize implements FleetSizeSource {
   private current: number;
+  private lastOkAt: number | undefined;
   private nextAt = 0;
   private inFlight: Promise<void> | undefined;
   private readonly now: () => number;
@@ -52,12 +59,20 @@ export class EcsFleetSize implements FleetSizeSource {
     private readonly ecs: Pick<ECSClient, 'send'>,
     private readonly opts: EcsFleetSizeOptions,
   ) {
-    this.current = Math.max(1, Math.floor(opts.initial ?? 1));
+    this.current = 1;
     this.now = opts.now ?? Date.now;
     this.random = opts.random ?? Math.random;
   }
 
+  /** True while the size is the configured fallback instead of a recent ECS reading. */
+  get inFallback(): boolean {
+    return (
+      this.lastOkAt === undefined || this.now() - this.lastOkAt > (this.opts.staleAfterMs ?? 60_000)
+    );
+  }
+
   size(): number {
+    if (this.inFallback) return Math.max(1, Math.floor(this.opts.fallback ?? 100));
     return this.current;
   }
 
@@ -80,9 +95,12 @@ export class EcsFleetSize implements FleetSizeSource {
           services: [this.opts.service],
         }),
       );
-      const running = out.services?.[0]?.runningCount;
-      if (typeof running === 'number' && Number.isFinite(running)) {
-        this.current = Math.max(1, Math.floor(running));
+      const svc = out.services?.[0];
+      // desiredCount leads runningCount during a scale-out, so take the larger of the two.
+      const n = Math.max(svc?.runningCount ?? Number.NaN, svc?.desiredCount ?? Number.NaN);
+      if (svc && Number.isFinite(n)) {
+        this.current = Math.max(1, Math.floor(n));
+        this.lastOkAt = this.now();
       } else {
         this.opts.onError?.(new Error('sender service not found'));
       }
@@ -104,7 +122,13 @@ export function fleetSizeFromEnv(
   const cluster = env['ECS_CLUSTER'];
   const service = env['ECS_SERVICE'];
   if (!cluster || !service) return new FixedFleetSize(1);
-  return new EcsFleetSize(ecs(), { cluster, service, ...(onError ? { onError } : {}) });
+  const fallback = Number(env['FCM_FLEET_SIZE_FALLBACK']);
+  return new EcsFleetSize(ecs(), {
+    cluster,
+    service,
+    ...(Number.isFinite(fallback) && fallback >= 1 ? { fallback } : {}),
+    ...(onError ? { onError } : {}),
+  });
 }
 
 /** Per-task rate: the fleet budget split over the running tasks. */

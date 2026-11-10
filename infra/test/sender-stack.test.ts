@@ -404,6 +404,7 @@ describe('SenderStack FCM fleet rate', () => {
     expect(envOf(prod, 'ECS_CLUSTER')).toBe('relay-prod-sender');
     expect(envOf(prod, 'ECS_SERVICE')).toBe('relay-prod-sender');
     expect(envOf(prod, 'FCM_PROJECT_FLEET_RATE_PER_SEC')).toBe('9000');
+    expect(envOf(prod, 'FCM_FLEET_SIZE_FALLBACK')).toBe(String(SENDER_MAX_TASKS));
     expect(envOf(prod, 'FCM_PROJECT_RATE_PER_SEC')).toBeUndefined();
   });
 
