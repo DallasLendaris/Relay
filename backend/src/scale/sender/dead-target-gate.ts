@@ -30,9 +30,10 @@ export interface HeldGroup {
   deadlineMs: number;
   recipients: Recipient[];
   /**
-   * Per platform key: the number of this batch's first result on that platform
-   * (PlatformWindows.seq + 1 before it was recorded). At release a recipient is re-queued if its
-   * platform is systemic now OR was at any point since then (PlatformWindows.systemicSince).
+   * Per platform key: PlatformWindows.seq when the batch started sending (so the platform's
+   * state at that moment counts too). At release a recipient is re-queued if its platform is
+   * systemic now OR was at any point since then (PlatformWindows.systemicSince). The windows
+   * hold fresh traffic only: re-check batches (`:h`) never record (sender.ts carriesEvidence).
    */
   since?: Record<string, number>;
 }

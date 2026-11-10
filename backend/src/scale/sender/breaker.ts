@@ -27,6 +27,14 @@ import type { PushTarget } from '../contracts.js';
  * permanent rate above SYSTEMIC_RATE). The sender retries permanents of a systemic platform
  * instead of treating them as dead, and DeadTargetGate (dead-target-gate.ts) holds every clear
  * for a short delay and re-checks the target's platform before clearing.
+ *
+ * Only fresh traffic is evidence. A re-check batch (a key with an `:h<n>` segment: recipients
+ * already answered permanent once, re-sent because their platform looked misconfigured) is about
+ * 100% permanent when the tokens really are dead, so recording its results would make a healthy
+ * platform look systemic and re-queue more re-checks: a loop that, once fresh traffic ends, keeps
+ * every dead token cycling until the 30-minute budget. The sender records nothing of those
+ * batches (sender.ts carriesEvidence); they are judged against these windows as fresh traffic
+ * left them.
  */
 export const BATCH_RATE_LIMIT = 0.25;
 export const BATCH_MIN_PERMANENT = 20;
@@ -57,7 +65,10 @@ export function wilsonLower(k: number, n: number, z = WILSON_Z): number {
 /**
  * The small-sample rule. Examples: 5 of 5 (lower bound 0.57), 60 of 60, 8 of the last 20 (0.22)
  * and 55 of 200 (0.22) are systemic; 4 of 4 (too few), 7 of 20 (0.18), 3 of 60 and 10 of 200
- * (normal 5% churn) are not. Normal churn of 0.5-5% reaches 8 of 20 with probability ~1e-6.
+ * (normal 5% churn) are not. At 5% churn the short window reaches 8 of 20 with probability
+ * ~3e-6 per result, so a 1M-device fan-out (about 1M results over all windows) sees it about once.
+ * Such a false alarm costs only one re-check of the affected dead tokens (sender.ts), because
+ * re-check results never feed the windows.
  */
 export function isSystemic(permanents: number, samples: number): boolean {
   return permanents >= SYSTEMIC_MIN_PERMANENT && wilsonLower(permanents, samples) > SYSTEMIC_RATE;
@@ -122,7 +133,10 @@ export class PlatformWindows {
     return w !== undefined && (w.long.systemic || w.short.systemic);
   }
 
-  /** Results recorded for this platform so far; result number `seq() + 1` is the next one. */
+  /**
+   * Results recorded for this platform so far; result number `seq() + 1` is the next one.
+   * `systemicSince(key, seq(key))` also counts the platform's state right now.
+   */
   seq(key: string): number {
     return this.windows.get(key)?.seq ?? 0;
   }
@@ -170,14 +184,20 @@ export class PermanentBreaker {
     const rollingRate = this.filled === 0 ? 0 : this.permanents / this.filled;
     let reason: BreakerVerdict['reason'];
     if (permanent >= BATCH_MIN_PERMANENT && batchRate > BATCH_RATE_LIMIT) reason = 'batch_rate';
-    else if (
+    else if (this.rollingOpen) reason = 'rolling_rate';
+    return { open: reason !== undefined, ...(reason ? { reason } : {}), batchRate, rollingRate };
+  }
+
+  /**
+   * The rolling rule on the results recorded so far, without recording anything. Re-check
+   * batches (sender.ts carriesEvidence) are judged by it: their own results are not evidence.
+   */
+  get rollingOpen(): boolean {
+    return (
       this.filled >= ROLLING_MIN_SAMPLES &&
       this.permanents >= ROLLING_MIN_PERMANENT &&
-      rollingRate > ROLLING_RATE_LIMIT
-    ) {
-      reason = 'rolling_rate';
-    }
-    return { open: reason !== undefined, ...(reason ? { reason } : {}), batchRate, rollingRate };
+      this.rollingRate > ROLLING_RATE_LIMIT
+    );
   }
 
   /** Results in the rolling window (it only grows, from the very first result, up to ROLLING_WINDOW). */
