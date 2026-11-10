@@ -401,7 +401,7 @@ runWorkerMain(async () => {
           const o = await processBatch(batch, deps, control);
           tally.batches++;
           if (batch.attempt > 0) tally.retryBatches++;
-          if (/:[hv]\d+($|:)/.test(batch.batchKey)) tally.heldRetryBatches++;
+          if (/:[hvu]\d+($|:)/.test(batch.batchKey)) tally.heldRetryBatches++;
           tally.byReason[o.reason] = (tally.byReason[o.reason] ?? 0) + 1;
           tally.sent += o.sent;
           tally.permanentFailed += o.permanentFailed;
