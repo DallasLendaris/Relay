@@ -172,6 +172,22 @@ export class PostgresAlertStore implements AlertStore {
     return out;
   }
 
+  /**
+   * Cancelled alerts of one source whose end is still in the future, with their cells. Feed
+   * restoration checks these against the feed (one that NWS stopped listing, then listed again).
+   */
+  async listCancelledBySource(source: Alert['source'], now: Date): Promise<Alert[]> {
+    const rows = await this.db.query<RecordRow>(
+      `SELECT a.id, a.record FROM alerts a
+        WHERE a.state = 'cancelled' AND a.record ->> 'source' = $1
+          AND $2::timestamptz < GREATEST(a.expires, (a.record ->> 'ends')::timestamptz)`,
+      [source, now.toISOString()],
+    );
+    const out: Alert[] = [];
+    for (const row of rows) out.push(await this.withCells(this.db, parseJson<Alert>(row.record)));
+    return out;
+  }
+
   /** Put the alert's cells back into the record, reading them in pages (keyset on h3_cell). */
   private async withCells(db: SqlExecutor, alert: Alert): Promise<Alert> {
     const h3Cells: string[] = [];

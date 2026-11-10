@@ -32,7 +32,7 @@ describe('sendJobs', () => {
       logger,
     });
     expect(sender.sent[0]).toMatchObject({
-      title: 'Aviso: Flash Flood Warning',
+      title: 'Aviso de inundaciones repentinas',
       body: 'Resumen de Relay (no oficial): Hay un aviso de inundación repentina. Fuente: NWS',
     });
   });
@@ -41,7 +41,7 @@ describe('sendJobs', () => {
     const sender = new MemoryPushSender();
     await sendJobs([{ ...job(1), language: 'es' }], { sender, alerts, logger });
     expect(sender.sent[0]).toMatchObject({
-      title: 'Aviso: Flash Flood Warning',
+      title: 'Aviso de inundaciones repentinas',
       body: 'Alerta oficial del NWS (solo en inglés): Flash Flood Warning until 6 PM',
     });
   });

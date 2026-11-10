@@ -1,6 +1,6 @@
 import type { Alert } from '@relay/shared';
 import type { AlertStore, DeliveryJob, PushMessage, PushSender } from '../ports.js';
-import { RELAY_SUMMARY_LABEL } from '../summaries/index.js';
+import { EVENT_NAME_ES, RELAY_SUMMARY_LABEL } from '../summaries/index.js';
 import { PUSH_POLICY } from './policy.js';
 import { redactPushTokens } from './redact.js';
 import type { Logger, PolicyPushMessage, SendResult } from './types.js';
@@ -68,6 +68,31 @@ function titleSuffix(alert: Alert): string {
   return '';
 }
 
+/** Spanish tier labels for the title suffix (never leave an English tier word in a Spanish title). */
+export const TITLE_SUFFIX_ES = {
+  emergency: ' – EMERGENCIA',
+  pds: ' – PELIGRO PARTICULARMENTE ALTO',
+} as const;
+
+function titleSuffixEs(alert: Alert): string {
+  const en = titleSuffix(alert);
+  if (en === ' – EMERGENCY') return TITLE_SUFFIX_ES.emergency;
+  if (en === ' – PDS') return TITLE_SUFFIX_ES.pds;
+  return '';
+}
+
+/**
+ * Spanish title: the Spanish event name (it already carries Aviso / Vigilancia / Advertencia)
+ * plus the Spanish tier label. An event we have no Spanish name for keeps the old shape, Spanish
+ * tier word then the official English event name, but still gets the Spanish suffix.
+ */
+function spanishTitle(alert: Alert): string {
+  const suffix = titleSuffixEs(alert);
+  const name = EVENT_NAME_ES[alert.event.trim().toLowerCase()];
+  if (name) return `${name}${suffix}`;
+  return `${SEVERITY_WORD_ES[alert.relaySeverity]}: ${alert.event}${suffix}`;
+}
+
 /**
  * The title and body for one alert in one language (shared by the Expo worker and the native
  * sender).
@@ -75,7 +100,7 @@ function titleSuffix(alert: Alert): string {
  *   sender and the official headline or a clean first sentence of the description.
  * - Spanish with a Relay summary: the body says it is a Relay summary and not official, and
  *   names the source. The official wording is never passed off as, or replaced by, the summary.
- * - Spanish without a summary: Spanish tier word and official event name in the title, and the
+ * - Spanish without a summary: Spanish event name (or tier word and official event name) in the title, and the
  *   body says the official alert is English only, followed by the English text.
  */
 export function alertPushText(
@@ -87,7 +112,7 @@ export function alertPushText(
     const sender = shortSenderName(alert.official.senderName, alert.source);
     return { title: `${alert.event}${suffix}`, body: `${sender}: ${officialLine(alert)}` };
   }
-  const title = `${SEVERITY_WORD_ES[alert.relaySeverity]}: ${alert.event}${suffix}`;
+  const title = spanishTitle(alert);
   const summary = alert.summaries.find((s) => s.language === 'es' && s.text.trim());
   if (summary) {
     return {

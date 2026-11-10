@@ -16,6 +16,29 @@ Corrections already applied (audit SAFE-9, SAFE-10):
 | 12 a. m. / 12 p. m.  | la medianoche / el mediodía | Avoids the ambiguity of 12 a. m. and 12 p. m. |
 | (no zone)            | "PT" after the time         | The time zone is always stated.               |
 
+Added in wave C (audit SAFE-3 remainder). New templates, matched by event name (HWA and WSA are
+confirmed SAME codes; Blowing Dust Advisory has no SAME code):
+
+| Event                 | Spanish text starts with                                          |
+| --------------------- | ----------------------------------------------------------------- |
+| High Wind Watch       | Hay una vigilancia de vientos fuertes para ...                    |
+| Winter Storm Watch    | Hay una vigilancia de tormenta invernal para ...                  |
+| Blowing Dust Advisory | Hay una advertencia de polvo en el aire para ... (name uncertain) |
+
+Spanish push titles no longer keep English tier words. The title is the Spanish event name
+(`EVENT_NAME_ES` in `templates.ts`, for example "Aviso de tornado") plus a Spanish label:
+
+| English suffix | Spanish suffix                 |
+| -------------- | ------------------------------ |
+| - EMERGENCY    | - EMERGENCIA                   |
+| - PDS          | - PELIGRO PARTICULARMENTE ALTO |
+
+An event with no Spanish name keeps "Aviso: <English event name>" plus the Spanish suffix. Please
+review every name in `EVENT_NAME_ES` against NWS Spanish usage, in particular "Advertencia de
+polvo en el aire" (Blowing Dust Advisory), "Emergencia por inundaciones repentinas", "Orden de
+evacuación inmediata" and "PELIGRO PARTICULARMENTE ALTO" (the NWS Spanish phrase for a
+particularly dangerous situation may differ).
+
 Things the reviewer should look at in particular:
 
 - "aviso / vigilancia / advertencia" for Warning / Watch / Advisory, and the Spanish names for

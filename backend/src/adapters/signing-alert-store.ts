@@ -31,6 +31,13 @@ export class SigningAlertStore implements AlertStore {
     return inner.listActiveBySource(source, now);
   }
 
+  /** Feed restoration: cancelled alerts of one source that have not ended yet. */
+  async listCancelledBySource(source: Alert['source'], now: Date): Promise<Alert[]> {
+    const inner = this.inner as Partial<ActiveAlertLister>;
+    if (!inner.listCancelledBySource) throw new Error('alert store cannot list cancelled alerts');
+    return inner.listCancelledBySource(source, now);
+  }
+
   async save(alert: Alert): Promise<void> {
     const withSummaries: Alert = {
       ...alert,

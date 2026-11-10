@@ -94,9 +94,9 @@ describe('summariesFor', () => {
   });
 
   it('returns [] for unknown events', () => {
-    expect(
-      summariesFor(makeAlert({ event: 'Winter Storm Watch', eventCode: 'WSA' }), opts),
-    ).toEqual([]);
+    expect(summariesFor(makeAlert({ event: 'Blizzard Warning', eventCode: 'BZW' }), opts)).toEqual(
+      [],
+    );
     expect(summariesFor(makeAlert({ event: 'Earthquake', eventCode: null }), opts)).toEqual([]);
   });
 
@@ -214,4 +214,22 @@ describe('English readability', () => {
     const longWords = sentences.flatMap((s) => s.split(/\s+/)).filter((w) => syllables(w) > 4);
     expect(longWords).toEqual([]);
   });
+});
+
+describe('SAFE-3: watch and dust templates', () => {
+  const cases: Array<[string, string | null, string]> = [
+    ['High Wind Watch', 'HWA', 'vigilancia de vientos fuertes'],
+    ['High Wind Watch', null, 'vigilancia de vientos fuertes'],
+    ['Winter Storm Watch', 'WSA', 'vigilancia de tormenta invernal'],
+    ['Winter Storm Watch', null, 'vigilancia de tormenta invernal'],
+    ['Blowing Dust Advisory', null, 'advertencia de polvo en el aire'],
+  ];
+  for (const [event, eventCode, es] of cases) {
+    it(`${event} (${eventCode ?? 'name only'}) has English and Spanish`, () => {
+      const out = summariesFor(makeAlert({ event, eventCode }), opts);
+      expect(out.map((s) => s.language)).toEqual(['en', 'es']);
+      expect(out.find((s) => s.language === 'es')?.text).toContain(es);
+      expect(out.find((s) => s.language === 'en')?.text).toContain(`A ${event} is in effect`);
+    });
+  }
 });

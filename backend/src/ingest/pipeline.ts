@@ -194,6 +194,24 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
     ? {
         now: () => clock.now(),
         listActive: (now) => store.listActiveBySource('nws', now),
+        ...(lister.listCancelledBySource
+          ? {
+              listEnded: (now: Date) => store.listCancelledBySource('nws', now),
+              async restore(alert: Alert, state: 'active' | 'updated') {
+                logger.warn('alert.restored_after_reconciliation', {
+                  alertId: alert.id,
+                  sourceId: alert.sourceId,
+                });
+                // Saving re-signs it and regenerates its summaries (a cancelled alert has none).
+                await store.save({ ...alert, state });
+                const saved = await store.get(alert.id);
+                if (!saved) throw new Error(`restored alert ${alert.id} not found`);
+                // The CDN index and the alert JSON show it again; late-join reads the store.
+                publishInBackground(saved);
+                return saved;
+              },
+            }
+          : {}),
         async cancel(alert, reason) {
           logger.warn('alert.ended_by_reconciliation', {
             alertId: alert.id,
