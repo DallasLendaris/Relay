@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Alert } from '@relay/shared';
+import { DENSE_CELL_RECIPIENTS } from '../../../src/scale/contracts.js';
 import type {
   CellIndex,
   CellIndexEntry,
@@ -334,24 +335,102 @@ describe('dense cells: a failed dense attempt never strands its tombstones', () 
  */
 class SyntheticCell implements Pick<CellIndex, 'listForCell'> {
   peakHeap = 0;
-  private readonly ids: string[];
-  constructor(count: number) {
-    this.ids = Array.from({ length: count }, (_, i) => uid(i)).sort();
+  pages = 0;
+  /** Sort keys `${deviceId}#${placeId}`, in DynamoDB order (code units), as the real index. */
+  private readonly sks: string[];
+  constructor(count: number, idOf: (i: number) => string = uid) {
+    this.sks = Array.from({ length: count }, (_, i) =>
+      // One device in ten has a second place in the same cell (as the scale suite seeds them).
+      i % 10 === 0 ? [`${idOf(i)}#home`, `${idOf(i)}#work`] : [`${idOf(i)}#home`],
+    )
+      .flat()
+      .sort();
   }
   async listForCell(h3Cell: string, cursor?: string, limit = 1_000): Promise<CellIndexPage> {
+    this.pages++;
     this.peakHeap = Math.max(this.peakHeap, process.memoryUsage().heapUsed);
     const start = cursor ? Number(cursor) : 0;
-    const entries: CellIndexEntry[] = this.ids.slice(start, start + limit).map((deviceId) => ({
-      h3Cell,
-      deviceId,
-      placeId: 'home',
-      target: target(deviceId),
-      language: 'en',
-    }));
+    const entries: CellIndexEntry[] = this.sks.slice(start, start + limit).map((sk) => {
+      const [deviceId, placeId] = sk.split('#') as [string, string];
+      return { h3Cell, deviceId, placeId, target: target(deviceId), language: 'en' };
+    });
     const next = start + limit;
-    return next < this.ids.length ? { entries, cursor: String(next) } : { entries };
+    return next < this.sks.length ? { entries, cursor: String(next) } : { entries };
   }
 }
+
+/** The scale suite's ids: `00000000-0000-4000-8000-<i in hex>`, all with the same first digit. */
+const suiteUuid = (i: number) => `00000000-0000-4000-8000-${i.toString(16).padStart(12, '0')}`;
+const suiteDev = (i: number) => `dev-${String(i).padStart(8, '0')}`;
+
+describe('dense cells: memory at full scale (150,000 devices in one cell)', () => {
+  const ALL = 150_000;
+  // The dense threshold, plus at most one more page, plus the unflushed-batch cap.
+  const BOUND = DENSE_CELL_RECIPIENTS + 1_000 + 5_000;
+
+  it.each([
+    ['random v4 UUIDs (production)', uid, false],
+    ['sequential UUIDs (the scale suite)', suiteUuid, true],
+    ['dev-<n> ids', suiteDev, true],
+  ] as const)(
+    '%s: bounded peak, every device once, every message fits',
+    async (name, idOf, rereads) => {
+      const alert = signed();
+      const cell = new SyntheticCell(ALL, idOf);
+      const sender = makeDeps();
+      const { deps, sendQueue } = setup(alert, {
+        cellIndex: cell,
+        idempotency: sender.idempotency,
+        makeCheckInToken: (a, d, c) => `v2.${a}.${d}.${c}.`.padEnd(230, 'x'),
+      });
+      const r = await processShard(jobFor(alert), deps);
+      console.log(
+        `150k cell (${name}): peak ${r.peakBufferedRecipients}, rereads ${r.rereadPasses}, pages ${cell.pages}`,
+      );
+      expect(r).toMatchObject({ denseCells: 1, recipients: ALL, duplicates: ALL / 10 });
+      expect(r.peakBufferedRecipients).toBeLessThanOrEqual(BOUND);
+      expect(r.rereadPasses > 0).toBe(rereads);
+      const ids = new Set<string>();
+      let total = 0;
+      for (const b of sendQueue.batches('urgent')) {
+        for (const x of b.recipients) {
+          ids.add(x.deviceId);
+          total++;
+        }
+      }
+      expect(total).toBe(ALL);
+      expect(ids.size).toBe(ALL);
+      for (const m of sendQueue.messages.urgent) {
+        expect(Buffer.byteLength(m)).toBeLessThanOrEqual(MAX_MESSAGE_BYTES);
+      }
+    },
+    60_000,
+  );
+
+  it('re-reading keeps the part keys: the same plan run twice repeats every key', async () => {
+    const alert = signed();
+    const cell = new SyntheticCell(30_000, suiteUuid);
+    const sender = makeDeps();
+    const { deps, sendQueue } = setup(alert, {
+      cellIndex: cell,
+      idempotency: sender.idempotency,
+      denseCellRecipients: 4_000,
+    });
+    const first = await processShard(jobFor(alert), deps);
+    expect(first.rereadPasses).toBeGreaterThan(0);
+    const keys1 = sendQueue.batches('urgent').map((b) => b.batchKey);
+    const n = keys1.length;
+    await processShard(jobFor(alert), deps);
+    const keys2 = sendQueue
+      .batches('urgent')
+      .slice(n)
+      .map((b) => b.batchKey);
+    expect(new Set(keys2)).toEqual(new Set(keys1));
+    // All in part 0 (one first digit), one batch per bucket: no halving at this size.
+    for (const k of keys1) expect(k).toMatch(/:\d+\.0\/16$/);
+    expect(keys1).toHaveLength(64);
+  });
+});
 
 describe('dense cells: memory', () => {
   it('streams a 60,000-device cell part by part instead of holding it (CI-sized 150k scenario)', async () => {
