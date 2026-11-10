@@ -12,6 +12,7 @@ import {
   type components,
 } from '@relay/shared';
 import { cellForPoint } from '../geo/index.js';
+import { coarsenShortAddress } from '../geo/coarse-address.js';
 import type { CellIndex, PushTarget } from '../scale/contracts.js';
 import type { CellIndexOutbox } from '../scale/cell-index/outbox.js';
 import type { LateJoinIntent, LateJoinQueue } from '../scale/latejoin/intent.js';
@@ -591,7 +592,8 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
         throw new HttpError(422, 'outside_california', 'Relay supports California addresses only');
       }
       h3Cell = cellForPoint(found.latitude, found.longitude);
-      shortAddress = found.shortAddress;
+      // The adapter already returns the coarse form; strip again so no geocoder can leak a number.
+      shortAddress = coarsenShortAddress(found.shortAddress);
     } else {
       const lat = body['latitude'];
       const lng = body['longitude'];

@@ -98,7 +98,10 @@ export interface Place {
    * (the app suggests Home, Work or School): they are stored, so never an address or a name.
    */
   label: string;
-  /** Only when the place was added by address (the geocoder's short street text). Never for a pin. */
+  /**
+   * Only when the place was added by address: the street NAME and locality, never a house
+   * number (PRIV-5; see geo/coarse-address.ts). Never for a pin.
+   */
   shortAddress?: string;
   h3Cell: string;
   createdAt: string;
@@ -180,6 +183,7 @@ export interface Geocoder {
   geocode(address: string): Promise<{
     latitude: number;
     longitude: number;
+    /** Coarse: street name and locality, never a house number (see geo/coarse-address.ts). */
     shortAddress: string;
     /** Two-letter US state code, used to enforce California only. */
     state: string;
