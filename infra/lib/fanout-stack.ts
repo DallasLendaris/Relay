@@ -40,6 +40,11 @@ export interface FanoutStackProps extends StackProps {
   killSwitchParamName: string;
   killSwitchParamArn: string;
   /**
+   * The sender's idempotency table (delivery stack). The shard worker tombstones the normal batch
+   * keys of a dense cell there (backend/src/scale/contracts.ts DENSE_CELL_RECIPIENTS).
+   */
+  idempotencyTable: { name: string; arn: string };
+  /**
    * Reserved concurrency of the shard worker (default 500). It is carved out of the account's
    * Lambda concurrency quota, which must be raised first (see docs/scale-quotas.md).
    */
@@ -271,9 +276,17 @@ export class FanoutStack extends Stack {
         TOKEN_KEYS_SECRET_ARN: props.tokenKeysSecretArn,
         KILL_SWITCH_PARAM: props.killSwitchParamName,
         PAUSED_QUEUE_URL: paused.queueUrl,
+        IDEMPOTENCY_TABLE: props.idempotencyTable.name,
       },
     });
     grantDb(shardFn, props.db, 'fanout');
+    // Dense-cell tombstones (DynamoIdempotencyStore): claim (PutItem, GetItem), markSent
+    // (UpdateItem), peek (GetItem). Never release, so no DeleteItem.
+    allow(
+      shardFn,
+      ['dynamodb:PutItem', 'dynamodb:GetItem', 'dynamodb:UpdateItem'],
+      [props.idempotencyTable.arn],
+    );
     grantAlertVerify(shardFn, props.alertSigning);
     grantSecretRead(shardFn, props.tokenKeysSecretArn);
     allow(shardFn, ['ssm:GetParameter'], [props.killSwitchParamArn]);

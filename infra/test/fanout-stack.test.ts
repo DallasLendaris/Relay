@@ -7,6 +7,8 @@ import { ConfigStack } from '../lib/config-stack.js';
 import { DataStack } from '../lib/data-stack.js';
 import { FanoutStack, SHARD_MEMORY_MB } from '../lib/fanout-stack.js';
 
+const IDEM_ARN = 'arn:aws:dynamodb:us-west-2:111111111111:table/idem';
+
 function synth(
   stage: 'dev' | 'prod',
   shardReservedConcurrency?: number,
@@ -28,6 +30,7 @@ function synth(
     alertSigning: config.alertSigning,
     killSwitchParamName: config.killSwitchParamName,
     killSwitchParamArn: config.killSwitchParamArn,
+    idempotencyTable: { name: 'idem', arn: IDEM_ARN },
     ...(shardReservedConcurrency ? { shardReservedConcurrency } : {}),
   });
   return { stack, t: Template.fromStack(stack) };
@@ -255,9 +258,17 @@ describe('FanoutStack', () => {
     ]) {
       expect(actions).toContain(a);
     }
-    for (const a of ['dynamodb:PutItem', 'dynamodb:Scan', 'dynamodb:GetItem']) {
-      expect(actions).not.toContain(a);
+    expect(actions).not.toContain('dynamodb:Scan');
+    expect(actions).not.toContain('dynamodb:DeleteItem');
+    // Item reads and writes only on the idempotency table (dense-cell tombstones), never the index.
+    for (const s of st.filter((x) =>
+      actionsOf([x]).some((a) => ['dynamodb:PutItem', 'dynamodb:GetItem'].includes(a)),
+    )) {
+      expect(s.Resource).toBe(IDEM_ARN);
     }
+    expect(actions).toEqual(
+      expect.arrayContaining(['dynamodb:PutItem', 'dynamodb:GetItem', 'dynamodb:UpdateItem']),
+    );
     const send = st.filter((s) => actionsOf([s]).includes('sqs:SendMessage'));
     const resources = JSON.stringify(send.map((s) => s.Resource));
     expect(resources).toContain('UrgentQueue');

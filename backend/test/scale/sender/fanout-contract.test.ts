@@ -86,8 +86,11 @@ describe('fan-out message body -> sender consumer', () => {
   });
 });
 
-describe('oversize bucket split keys (`:s<path>`)', () => {
-  /** 1,000 devices that all hash to bucket 0, with 500-char tokens, so one batch exceeds a message. */
+describe('last-resort split keys (`<dense part key>:s<path>`)', () => {
+  /**
+   * 1,000 devices that all hash to bucket 0, with 500-char tokens, so one batch exceeds a message.
+   * The cell goes dense, but the ids all start with 'b' (one part), so that part is halved.
+   */
   async function oversize() {
     const alert = signed();
     const ids: string[] = [];
@@ -115,7 +118,7 @@ describe('oversize bucket split keys (`:s<path>`)', () => {
     expect(lines.some((l) => l.msg === 'splitting oversize batch')).toBe(true);
     expect(batches.length).toBeGreaterThanOrEqual(4);
     const base = `${alert.id}:${alert.relaySeverity}:${CELL}:0`;
-    for (const b of batches) expect(b.batchKey).toMatch(new RegExp(`^${base}:s[01]+$`));
+    for (const b of batches) expect(b.batchKey).toMatch(new RegExp(`^${base}\\.11/16:s[01]+$`));
     expect(new Set(batches.map((b) => b.batchKey)).size).toBe(batches.length);
     expect(batches.reduce((n, b) => n + b.recipients.length, 0)).toBe(ids.length);
     for (const m of sendQueue.messages.urgent) {
