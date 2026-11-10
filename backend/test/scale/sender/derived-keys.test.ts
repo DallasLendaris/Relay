@@ -8,7 +8,14 @@ import {
   processBatch,
   retryKey,
 } from '../../../src/scale/sender/sender.js';
-import { FakePush, makeBatch, makeDeps, manualTimer, recordingLogger, seedAlert } from './fakes.js';
+import {
+  FakePush,
+  makeBatch,
+  makeDeps,
+  clockScheduler,
+  recordingLogger,
+  seedAlert,
+} from './fakes.js';
 
 /** Deterministic PRNG (mulberry32). */
 function rng(seed: number): () => number {
@@ -99,7 +106,7 @@ describe('cold start + misconfiguration + retryable errors (review scenario)', (
     let misconfigured = true;
     const delivered = new Map<string, number>();
     const cleared: string[] = [];
-    const { logger } = recordingLogger();
+    const { lines, logger } = recordingLogger();
     const t = makeDeps({
       logger,
       writeMetric: () => {},
@@ -128,13 +135,13 @@ describe('cold start + misconfiguration + retryable errors (review scenario)', (
       logger,
       writeMetric: () => {},
     });
-    const timer = manualTimer();
-    const gate = createDeadTargetGate(t.deps, { setTimer: timer.setTimer });
+    const sched = clockScheduler(t.state);
+    const gate = createDeadTargetGate(t.deps, { setTimer: sched.setTimer });
     t.deps.deadTargetGate = gate;
     await seedAlert(t.alerts);
 
     // Small batches, all urgent; retries are processed as soon as they are queued, so retry
-    // batches are sent (and held) during the cold start too, before the breaker has evidence.
+    // batches are sent during the cold start too, before the breakers have evidence.
     const random = rng(9);
     const queue: SendBatch[] = [];
     let dev = 0;
@@ -150,9 +157,13 @@ describe('cold start + misconfiguration + retryable errors (review scenario)', (
     }
     const all = queue.flatMap((b) => b.recipients.map((r) => r.target.token));
     const keys = new Set<string>();
+    // Retries (and held re-queues) go to their own FIFO lane, served every other step, so they
+    // interleave with the cold start (none waits behind all 400 originals) in arrival order.
+    const retries: SendBatch[] = [];
     let steps = 0;
     for (;;) {
-      const next = queue.shift();
+      const next =
+        (steps % 2 === 1 ? retries.shift() : undefined) ?? queue.shift() ?? retries.shift();
       if (!next) {
         if (gate.heldCount === 0) break;
         gate.shutdown(); // decide what is still held, then keep draining
@@ -160,16 +171,15 @@ describe('cold start + misconfiguration + retryable errors (review scenario)', (
         expect(keys.has(next.batchKey), `key reused: ${next.batchKey}`).toBe(false);
         keys.add(next.batchKey);
         await processBatch(next, t.deps);
-        if (++steps === 1500) misconfigured = false; // the fix is deployed
+        await sched.advance(1000); // one second per step: the 30 s holds elapse mid-run
+        if (++steps === 900) misconfigured = false; // the fix is deployed, 15 minutes in
       }
       await gate.settle(1000);
-      const fresh = t.sendQueue.enqueued.splice(0).flatMap((e) => e.batches);
-      // Retries go in a few places ahead: they interleave with the cold start (none waits behind
-      // all 400 originals) without one retry chain taking the whole queue.
-      queue.splice(Math.min(queue.length, 3), 0, ...fresh);
+      retries.push(...t.sendQueue.enqueued.splice(0).flatMap((e) => e.batches));
       expect(steps).toBeLessThan(20_000);
     }
     expect(misconfigured).toBe(false);
+    expect(lines.filter((l) => l.msg === 'delivery.gave_up')).toEqual([]); // within the budget
     expect(cleared).toEqual([]);
     expect([...keys].some((k) => /:h\d+$/.test(k))).toBe(true); // held re-queues happened
     expect([...keys].some((k) => /:h\d+:r\d+$/.test(k))).toBe(true); // ...and were retried

@@ -57,7 +57,7 @@ import {
 } from '../contracts.js';
 import { errorFields } from '../../delivery/redact.js';
 import { publicAlertDocUrl } from '../publish/paths.js';
-import { PermanentBreaker, type BreakerVerdict } from './breaker.js';
+import { PermanentBreaker, platformKeyOf, type BreakerVerdict } from './breaker.js';
 import { DeadTargetGate, type DeadTargetGateOptions, type HeldGroup } from './dead-target-gate.js';
 import { DeadTargetQueue } from './dead-target-queue.js';
 import { consoleMetricWriter, emfLine, type MetricWriter } from './metrics.js';
@@ -348,7 +348,7 @@ const defaultGates = new WeakMap<object, DeadTargetGate>();
 
 /**
  * The gate for these deps, built on their breaker and cleanup queue, re-queueing held recipients
- * through their send queue. `extra` overrides gate options (tests: timer, minSamples).
+ * through their send queue. `extra` overrides gate options (tests: timer, holdMs).
  */
 export function createDeadTargetGate(
   deps: SenderDeps,
@@ -358,6 +358,7 @@ export function createDeadTargetGate(
     breaker: breakerFor(deps),
     queue: deadTargetsFor(deps),
     requeue: (groups) => requeueHeld(groups, deps),
+    now: () => deps.clock.now().getTime(),
     logger: deps.logger,
     ...(deps.writeMetric ? { writeMetric: deps.writeMetric } : {}),
     ...extra,
@@ -657,6 +658,43 @@ export async function processBatch(
         dead = [];
       }
     }
+    // Per-platform breaker (breaker.ts PlatformWindows): every token result counts toward its
+    // platform's windows; permanents of a platform that now looks misconfigured are retried, not
+    // treated as dead. This catches a single platform (an APNs key, one FCM project) that the
+    // process-wide rules dilute, and an onset in small batches.
+    const platforms = breakerFor(deps).platforms;
+    const since: Record<string, number> = {};
+    for (const rec of batch.recipients) {
+      const key = platformKeyOf(rec.target);
+      since[key] ??= platforms.seq(key) + 1;
+    }
+    settled.forEach((r, i) => {
+      const rec = batch.recipients[i];
+      if (
+        !rec ||
+        r === ALREADY_SENT ||
+        (!r.ok && r.kind === 'permanent' && r.scope === 'message')
+      ) {
+        return;
+      }
+      platforms.record(platformKeyOf(rec.target), !r.ok && r.kind === 'permanent');
+    });
+    if (dead.length > 0) {
+      const systemic = dead.filter((d) => platforms.systemic(platformKeyOf(d.target)));
+      if (systemic.length > 0) {
+        const keys = [...new Set(systemic.map((d) => platformKeyOf(d.target)))];
+        logger.error('delivery.platform_breaker_open', {
+          alertId: alert.id,
+          batchKey: batch.batchKey,
+          permanent: systemic.length,
+          platforms: keys.map((k) => ({ platform: k, ...platforms.stats(k) })),
+        });
+        write(emfLine('PlatformBreakerOpen', 1, deps.clock.now().getTime()));
+        failed.push(...systemic);
+        const moved = new Set(systemic);
+        dead = dead.filter((d) => !moved.has(d));
+      }
+    }
 
     let retried = 0;
     let gaveUp = messageFailed;
@@ -708,25 +746,24 @@ export async function processBatch(
     });
 
     // Cleanup comes after markSent and is asynchronous: submit is synchronous and cheap. The
-    // gate holds the clears until the breaker has seen enough results (dead-target-gate.ts).
-    // Held recipients carry their batch so the gate can re-queue them if the breaker opens.
-    if (verdict) {
-      gateFor(deps).submit(
-        {
-          // Only the batch's identity, not its recipient list: the gate may hold this a while.
-          source: {
-            alertId: batch.alertId,
-            sourceId: batch.sourceId,
-            relaySeverity: batch.relaySeverity,
-            batchKey: batch.batchKey,
-            attempt: batch.attempt,
-          },
-          firstAttemptMs,
-          deadlineMs: deadline,
-          recipients: dead,
+    // gate holds every clear for a short delay and re-checks the target's platform before it
+    // clears (dead-target-gate.ts). Held recipients carry their batch so the gate can re-queue
+    // them if the platform turns out misconfigured.
+    if (dead.length > 0) {
+      gateFor(deps).submit({
+        // Only the batch's identity, not its recipient list: the gate may hold this a while.
+        source: {
+          alertId: batch.alertId,
+          sourceId: batch.sourceId,
+          relaySeverity: batch.relaySeverity,
+          batchKey: batch.batchKey,
+          attempt: batch.attempt,
         },
-        verdict,
-      );
+        firstAttemptMs,
+        deadlineMs: deadline,
+        recipients: dead,
+        since,
+      });
     }
 
     logger.info('sender.batch_done', {

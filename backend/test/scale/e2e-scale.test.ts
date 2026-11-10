@@ -47,6 +47,7 @@ import { processBatch, type BatchOutcome } from '../../src/scale/sender/sender.j
 import { createAlertVerifier } from '../../src/signing/index.js';
 import { createDeviceCredential } from '../../src/tokens/index.js';
 import { TEST_SIGNING } from '../signing/test-signing.js';
+import { holdDeadTargets } from './sender/fakes.js';
 
 const feed = JSON.parse(
   readFileSync(new URL('../fixtures/nws/active-ca-mixed.json', import.meta.url), 'utf8'),
@@ -263,6 +264,8 @@ describe('statewide scale path, in memory', () => {
       logger: noopLogger,
       sleep: async () => {},
     };
+    // The production gate holds every clear for 30 s; settleDeadTargets decides them at the end.
+    const settleDeadTargets = holdDeadTargets(senderDeps);
 
     async function runFlow(): Promise<{ batches: number; messages: number }> {
       const ready = planQueue.messages.shift();
@@ -347,6 +350,7 @@ describe('statewide scale path, in memory', () => {
     for (const [id, n] of perDevice) expect(n, id).toBe(1);
 
     // ---------- 5. Dead targets are cleared, nothing else is ----------
+    await settleDeadTargets();
     const dead = [...targetOfDevice].filter(([, t]) => t && isDead(t.token)).map(([id]) => id);
     expect(dead.length).toBeGreaterThan(0);
     expect(new Set(dead)).toEqual(push.deadSeen);

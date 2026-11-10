@@ -13,7 +13,7 @@ import {
 import { checkEligibility, type EligibilityDeps, type FanoutRefusal } from './common.js';
 import { bucketFor, densePartFor } from './hash.js';
 import type { ResumableShardJob } from './messages.js';
-import { bucketKey, denseCellKey, denseMarkerKey, densePartKey } from './keys.js';
+import { bucketKey, denseCellKey, denseMarkerKey, densePartKey, splitMarkerKey } from './keys.js';
 import { splitToFit } from './pack.js';
 import { isPrimaryCell } from './primary-cell.js';
 import type { ShardDispatcher } from './queues.js';
@@ -209,6 +209,8 @@ export async function processShard(
   // MAX_BATCHES_PER_MESSAGE; the send queue packs them by measured size.
   let pending: SendBatch[] = [];
   let pendingRecipients = 0;
+  /** Keys of batches in `pending` that were split into pieces (marked before the enqueue). */
+  let splitKeys: string[] = [];
   const flush = async (force: boolean): Promise<void> => {
     if (
       pending.length === 0 ||
@@ -218,9 +220,18 @@ export async function processShard(
     }
     const toSend = pending;
     const n = pendingRecipients;
+    const splits = splitKeys;
     pending = [];
     pendingRecipients = 0;
+    splitKeys = [];
     try {
+      // Split markers first, so late join never sees a split key as unplanned once its pieces
+      // can be sent (keys.ts plannedKeyFor). A failure fails the attempt before any enqueue.
+      const store = deps.idempotency;
+      if (store && splits.length > 0) {
+        const keep = claimExpiry(alert);
+        await Promise.all(splits.map((k) => store.markSent(splitMarkerKey(k), keep)));
+      }
       await deps.sendQueue.enqueue(queue, toSend);
     } finally {
       buffered -= n;
@@ -235,6 +246,7 @@ export async function processShard(
     if (measure && batch.recipients.length > 1 && roughBytes(batch.recipients) > maxBytes / 2) {
       pieces = splitToFit(batch, maxBytes);
       if (pieces.length > 1) {
+        splitKeys.push(batch.batchKey);
         deps.logger.warn('splitting oversize batch', {
           batchKey: batch.batchKey,
           recipients: batch.recipients.length,
