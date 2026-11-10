@@ -37,3 +37,6 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Scalability suite scratch data (seeds); results under loadtest/results/suite-* stay committable
+loadtest/.suite-data/

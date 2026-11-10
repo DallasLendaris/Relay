@@ -10,6 +10,8 @@
     "mock:apns": "tsx src/mock-apns.ts",
     "mock:fcm": "tsx src/mock-fcm.ts",
     "seed": "tsx src/seed.ts",
+    "suite": "node --import tsx src/suite/runner.ts",
+    "suite:smoke": "node --import tsx src/suite/runner.ts --scale smoke",
     "sim:fanout": "node --max-old-space-size=4096 --import tsx src/sim/run-fanout.ts"
   },
   "dependencies": {
