@@ -125,7 +125,7 @@ describe('derived batch keys are unique by construction', () => {
       let frontier = [{ batchKey: root, attempt: 0, clean: true }];
       for (let depth = 1; depth <= 4; depth++) {
         frontier = frontier.flatMap((n) => [
-          { batchKey: retryKey(n as SendBatch), attempt: n.attempt + 1, clean: n.clean },
+          { batchKey: retryKey(n), attempt: n.attempt + 1, clean: n.clean },
           { batchKey: heldRetryKey(n), attempt: n.attempt + 1, clean: false },
           { batchKey: recheckKey(n), attempt: n.attempt + 1, clean: false },
         ]);

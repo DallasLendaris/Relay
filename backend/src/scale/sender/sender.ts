@@ -418,7 +418,7 @@ function gateFor(deps: SenderDeps): Pick<DeadTargetGate, 'submit'> {
  */
 
 /** Key of the retry of a batch's failed recipients. */
-export const retryKey = (batch: SendBatch): string =>
+export const retryKey = (batch: Pick<SendBatch, 'batchKey' | 'attempt'>): string =>
   `${baseBatchKey(batch.batchKey)}:r${batch.attempt + 1}`;
 
 /** Key of the re-queue of a batch's held recipients (see the derivation comment above). */
