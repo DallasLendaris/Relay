@@ -20,6 +20,7 @@ import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { Queue, QueueEncryption } from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import { DEFAULT_SHARD_CONCURRENCY, PLANNER_RESERVED_CONCURRENCY } from './capacity.js';
+import { latejoinQueueName } from './latejoin-stack.js';
 import {
   alertVerifyEnv,
   allow,
@@ -357,6 +358,13 @@ export class FanoutStack extends Stack {
 
     // Cell-index outbox drainer (every minute): redoes the cell-index writes the API did not
     // finish (a crash between the Aurora commit and the DynamoDB write), from Aurora's truth.
+    // The late-join queue lives in LateJoinStack, which depends on this stack, so it is addressed
+    // by its fixed name (no cross-stack reference, no cycle).
+    const lateJoinQueueArn = this.formatArn({
+      service: 'sqs',
+      resource: latejoinQueueName(props.stage),
+    });
+    const lateJoinQueueUrl = `https://sqs.${this.region}.amazonaws.com/${this.account}/${latejoinQueueName(props.stage)}`;
     const drainer = new NodejsFunction(this, 'OutboxDrainerFunction', {
       ...common,
       entry: fileURLToPath(
@@ -366,9 +374,15 @@ export class FanoutStack extends Stack {
       timeout: Duration.seconds(OUTBOX_DRAINER_TIMEOUT_SECONDS),
       memorySize: 256,
       logGroup: logs('OutboxDrainerLogs'),
-      environment: { ...dbEnv(props.db, 'ops'), CELL_INDEX_TABLE: cellIndex.tableName },
+      environment: {
+        ...dbEnv(props.db, 'ops'),
+        CELL_INDEX_TABLE: cellIndex.tableName,
+        // A device the drainer indexes late is sent the active alerts (late-join intent).
+        LATEJOIN_QUEUE_URL: lateJoinQueueUrl,
+      },
     });
     grantDb(drainer, props.db, 'ops');
+    allow(drainer, ['sqs:SendMessage'], [lateJoinQueueArn]);
     allow(
       drainer,
       [

@@ -1,12 +1,16 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { SQSClient } from '@aws-sdk/client-sqs';
 import { RDSDataClient } from '@aws-sdk/client-rds-data';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { PostgresDeviceStore } from '../../adapters/postgres/device-store.js';
 import { PostgresPlaceStore } from '../../adapters/postgres/place-store.js';
 import { DataApiExecutor } from '../../db/sql.js';
+import type { LateJoinQueue } from '../latejoin/intent.js';
+import { SqsLateJoinQueue } from '../latejoin/intent.js';
 import { DynamoCellIndex } from './dynamo-cell-index.js';
 import { PostgresCellIndexOutbox, type CellIndexOutbox } from './outbox.js';
 import { applyRepair, type RepairDeps } from './repair.js';
+import { targetOf } from './util.js';
 
 /** Rows younger than this are left to the API's own write-through. */
 export const OUTBOX_MIN_AGE_MS = 30_000;
@@ -17,6 +21,12 @@ export const OUTBOX_METRIC_NAMESPACE = 'Relay/CellIndex';
 
 export interface DrainerDeps extends RepairDeps {
   outbox: CellIndexOutbox;
+  /**
+   * Where to ask for a late-join check. When the drainer puts a device in the index (or gives it a
+   * working push target), the planned fan-out may have run without it, so the device is sent
+   * the alerts already active over its places. Absent in tests that do not care.
+   */
+  lateJoin?: LateJoinQueue;
   now?: () => Date;
   log?: (line: Record<string, unknown>) => void;
   metric?: (line: string) => void;
@@ -62,6 +72,8 @@ export async function drainOutbox(deps: DrainerDeps): Promise<DrainResult> {
   let applied = 0;
   let failed = 0;
   const done: string[] = [];
+  /** Devices already asked about in this run (one intent per device is enough). */
+  const asked = new Set<string>();
   for (const row of rows) {
     try {
       await applyRepair(deps, {
@@ -70,6 +82,19 @@ export async function drainOutbox(deps: DrainerDeps): Promise<DrainResult> {
         deviceId: row.deviceId,
         placeId: row.placeId,
       });
+      if (row.op !== 'remove' && deps.lateJoin && !asked.has(row.deviceId)) {
+        // Re-read: an erased device is gone (the tombstone and the row delete are one statement),
+        // and applyRepair has already removed the entry the row named, so there is nothing to
+        // send to. Otherwise a device with a working target was indexed late: ask for a late join
+        // that does not trust "its place predates the alert". If this throws the row stays and
+        // the next run redoes both steps (both are idempotent).
+        const device = await deps.devices.get(row.deviceId);
+        if (!device) log({ level: 'info', msg: 'cellindex.outbox_device_erased', op: row.op });
+        else if (targetOf(device)) {
+          await deps.lateJoin.enqueue({ deviceId: row.deviceId, reason: 'outbox' });
+          asked.add(row.deviceId);
+        }
+      }
       done.push(row.id);
       applied++;
     } catch (err) {
@@ -111,13 +136,22 @@ export async function drainOutbox(deps: DrainerDeps): Promise<DrainResult> {
 
 let real: DrainerDeps | undefined;
 
-/** Scheduled Lambda entry (every minute). Env: DB_CLUSTER_ARN, DB_SECRET_ARN, DB_NAME, CELL_INDEX_TABLE. */
+/**
+ * Scheduled Lambda entry (every minute). Env: DB_CLUSTER_ARN, DB_SECRET_ARN, DB_NAME,
+ * CELL_INDEX_TABLE, LATEJOIN_QUEUE_URL.
+ */
 export const handler = async (): Promise<DrainResult> => {
   if (!real) {
     const env = process.env;
-    const names = ['DB_CLUSTER_ARN', 'DB_SECRET_ARN', 'DB_NAME', 'CELL_INDEX_TABLE'] as const;
-    const [cluster, secret, dbName, table] = names.map((n) => env[n]);
-    if (!cluster || !secret || !dbName || !table) {
+    const names = [
+      'DB_CLUSTER_ARN',
+      'DB_SECRET_ARN',
+      'DB_NAME',
+      'CELL_INDEX_TABLE',
+      'LATEJOIN_QUEUE_URL',
+    ] as const;
+    const [cluster, secret, dbName, table, lateJoinUrl] = names.map((n) => env[n]);
+    if (!cluster || !secret || !dbName || !table || !lateJoinUrl) {
       throw new Error(`Missing environment variables: ${names.filter((n) => !env[n]).join(', ')}`);
     }
     const db = new DataApiExecutor(new RDSDataClient({}), cluster, secret, dbName);
@@ -126,6 +160,7 @@ export const handler = async (): Promise<DrainResult> => {
       places: new PostgresPlaceStore(db),
       cellIndex: new DynamoCellIndex(DynamoDBDocumentClient.from(new DynamoDBClient({})), table),
       outbox: new PostgresCellIndexOutbox(db),
+      lateJoin: new SqsLateJoinQueue(new SQSClient({}), lateJoinUrl),
     };
   }
   return drainOutbox(real);

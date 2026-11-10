@@ -144,6 +144,24 @@ export class DynamoIdempotencyStore implements IdempotencyStore {
     return 'sent';
   }
 
+  async peek(key: string): Promise<'absent' | 'leased' | 'sent'> {
+    const { Item } = await this.send(() =>
+      this.doc.send(
+        new GetCommand({ TableName: this.tableName, Key: { pk: key }, ConsistentRead: true }),
+      ),
+    );
+    if (!Item) return 'absent';
+    // Same reading of an item as claim(): a lease that ran out unsent is claimable, so absent.
+    // Items without a state were written before leases existed and count as sent.
+    if (Item['state'] === 'leased') {
+      return typeof Item['leaseUntil'] === 'number' &&
+        Item['leaseUntil'] < this.clock.now().getTime()
+        ? 'absent'
+        : 'leased';
+    }
+    return 'sent';
+  }
+
   async markSent(key: string, expiresAt: Date): Promise<void> {
     const attemptId = this.attempts.get(key);
     this.attempts.delete(key);

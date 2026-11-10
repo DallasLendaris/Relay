@@ -1,12 +1,14 @@
-import { createHmac } from 'node:crypto';
+import { createHmac, verify as cryptoVerify, type KeyObject } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { Alert } from '@relay/shared';
 import {
   canonicalAlertBytes,
   createAlertVerifier,
   createMemoryAlertSigning,
+  isLowS,
   signAlert,
   signAlertSync,
+  toLowS,
   verifyAlertSignature,
 } from '../../src/signing/index.js';
 
@@ -186,16 +188,13 @@ describe('alert signing (ECDSA P-256)', () => {
 /** A copy of `a` that counts how often its `area` is read (one read per full verification). */
 function counting(a: Alert): { alert: Alert; reads: () => number } {
   let n = 0;
-  const copy = { ...a };
-  const area = a.area;
-  Object.defineProperty(copy, 'area', {
-    enumerable: true,
-    get: () => {
-      n += 1;
-      return area;
+  const alert = new Proxy({ ...a } as Alert, {
+    get(target, prop, receiver) {
+      if (prop === 'area') n += 1;
+      return Reflect.get(target, prop, receiver) as unknown;
     },
   });
-  return { alert: copy, reads: () => n };
+  return { alert, reads: () => n };
 }
 
 describe('PERF-2: verification memo', () => {
@@ -226,11 +225,90 @@ describe('PERF-2: verification memo', () => {
     expect(verify(rewritten)).toBe(false);
   });
 
-  it('a new signature on the same object is verified again', () => {
+  it('a verified (memoized) alert cannot be mutated in place and then pass', () => {
     const verify = createAlertVerifier(keys);
-    const obj: Alert = { ...signed };
+    const obj: Alert = structuredClone(signed);
     expect(verify(obj)).toBe(true);
-    obj.signature = 'v2.k1.AAAA';
+    // The cached object is frozen, deeply: every in-place rewrite throws.
+    expect(() => {
+      obj.official.instruction = 'Ignore this alert.';
+    }).toThrow(TypeError);
+    expect(() => {
+      obj.area.h3Cells.push('872830829ffffff');
+    }).toThrow(TypeError);
+    expect(() => {
+      obj.event = 'Tornado Warning';
+    }).toThrow(TypeError);
+    expect(() => {
+      obj.signature = 'v2.k1.AAAA';
+    }).toThrow(TypeError);
+    // And the memo still answers for the untouched object.
+    expect(verify(obj)).toBe(true);
+    expect(verifyAlertSignature(obj, keys)).toEqual({ ok: true });
+  });
+
+  it('a failed verification does not freeze or memoize the object', () => {
+    const verify = createAlertVerifier(keys);
+    const obj: Alert = { ...structuredClone(signed), event: 'Tornado Warning' };
     expect(verify(obj)).toBe(false);
+    expect(Object.isFrozen(obj)).toBe(false);
+    obj.event = signed.event;
+    expect(verify(obj)).toBe(true);
+  });
+});
+
+describe('ECDSA low-S (signature malleability)', () => {
+  const [, , tag] = String(signed.signature).split('.') as [string, string, string];
+  const der = Buffer.from(tag, 'base64url');
+  const N = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+
+  /** Builds the DER of (r, n - s), the high-S twin of a low-S signature (or back). */
+  function twin(sig: Buffer): Buffer {
+    const rLen = sig[3] as number;
+    const r = sig.subarray(4, 4 + rLen);
+    const sLen = sig[5 + rLen] as number;
+    const s = BigInt(`0x${sig.subarray(6 + rLen, 6 + rLen + sLen).toString('hex')}`);
+    const hex = (N - s).toString(16).padStart(64, '0');
+    let sb = Buffer.from(hex, 'hex');
+    if ((sb[0] as number) >= 0x80) sb = Buffer.concat([Buffer.of(0), sb]);
+    while (sb.length > 1 && sb[0] === 0 && (sb[1] as number) < 0x80) sb = sb.subarray(1);
+    const body = Buffer.concat([Buffer.of(0x02, rLen), r, Buffer.of(0x02, sb.length), sb]);
+    return Buffer.concat([Buffer.of(0x30, body.length), body]);
+  }
+
+  it('the signer always emits low-S, even when the key returns high-S', async () => {
+    expect(isLowS(der)).toBe(true);
+    const high = twin(der);
+    expect(isLowS(high)).toBe(false);
+    expect(toLowS(high).equals(der)).toBe(true);
+    expect(toLowS(der).equals(der)).toBe(true);
+    // A signer (like KMS) that hands back the high-S form: signAlert normalizes it.
+    const highSigner = {
+      kid: 'k1',
+      sign: async (m: Buffer) => twin(toLowS(await key.sign(m))),
+    };
+    const out = await signAlert(alert, highSigner);
+    const outDer = Buffer.from(String(out.signature).split('.')[2] as string, 'base64url');
+    expect(isLowS(outDer)).toBe(true);
+    expect(verifyAlertSignature(out, keys)).toEqual({ ok: true });
+  });
+
+  it('many signatures from a real key are all low-S and verify', () => {
+    for (let i = 0; i < 40; i++) {
+      const a = signAlertSync({ ...alert, event: `E${i}` }, key);
+      const d = Buffer.from(String(a.signature).split('.')[2] as string, 'base64url');
+      expect(isLowS(d)).toBe(true);
+      expect(verifyAlertSignature(a, keys)).toEqual({ ok: true });
+    }
+  });
+
+  it('rejects the high-S twin of a valid signature, though OpenSSL would accept it', () => {
+    const high = twin(der);
+    expect(
+      cryptoVerify('sha256', canonicalAlertBytes(signed), keys.get('k1') as KeyObject, high),
+    ).toBe(true);
+    const forged = { ...signed, signature: `v2.k1.${high.toString('base64url')}` };
+    expect(verifyAlertSignature(forged, keys)).toEqual({ ok: false, reason: 'bad_signature' });
+    expect(createAlertVerifier(keys)(forged)).toBe(false);
   });
 });

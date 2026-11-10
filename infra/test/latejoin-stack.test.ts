@@ -67,17 +67,19 @@ describe('SEC-C-1: the API cannot send to the urgent or standard send queues', (
 
   it('only the API can send to the late-join queue', () => {
     for (const [name, t] of Object.entries(dev)) {
-      if (name === 'api') continue;
+      if (name === 'api' || name === 'latejoin') continue; // latejoin: its own queue, asserted below
       for (const s of sends(t)) {
         expect(text(s.Resource), `${name}: ${text(s)}`).not.toContain('LateJoinQueue');
       }
     }
-    // ...and the late-join stack itself only consumes it.
-    for (const s of statements(dev.latejoin)) {
-      if (text(s.Resource).includes('LateJoinQueue')) {
-        expect(actionsOf(s)).not.toContain('sqs:SendMessage');
-      }
-    }
+    // The outbox drainer (fanout stack) sends to it by its fixed name, and nothing else there does.
+    const drainerSends = sends(dev.fanout).filter((s) => text(s.Resource).includes('-latejoin'));
+    expect(drainerSends).toHaveLength(1);
+    // The late-join Lambda re-enqueues (parks) paused intents to its own queue and no other.
+    const own = statements(dev.latejoin).filter(
+      (s) => text(s.Resource).includes('LateJoinQueue') && actionsOf(s).includes('sqs:SendMessage'),
+    );
+    expect(own).toHaveLength(1);
   });
 });
 
@@ -151,13 +153,15 @@ describe('LateJoinStack', () => {
         'dynamodb:DeleteItem',
       ].sort(),
     );
-    // SendMessage only on the urgent and standard queues.
+    // SendMessage only on the urgent and standard queues and its own.
     const send = all.filter((s) => actionsOf(s).includes('sqs:SendMessage'));
     expect(send).toHaveLength(1);
     const resources = [send[0]?.Resource].flat();
-    expect(resources).toHaveLength(2);
+    // The urgent and standard queues, plus its own queue (to park intents while paused).
+    expect(resources).toHaveLength(3);
     expect(text(resources)).toMatch(/Urgent/);
     expect(text(resources)).toMatch(/Standard/);
+    expect(text(resources)).toMatch(/LateJoinQueue/);
     // Two secrets: the database credentials and the token keyring (no alert key secret).
     const secret = all.find((s) => actionsOf(s).includes('secretsmanager:GetSecretValue'));
     expect(secret).toBeDefined();

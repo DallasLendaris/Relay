@@ -633,7 +633,7 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     // (syncDeviceCells). It reads the device's CURRENT target and places from Aurora after the
     // place is saved (the row loaded for authentication is from the start of the request) and
     // re-reads afterwards, so a push token registered in between is caught and rewritten.
-    const seen: { truth?: DeviceTruth } = {};
+    const seen: { truth?: DeviceTruth; erased?: boolean } = {};
     const repairPut: IndexRepairMessage = {
       op: 'put',
       h3Cell: place.h3Cell,
@@ -647,7 +647,13 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
           deviceId: device.id,
           added: { placeId: place.id },
           load: async () => {
-            const current = (await deps.devices.get(device.id)) ?? device;
+            const current = await deps.devices.get(device.id);
+            // Erased while we were writing (DELETE /devices/me raced this request): the sync then
+            // removes what it wrote, so no entry outlives the device.
+            if (!current) {
+              seen.erased = true;
+              return null;
+            }
             const places = await deps.places.listForDevice(device.id);
             seen.truth = {
               target: targetOf(current),
@@ -660,6 +666,10 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       [repairPut],
       addOutboxId ? [addOutboxId] : [],
     );
+    if (seen.erased) {
+      // The device no longer exists: nothing to send, and the credential is dead.
+      throw new HttpError(401, 'unauthorized', 'Missing or invalid credentials');
+    }
     const truth = seen.truth;
     if (truth ? truth.target : targetOf(device)) {
       await requestLateJoin({ deviceId: device.id, placeId: place.id, reason: 'place_added' });

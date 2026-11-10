@@ -487,6 +487,9 @@ describe('resource names', () => {
             // The one deliberate exception: the paused queue has a fixed, stage-named identity
             // (relay-<stage>-shard-paused) so operators and runbooks can find it.
             if (key === 'QueueName' && value === `relay-${stage}-shard-paused`) continue;
+            // Likewise the late-join intent queue: the outbox drainer (an earlier stack) addresses it
+            // by this name, which avoids a cross-stack cycle.
+            if (key === 'QueueName' && value === `relay-${stage}-latejoin`) continue;
             expect(GENERATED_ONLY, `${stack}/${id} must not set ${key}`).not.toContain(r.Type);
           }
         }
