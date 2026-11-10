@@ -19,7 +19,8 @@ import { DEAD_TARGET_HOLD_MS } from '../../../src/scale/sender/dead-target-gate.
 import { DeadTargetQueue } from '../../../src/scale/sender/dead-target-queue.js';
 import {
   BLIND_RECHECK_DELAY_SECONDS,
-  MAX_BLIND_RECHECKS,
+  MAX_PUSHES_PER_DEAD_TOKEN,
+  blindRecheckDelaySeconds,
   createDeadTargetGate,
   processBatch,
   type Batch,
@@ -37,9 +38,10 @@ async function world() {
   const delivered = new Map<string, number>();
   const pushes = new Map<string, number>();
   const { lines, logger } = recordingLogger();
+  const metrics: string[] = [];
   const t = makeDeps({
     logger,
-    writeMetric: () => {},
+    writeMetric: (l) => void metrics.push(l),
     push: {
       send: async (ms: NativePushMessage[]) =>
         ms.map((m): NativePushResult => {
@@ -67,6 +69,7 @@ async function world() {
     return {
       deps,
       breaker,
+      gate,
       run: (b: Batch) => processBatch(b, deps),
       settle: async () => {
         await gate.settle(1000);
@@ -99,7 +102,25 @@ async function world() {
     );
   const advance = (ms: number) => sched.advance(ms);
   const logged = (msg: string) => lines.filter((l) => l.msg === msg);
-  return { t, state, cleared, delivered, pushes, proc, batch, take, taken, advance, logged };
+  /** Sum of an EMF metric written so far. */
+  const metric = (name: string) =>
+    metrics
+      .map((m) => JSON.parse(m) as Record<string, unknown>)
+      .reduce((n, m) => n + (typeof m[name] === 'number' ? (m[name] as number) : 0), 0);
+  return {
+    t,
+    state,
+    cleared,
+    delivered,
+    pushes,
+    proc,
+    batch,
+    take,
+    taken,
+    advance,
+    logged,
+    metric,
+  };
 }
 
 const ids = (p: string, n: number) => Array.from({ length: n }, (_, i) => `${p}${i}`);
@@ -230,7 +251,7 @@ describe('re-checks judged by another sender process (G6b, review P1/P1b)', () =
 });
 
 describe('a chance systemic verdict as the last state fresh traffic leaves (G6b, review P3)', () => {
-  it('dead tokens are pushed 2 + MAX_BLIND_RECHECKS times in all, then kept; nothing loops for 30 minutes', async () => {
+  it('dead tokens are pushed at most MAX_PUSHES_PER_DEAD_TOKEN times in all, on a doubling backoff, then kept', async () => {
     const w = await world();
     const A = w.proc();
     w.state.dead = (tok) => tok.startsWith('x');
@@ -257,20 +278,27 @@ describe('a chance systemic verdict as the last state fresh traffic leaves (G6b,
     }
     const minutes = (w.t.state.now.getTime() - start) / 60_000;
     expect(w.cleared).toEqual([]); // no fresh evidence either way: kept
-    expect(rechecks).toBe(1 + MAX_BLIND_RECHECKS); // before: 11
-    for (const id of ids('x', 8)) expect(w.pushes.get(id), id).toBe(2 + MAX_BLIND_RECHECKS); // before: 12
+    expect(rechecks).toBe(MAX_PUSHES_PER_DEAD_TOKEN - 1); // G6: 11; G6b: 3
+    for (const id of ids('x', 8)) expect(w.pushes.get(id), id).toBe(MAX_PUSHES_PER_DEAD_TOKEN);
+    expect(MAX_PUSHES_PER_DEAD_TOKEN).toBeLessThanOrEqual(6);
     expect(w.taken.map((e) => e.batch.batchKey)).toEqual([
       'a:warning:c1:0:v1',
       'a:warning:c1:0:v1:u2',
       'a:warning:c1:0:v1:u2:u3',
+      'a:warning:c1:0:v1:u2:u3:u4',
+      'a:warning:c1:0:v1:u2:u3:u4:u5',
     ]);
     expect(w.taken[1]!.delaySeconds).toBeGreaterThanOrEqual(BLIND_RECHECK_DELAY_SECONDS);
     expect(w.taken[2]!.delaySeconds).toBeGreaterThanOrEqual(2 * BLIND_RECHECK_DELAY_SECONDS);
+    expect(w.taken[3]!.delaySeconds).toBeGreaterThanOrEqual(4 * BLIND_RECHECK_DELAY_SECONDS);
     const gaveUp = w.logged('delivery.gave_up');
     expect(gaveUp.map((l) => [l.fields?.['reason'], l.fields?.['count']])).toEqual([
       ['unconfirmed', 8],
     ]);
-    expect(minutes).toBeLessThan(10); // before: ~24 minutes
+    // The last re-check lands inside the 30-minute budget; nothing runs past it.
+    expect(minutes).toBeLessThan(31);
+    expect(w.metric('DeadTargetUnconfirmedKept')).toBe(8);
+    expect(w.metric('DeadTargetHeldDropped')).toBe(0);
     // Only the fresh batch raised an alarm-level breaker log; the re-checks raised none.
     expect(w.logged('delivery.platform_breaker_open')).toHaveLength(1);
     expect(w.logged('delivery.permanent_breaker_open')).toHaveLength(0);
@@ -296,5 +324,155 @@ describe('a chance systemic verdict as the last state fresh traffic leaves (G6b,
     await A.settle();
     expect(w.cleared).toEqual(['xlate']); // without the reset: held as systemic and re-queued
     expect(w.take()).toEqual([]);
+  });
+});
+
+type World = Awaited<ReturnType<typeof world>>;
+type Proc = ReturnType<World['proc']>;
+
+/**
+ * Runs the shared send queue on the test clock in 5 s steps until `untilMin`: each step settles
+ * every process, calls `tick(minutes)`, then runs every batch whose delay has passed on the
+ * process `pick` chooses.
+ */
+async function runQueue(
+  w: World,
+  procs: Proc[],
+  pick: (b: Batch) => number,
+  tick: (min: number) => Promise<void>,
+  untilMin: number,
+): Promise<string[]> {
+  const start = w.t.state.now.getTime();
+  const q: Array<{ at: number; b: Batch }> = [];
+  const log: string[] = [];
+  const pull = () => {
+    const n = w.taken.length;
+    w.take();
+    for (const e of w.taken.slice(n))
+      q.push({ at: w.t.state.now.getTime() + 1000 * e.delaySeconds, b: e.batch });
+  };
+  pull();
+  while (w.t.state.now.getTime() - start < untilMin * 60_000) {
+    await w.advance(5000);
+    for (const p of procs) await p.settle();
+    const min = (w.t.state.now.getTime() - start) / 60_000;
+    await tick(min);
+    pull();
+    q.sort((a, b) => a.at - b.at);
+    while (q.length > 0 && q[0]!.at <= w.t.state.now.getTime()) {
+      const { b } = q.shift()!;
+      log.push(`${b.batchKey}@${min.toFixed(1)}m`);
+      await procs[pick(b)]!.run(b);
+      pull();
+    }
+  }
+  return log;
+}
+
+describe('a misconfiguration that outlasts fresh evidence is re-checked until the budget (G6c, review N2/N3)', () => {
+  for (const fixAt of [8, 20]) {
+    it(`N2: one task, fresh traffic over, still misconfigured; the operator fixes it at minute ${fixAt}: all delivered`, async () => {
+      const w = await world();
+      const A = w.proc();
+      await A.run(w.batch('a:warning:c0:0', ids('ok', 300)));
+      w.state.misconfigured = true;
+      await A.run(w.batch('a:warning:c2:0', ids('L', 20)));
+      const log = await runQueue(
+        w,
+        [A],
+        () => 0,
+        async (min) => {
+          if (min >= fixAt) w.state.misconfigured = false;
+        },
+        32,
+      );
+      expect(w.cleared).toEqual([]);
+      for (const id of ids('L', 20)) expect(w.delivered.get(id), `${id} ${log.join(' ')}`).toBe(1); // G6b: 0
+      expect(w.logged('delivery.gave_up')).toEqual([]);
+    });
+  }
+
+  it('N3: broken fresh traffic only on task A, re-checks land on task B; fixed at minute 10: all delivered', async () => {
+    const w = await world();
+    const A = w.proc();
+    const B = w.proc();
+    await A.run(w.batch('a:warning:c0:0', ids('ok', 300)));
+    await B.run(w.batch('a:warning:c0b:0', ids('okB', 300)));
+    w.state.misconfigured = true;
+    await A.run(w.batch('a:warning:c2:0', ids('L', 20)));
+    let n = 0;
+    const log = await runQueue(
+      w,
+      [A, B],
+      (b) => (b.batchKey.startsWith('a:warning:c2:') ? 1 : 0),
+      async (min) => {
+        if (min < 10) {
+          n++;
+          await A.run(w.batch(`a:warning:f${n}:0`, ids(`F${n}_`, 20)));
+        } else w.state.misconfigured = false;
+      },
+      32,
+    );
+    const chain = log.filter((l) => l.startsWith('a:warning:c2:'));
+    // B never sees fresh iOS traffic: every re-check there is unconfirmed, and they keep coming.
+    expect(
+      chain.some((l) => /:u4@/.test(l)),
+      chain.join(' '),
+    ).toBe(true);
+    expect(w.cleared.filter((id) => id.startsWith('L'))).toEqual([]);
+    for (const id of ids('L', 20)) expect(w.delivered.get(id), chain.join(' ')).toBe(1); // G6b: 0
+  });
+
+  it('the blind backoff never pushes a dead token more than MAX_PUSHES_PER_DEAD_TOKEN times, whatever the jitter or hold', () => {
+    const budget = 30 * 60_000;
+    for (const holdMs of [0, 1, HOLD]) {
+      for (const r of [0, 0.5, 0.999999]) {
+        // The fresh push and the `:v1` re-check at t = 0 (the shortest possible), then blind ones.
+        let pushes = 2;
+        let now = holdMs;
+        for (let blind = 0; ; blind++) {
+          const d = blindRecheckDelaySeconds(blind, blind + 1, now, budget, () => r);
+          if (d === undefined) break;
+          expect(d).toBeGreaterThanOrEqual(BLIND_RECHECK_DELAY_SECONDS);
+          now += d * 1000;
+          expect(now).toBeLessThan(budget); // every re-check lands before the deadline
+          pushes++;
+          now += holdMs;
+        }
+        expect(pushes, `hold ${holdMs} r ${r}`).toBeLessThanOrEqual(MAX_PUSHES_PER_DEAD_TOKEN);
+      }
+    }
+    expect(MAX_PUSHES_PER_DEAD_TOKEN).toBe(6);
+  });
+});
+
+describe('shutdown never clears a re-check (G6c, review N6)', () => {
+  it('a primed re-check held at shutdown is re-queued with its tokens, not cleared before its after-window', async () => {
+    const w = await world();
+    const A = w.proc();
+    const B = w.proc();
+    await A.run(w.batch('a:warning:c0:0', ids('okA', 300)));
+    w.state.misconfigured = true;
+    await A.run(w.batch('a:warning:c2:0', ids('L', 20)));
+    const v = w.take();
+    await w.advance(1000);
+    w.state.misconfigured = false;
+    await B.run(w.batch('a:warning:c3:0', ids('okC', 20))); // healthy evidence after the suspicion
+    w.state.misconfigured = true; // a new onset nobody has reported yet
+    await B.run(v[0]!);
+    B.gate.shutdown(); // before the 30 s after-window
+    await B.settle();
+    expect(w.cleared).toEqual([]); // G6b: all 20 cleared
+    expect(w.take().map((b) => b.batchKey)).toEqual(['a:warning:c2:0:v1:u2']);
+  });
+
+  it('fresh holds keep their shutdown behaviour: decided at once', async () => {
+    const w = await world();
+    const A = w.proc();
+    w.state.dead = (tok) => tok === 'x0';
+    await A.run(w.batch('a:warning:c0:0', [...ids('ok', 49), 'x0']));
+    A.gate.shutdown();
+    await A.settle();
+    expect(w.cleared).toEqual(['x0']);
   });
 });

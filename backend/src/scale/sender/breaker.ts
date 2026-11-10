@@ -37,6 +37,10 @@ import type { PushTarget } from '../contracts.js';
  * `healthyAfter` before the re-check was sent and fresh results after it, never on the absence
  * of evidence (a cold process, a process that saw only the healthy past, no traffic at all).
  *
+ * Limit: every rule here detects a misconfiguration only once it is systemic. A partial one on
+ * a platform key that stays under the thresholds (e.g. 7 of 20 permanent) counts as healthy: its
+ * affected tokens are cleared, fresh and re-checked alike (PlatformWindows.healthyAfter).
+ *
  * Staleness: a platform window that has recorded nothing for PLATFORM_EVIDENCE_TTL_MS is reset
  * at its next result, so a verdict left by the end of one alert's traffic (a chance "systemic"
  * or a healthy one) never judges the next alert's first results.
@@ -76,8 +80,9 @@ export function wilsonLower(k: number, n: number, z = WILSON_Z): number {
  * ~3e-6 per result, so a 1M-device fan-out (about 1M results over all windows) sees it about once.
  * Such a false alarm cannot feed itself (re-check results never feed the windows). Its dead tokens
  * are re-checked and cleared once fresh traffic proves the platform healthy around the re-check;
- * if fresh traffic has ended, each is pushed at most 1 + MAX_BLIND_RECHECKS more times and kept
- * (dead-target-gate.ts "Re-check verdicts").
+ * if fresh traffic has ended, it is re-checked on a doubling backoff until the retry deadline and
+ * kept: at most MAX_PUSHES_PER_DEAD_TOKEN (6) pushes in all (sender.ts blindRecheckDelaySeconds,
+ * dead-target-gate.ts "Re-check verdicts").
  */
 export function isSystemic(permanents: number, samples: number): boolean {
   return permanents >= SYSTEMIC_MIN_PERMANENT && wilsonLower(permanents, samples) > SYSTEMIC_RATE;
@@ -211,6 +216,17 @@ export class PlatformWindows {
    * last systemic verdict, neither window is systemic now, and the newest result is not older
    * than `newestAtLeastMs`. A cold, stale or quiet window is never healthy: no evidence is not
    * evidence of health.
+   *
+   * Known limit: "healthy" here means "not systemic", i.e. below the isSystemic thresholds, not
+   * "no misconfiguration". A PARTIAL misconfiguration of one platform key that stays below them
+   * (some tokens of the key affected, e.g. one app build's topic: 7 of the last 20 permanent is
+   * not systemic, 8 is) reads as healthy, so re-checks of its affected recipients are primed and
+   * cleared, and their live tokens lost. This is the same limit fresh clears already have under
+   * the G1 thresholds: the same 7-of-20 traffic clears its own permanents fresh, 30 s after the
+   * push. A re-check adds no new exposure class, only re-checks pushed while it lasts. Telling a
+   * sub-threshold partial misconfiguration from normal churn (1-5%, bursty) needs a signal the
+   * result rates do not carry (per-topic or per-build keys, error labels); the thresholds are
+   * deliberately not lowered here (see the false-open numbers in the file comment).
    */
   healthyAfter(key: string, afterMs: number, newestAtLeastMs = -Infinity): boolean {
     const w = this.windows.get(key);

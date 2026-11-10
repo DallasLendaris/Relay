@@ -61,16 +61,26 @@ export interface HeldGroup {
   suspectedAt?: Record<string, number>;
   /**
    * Set by the gate on a re-queue made without fresh evidence either way (an "unconfirmed"
-   * re-check): sender.ts requeueHeld bounds those per lineage (MAX_BLIND_RECHECKS).
+   * re-check): sender.ts requeueHeld re-queues those on the blind backoff until the deadline.
    */
   blind?: boolean;
 }
 
 /**
- * Re-queues held recipients as retry batches. Resolves with how many were re-queued; the rest
- * (retry budget spent, or the enqueue failed) are lost to this alert and must be logged there.
+ * What a re-queue did: how many recipients were re-queued, and how many unconfirmed (`blind`)
+ * ones were given up at their deadline with the token kept (metric DeadTargetUnconfirmedKept).
  */
-export type HeldRequeuer = (groups: HeldGroup[]) => Promise<number>;
+export interface HeldRequeueResult {
+  requeued: number;
+  unconfirmed: number;
+}
+
+/**
+ * Re-queues held recipients as retry batches. Resolves with how many were re-queued (a number,
+ * or a HeldRequeueResult); the rest (retry budget spent, or the enqueue failed) are lost to this
+ * alert and must be logged there.
+ */
+export type HeldRequeuer = (groups: HeldGroup[]) => Promise<number | HeldRequeueResult>;
 
 export interface DeadTargetGateOptions {
   /** Its per-platform windows (`breaker.platforms`) decide each held clear. */
@@ -133,9 +143,13 @@ interface Entry {
  * Otherwise the token is kept and the recipient re-queued. CONFIRMED (a fresh result recorded
  * after the re-check began left the platform systemic) re-queues within the 30-minute budget, as
  * for fresh verdicts. UNCONFIRMED (no fresh evidence either way: a cold or quiet process, fresh
- * traffic over, a systemic state left by traffic that has ended) re-queues as `:u`, at most
- * MAX_BLIND_RECHECKS times per lineage, minutes apart (sender.ts requeueHeld), then gives up
- * with the token kept (the next alert's fresh traffic judges it again).
+ * traffic over, a systemic state left by traffic that has ended, fresh traffic only on another
+ * task) re-queues as `:u` on a doubling backoff (2, 4, 8, then 15 minutes) until the 30-minute
+ * budget or alert end, the last one pulled in to land just before it (sender.ts
+ * blindRecheckDelaySeconds), so a fix any time before then delivers; then gives up with the
+ * token kept (the next alert's fresh traffic judges it again). A re-check decided before its
+ * hold ended (shutdown, overflow) is never cleared: it lacks the "after" half, and is re-queued
+ * as unconfirmed.
  *
  * Bounds on wrong clears (live tokens cleared), per platform key:
  *   - Fresh: a clear is released only if the platform is not systemic `holdMs` after the
@@ -156,12 +170,14 @@ interface Entry {
  *     recipients that task pushed in that interval are exposed. This is the same blind spot as a
  *     fresh onset (at most 7 fresh clears per task), widened to the re-checks in flight.
  *   - Unconfirmed: never cleared. A chance systemic verdict as the last state fresh traffic left
- *     costs each dead token it caught 2 + MAX_BLIND_RECHECKS pushes in all, not one per retry
- *     step until the 30-minute budget.
+ *     costs each dead token it caught at most MAX_PUSHES_PER_DEAD_TOKEN (6) pushes in all over
+ *     the 30-minute budget (sender.ts blindRecheckDelaySeconds), not one per retry step (~12).
+ *   - Partial misconfiguration: see breaker.ts healthyAfter (a platform key failing below the
+ *     systemic threshold reads as healthy, for re-checks as for fresh clears).
  *
  * Memory: held entries live `holdMs`; at most `maxHeld` recipients are held, past that the oldest
- * are decided early. shutdown() decides everything at once; settle() waits for the re-queue
- * writes. Normal sending is never delayed: the gate only defers the asynchronous cleanup.
+ * are decided early. shutdown() decides everything at once (re-checks are re-queued, never
+ * cleared); settle() waits for the re-queue writes. Normal sending is never delayed: the gate only defers the asynchronous cleanup.
  */
 export class DeadTargetGate {
   private held: Entry[] = [];
@@ -218,7 +234,11 @@ export class DeadTargetGate {
     this.arm();
   }
 
-  /** Graceful shutdown: decide everything held now (before the cleanup queue is flushed). */
+  /**
+   * Graceful shutdown: decide everything held now (before the cleanup queue is flushed). A
+   * re-check is never cleared here: its "after" half of the evidence (holdMs of fresh results)
+   * has not been seen, so it is re-queued (token kept) like an unconfirmed one.
+   */
   shutdown(): void {
     this.timer?.cancel();
     this.timer = undefined;
@@ -280,7 +300,12 @@ export class DeadTargetGate {
       const blind: Recipient[] = [];
       for (const r of g.recipients) {
         const key = platformKeyOf(r.target);
-        const verdict = g.recheck ? this.judgeRecheck(g, key) : this.judgeFresh(g, key);
+        let verdict = g.recheck ? this.judgeRecheck(g, key) : this.judgeFresh(g, key);
+        // Decided before its hold ended (shutdown, overflow): a re-check lacks the "after" half
+        // of its evidence, so it is not cleared (fresh holds keep their early decision).
+        if (verdict === 'clear' && g.recheck && (why === 'shutdown' || why === 'overflow')) {
+          verdict = 'blind';
+        }
         if (verdict === 'clear') {
           this.opts.queue.enqueue(r.deviceId, r.target);
           released++;
@@ -373,10 +398,15 @@ export class DeadTargetGate {
         });
         return 0;
       })
-      .then((requeued) => {
+      .then((res) => {
+        const { requeued, unconfirmed } =
+          typeof res === 'number' ? { requeued: res, unconfirmed: 0 } : res;
         if (requeued > 0) this.write(emfLine('DeadTargetHeldRequeued', requeued));
+        // Unconfirmed until the deadline: kept, counted on their own (not an alarm).
+        if (unconfirmed > 0) this.write(emfLine('DeadTargetUnconfirmedKept', unconfirmed));
         // Not re-queued (budget spent, enqueue failed): these miss this alert; tokens are kept.
-        if (count - requeued > 0) this.write(emfLine('DeadTargetHeldDropped', count - requeued));
+        const dropped = count - requeued - unconfirmed;
+        if (dropped > 0) this.write(emfLine('DeadTargetHeldDropped', dropped));
       })
       .finally(() => this.pending.delete(p));
     this.pending.add(p);
