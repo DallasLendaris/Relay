@@ -18,10 +18,12 @@
  *     FFW Flash Flood Warning, FFA Flash Flood Watch, FLW Flood Warning, FLA Flood Watch,
  *     FRW Fire Warning (state and local code), TOR Tornado Warning, TOA Tornado Watch,
  *     SVR/SVA Severe Thunderstorm Warning/Watch, EWW Extreme Wind Warning, HWW High Wind Warning,
+ *     HWA High Wind Watch, WSA Winter Storm Watch,
  *     DSW Dust Storm Warning, TSW/TSA Tsunami Warning/Watch, EQW Earthquake Warning,
  *     EVI Evacuation Immediate, SPW Shelter In Place Warning, SPS Special Weather Statement.
- *     (Tsunami Advisory, Wind Advisory, the winter products, Air Quality Alert, Dense Smoke
- *     Advisory and Beach Hazards Statement have no code here and match by event name only.)
+ *     (Tsunami Advisory, Wind Advisory, the other winter products, Blowing Dust Advisory (no SAME
+ *     code exists), Air Quality Alert, Dense Smoke Advisory and Beach Hazards Statement have no
+ *     code here and match by event name only.)
  *   NOT SAME codes. SAME has no codes for Red Flag, Fire Weather Watch, Flood Advisory or any heat
  *   product, and FLS is "Flood Statement", not an advisory. The keys below are our best guess at
  *   what Alert.eventCode may carry for those products, and we have not verified them against
@@ -287,6 +289,39 @@ const dustStormWarning: TemplateSet = {
   },
 };
 
+const highWindWatch: TemplateSet = {
+  en: {
+    whatToDo: 'Put away loose items. Be ready to stay inside.',
+    text: 'A {event} is in effect for {area}. Strong winds are possible until {end}.',
+  },
+  es: {
+    whatToDo: 'Guarde los objetos sueltos. Esté listo para quedarse adentro.',
+    text: 'Hay una vigilancia de vientos fuertes para {area}. Es posible que haya vientos fuertes hasta {end}.',
+  },
+};
+
+const winterStormWatch: TemplateSet = {
+  en: {
+    whatToDo: 'Plan for unsafe roads. Get food, water and warm clothes ready.',
+    text: 'A {event} is in effect for {area}. Heavy snow and ice are possible until {end}.',
+  },
+  es: {
+    whatToDo: 'Prepárese para caminos peligrosos. Tenga lista comida, agua y ropa abrigada.',
+    text: 'Hay una vigilancia de tormenta invernal para {area}. Es posible que haya mucha nieve y hielo hasta {end}.',
+  },
+};
+
+const blowingDustAdvisory: TemplateSet = {
+  en: {
+    whatToDo: 'Drive slowly with your lights on. If you cannot see, pull off the road.',
+    text: 'A {event} is in effect for {area}. It may be hard to see until {end}.',
+  },
+  es: {
+    whatToDo: 'Maneje despacio con las luces encendidas. Si no puede ver, salga del camino.',
+    text: 'Hay una advertencia de polvo en el aire para {area}. Puede ser difícil ver hasta {end}.',
+  },
+};
+
 const severeThunderstormWarning: TemplateSet = {
   en: {
     whatToDo: 'Go inside a strong building. Stay away from windows.',
@@ -408,6 +443,8 @@ export const TEMPLATES_BY_CODE: Record<string, TemplateSet> = {
   SVA: severeThunderstormWatch,
   EWW: extremeWindWarning,
   HWW: highWindWarning,
+  HWA: highWindWatch,
+  WSA: winterStormWatch,
   DSW: dustStormWarning,
   TSW: tsunamiWarning,
   TSA: tsunamiWatch,
@@ -439,10 +476,13 @@ export const TEMPLATES_BY_EVENT: Record<string, TemplateSet> = {
   'tsunami watch': tsunamiWatch,
   'extreme wind warning': extremeWindWarning,
   'high wind warning': highWindWarning,
+  'high wind watch': highWindWatch,
   'wind advisory': windAdvisory,
   'winter storm warning': winterStormWarning,
+  'winter storm watch': winterStormWatch,
   'winter weather advisory': winterWeatherAdvisory,
   'dust storm warning': dustStormWarning,
+  'blowing dust advisory': blowingDustAdvisory,
   'severe thunderstorm warning': severeThunderstormWarning,
   'severe thunderstorm watch': severeThunderstormWatch,
   'earthquake warning': earthquakeWarning,
@@ -452,4 +492,51 @@ export const TEMPLATES_BY_EVENT: Record<string, TemplateSet> = {
   'dense smoke advisory': denseSmokeAdvisory,
   'special weather statement': specialWeatherStatement,
   'beach hazards statement': beachHazardsStatement,
+};
+
+/**
+ * Spanish product names for push titles, keyed by lower-case event name (every key of
+ * TEMPLATES_BY_EVENT, plus the two named emergencies; a test checks none is missing). They follow the NWS Spanish convention
+ * (Aviso / Vigilancia / Advertencia) and already carry the tier word, so a Spanish title does
+ * not add another one. Unreviewed: see docs/summaries-spanish-review.md.
+ */
+export const EVENT_NAME_ES: Record<string, string> = {
+  'flash flood warning': 'Aviso de inundaciones repentinas',
+  'flash flood watch': 'Vigilancia de inundaciones repentinas',
+  'flash flood emergency': 'Emergencia por inundaciones repentinas',
+  'tornado emergency': 'Emergencia de tornado',
+  'flood warning': 'Aviso de inundación',
+  'flood watch': 'Vigilancia de inundación',
+  'flood advisory': 'Advertencia de inundación',
+  'red flag warning': 'Aviso de bandera roja',
+  'fire weather watch': 'Vigilancia de clima de incendios',
+  'fire warning': 'Aviso de incendio',
+  'extreme heat warning': 'Aviso de calor extremo',
+  'excessive heat warning': 'Aviso de calor extremo',
+  'extreme heat watch': 'Vigilancia de calor extremo',
+  'excessive heat watch': 'Vigilancia de calor extremo',
+  'heat advisory': 'Advertencia de calor',
+  'tornado warning': 'Aviso de tornado',
+  'tornado watch': 'Vigilancia de tornado',
+  'tsunami warning': 'Aviso de tsunami',
+  'tsunami advisory': 'Advertencia de tsunami',
+  'tsunami watch': 'Vigilancia de tsunami',
+  'extreme wind warning': 'Aviso de vientos extremos',
+  'high wind warning': 'Aviso de vientos fuertes',
+  'high wind watch': 'Vigilancia de vientos fuertes',
+  'wind advisory': 'Advertencia de viento',
+  'winter storm warning': 'Aviso de tormenta invernal',
+  'winter storm watch': 'Vigilancia de tormenta invernal',
+  'winter weather advisory': 'Advertencia de clima invernal',
+  'dust storm warning': 'Aviso de tormenta de polvo',
+  'blowing dust advisory': 'Advertencia de polvo en el aire',
+  'severe thunderstorm warning': 'Aviso de tormenta eléctrica severa',
+  'severe thunderstorm watch': 'Vigilancia de tormenta eléctrica severa',
+  'earthquake warning': 'Aviso de terremoto',
+  'evacuation immediate': 'Orden de evacuación inmediata',
+  'shelter in place warning': 'Aviso de refugio en el lugar',
+  'air quality alert': 'Alerta de calidad del aire',
+  'dense smoke advisory': 'Advertencia de humo denso',
+  'special weather statement': 'Comunicado meteorológico especial',
+  'beach hazards statement': 'Comunicado de peligros en la playa',
 };

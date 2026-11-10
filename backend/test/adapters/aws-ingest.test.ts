@@ -82,4 +82,34 @@ describe('DynamoSeenStore', () => {
     expect(await store.has('yes')).toBe(true);
     expect(await store.has('no')).toBe(false);
   });
+
+  it('keeps the feed-absence record per alert id, unconditionally, and clears it by overwrite', async () => {
+    ddbMock.on(PutCommand).resolves({});
+    const nowMs = Date.parse('2026-11-09T00:00:00Z');
+    const store = new DynamoSeenStore(db(), 'state', () => nowMs);
+    const marker = {
+      endedBy: 'feed_absence',
+      priorState: 'updated',
+      endedAt: '2026-11-09T00:00:00Z',
+    } as const;
+    await store.markEnded('alert-1', marker);
+    const put = ddbMock.commandCalls(PutCommand)[0]?.args[0].input;
+    expect(put?.ConditionExpression).toBeUndefined(); // a second ending overwrites
+    expect(put?.Item).toMatchObject({ sourceId: 'ended#alert-1', ...marker, restored: false });
+
+    ddbMock
+      .on(GetCommand, { Key: { sourceId: 'ended#alert-1' } })
+      .resolves({ Item: { sourceId: 'ended#alert-1', ...marker, restored: false } });
+    expect(await store.getEnded('alert-1')).toEqual(marker);
+
+    await store.clearEnded('alert-1');
+    const cleared = ddbMock.commandCalls(PutCommand)[1]?.args[0].input;
+    expect(cleared?.Item).toMatchObject({ sourceId: 'ended#alert-1', restored: true });
+    ddbMock
+      .on(GetCommand, { Key: { sourceId: 'ended#alert-1' } })
+      .resolves({ Item: { sourceId: 'ended#alert-1', restored: true } });
+    expect(await store.getEnded('alert-1')).toBeNull();
+    ddbMock.on(GetCommand, { Key: { sourceId: 'ended#none' } }).resolves({});
+    expect(await store.getEnded('none')).toBeNull();
+  });
 });

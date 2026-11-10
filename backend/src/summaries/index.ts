@@ -7,7 +7,7 @@ import {
   type TemplateSet,
 } from './templates.js';
 
-export { TEMPLATES_BY_CODE, TEMPLATES_BY_EVENT } from './templates.js';
+export { EVENT_NAME_ES, TEMPLATES_BY_CODE, TEMPLATES_BY_EVENT } from './templates.js';
 export type { Language, SummaryTemplate, TemplateSet } from './templates.js';
 
 /** The UI must show this label next to any Relay-written summary. */

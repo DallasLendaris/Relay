@@ -42,4 +42,13 @@ export class InMemoryAlertStore implements AlertStore {
       .filter((a) => endsAt(a) > now.getTime())
       .map((a) => structuredClone(a));
   }
+
+  /** Cancelled alerts of one source whose end is still in the future (feed restoration). */
+  async listCancelledBySource(source: Alert['source'], now: Date): Promise<Alert[]> {
+    const endsAt = (a: Alert) => Math.max(Date.parse(a.expires), a.ends ? Date.parse(a.ends) : 0);
+    return [...this.alerts.values()]
+      .filter((a) => a.source === source && a.state === 'cancelled')
+      .filter((a) => endsAt(a) > now.getTime())
+      .map((a) => structuredClone(a));
+  }
 }

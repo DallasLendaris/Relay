@@ -168,7 +168,7 @@ describe('processBatch: building pushes', () => {
     expect(msgs[0]?.title).toBe('Flash Flood Warning');
     expect(msgs[0]?.body).toBe('NWS: Flash Flood Warning until 6 PM');
     expect(msgs[0]?.data['checkInToken']).toBe('ct0');
-    expect(msgs[1]?.title).toBe('Aviso: Flash Flood Warning');
+    expect(msgs[1]?.title).toBe('Aviso de inundaciones repentinas');
     expect(msgs[1]?.body).toBe('Resumen de Relay (no oficial): Inundación repentina Fuente: NWS');
   });
 

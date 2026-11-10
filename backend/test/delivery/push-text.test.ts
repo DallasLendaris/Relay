@@ -6,7 +6,7 @@ import {
   cleanDescription,
   shortSenderName,
 } from '../../src/delivery/send-jobs.js';
-import { summariesFor } from '../../src/summaries/index.js';
+import { EVENT_NAME_ES, TEMPLATES_BY_EVENT, summariesFor } from '../../src/summaries/index.js';
 import { makeAlert } from './fakes.js';
 
 const withSummaries = (a: Alert): Alert => ({
@@ -118,7 +118,7 @@ describe('GOV-4 / SAFE-7: Spanish push text', () => {
   it('with a summary: labelled as an unofficial Relay summary with the source', () => {
     const a = withSummaries(tornado);
     const { title, body } = alertPushText(a, 'es');
-    expect(title).toBe('Aviso: Tornado Warning');
+    expect(title).toBe('Aviso de tornado');
     expect(body.startsWith('Resumen de Relay (no oficial): ')).toBe(true);
     expect(body.endsWith(' Fuente: NWS')).toBe(true);
     expect(body).toContain('aviso de tornado');
@@ -126,15 +126,35 @@ describe('GOV-4 / SAFE-7: Spanish push text', () => {
     expect(body).not.toContain('issued');
   });
 
-  it('shows the Spanish tier word and PDS / EMERGENCY with the official event name', () => {
+  it('Spanish title: Spanish event name plus EMERGENCIA / PELIGRO PARTICULARMENTE ALTO, no English tier words', () => {
     const emergency = withSummaries({ ...tornado, relaySeverity: 'emergency' });
-    expect(alertPushText(emergency, 'es').title).toBe('Emergencia: Tornado Warning – EMERGENCY');
+    expect(alertPushText(emergency, 'es').title).toBe('Aviso de tornado – EMERGENCIA');
     expect(alertPushText({ ...withSummaries(tornado), pds: true }, 'es').title).toBe(
-      'Aviso: Tornado Warning – PDS',
+      'Aviso de tornado – PELIGRO PARTICULARMENTE ALTO',
     );
     expect(alertPushText(makeAlert({ relaySeverity: 'statement' }), 'es').title).toBe(
-      'Comunicado: Flash Flood Warning',
+      'Aviso de inundaciones repentinas',
     );
+    // an event that already says "Emergency" gets no second label
+    const named = makeAlert({ event: 'Flash Flood Emergency', relaySeverity: 'emergency' });
+    expect(alertPushText(named, 'es').title).toBe('Emergencia por inundaciones repentinas');
+    // an event with no Spanish name keeps its English name but still gets Spanish labels
+    const unknown = makeAlert({ event: 'Avalanche Warning', eventCode: null, pds: true });
+    expect(alertPushText(unknown, 'es').title).toBe(
+      'Aviso: Avalanche Warning – PELIGRO PARTICULARMENTE ALTO',
+    );
+  });
+
+  it('every template event has a Spanish name, and no Spanish title carries an English tier word', () => {
+    for (const key of Object.keys(TEMPLATES_BY_EVENT)) expect(EVENT_NAME_ES[key]).toBeTruthy();
+    for (const [event, name] of Object.entries(EVENT_NAME_ES)) {
+      for (const relaySeverity of ['emergency', 'warning'] as const) {
+        const a = makeAlert({ event, eventCode: null, relaySeverity, pds: true });
+        const { title } = alertPushText(a, 'es');
+        expect(title, event).toContain(name);
+        expect(title, event).not.toMatch(/\b(Warning|Watch|Advisory|Emergency|PDS|EMERGENCY)\b/);
+      }
+    }
   });
 
   it('without a template: Spanish title, body says official and English only', () => {

@@ -30,6 +30,22 @@ export interface SeenStore {
   has(sourceId: string): Promise<boolean>;
   /** Record a source message as processed. */
   mark(sourceId: string, sent: string): Promise<void>;
+  /**
+   * Feed reconciliation bookkeeping (optional, kept per Relay alert id, outside the shared Alert
+   * schema). `markEnded` records that reconciliation ended the alert because NWS stopped listing
+   * it; `getEnded` returns that record until `clearEnded` (the alert was restored, or a real
+   * Cancel arrived and the record no longer applies).
+   */
+  markEnded?(alertId: string, marker: EndedMarker): Promise<void>;
+  getEnded?(alertId: string): Promise<EndedMarker | null>;
+  clearEnded?(alertId: string): Promise<void>;
+}
+
+/** Why and when reconciliation ended an alert, and the state to restore it to. */
+export interface EndedMarker {
+  endedBy: 'feed_absence';
+  priorState: 'active' | 'updated';
+  endedAt: string;
 }
 
 /** The current record of every alert (Aurora in AWS). */
