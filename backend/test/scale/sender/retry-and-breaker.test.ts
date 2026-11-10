@@ -299,7 +299,7 @@ describe('circuit breaker in processBatch', () => {
       () =>
         t.sendQueue.enqueued
           .flatMap((e) => e.batches)
-          .filter((b) => b.batchKey.endsWith(':held:r1'))
+          .filter((b) => b.batchKey.endsWith(':h1'))
           .reduce((n, b) => n + b.recipients.length, 0) ===
         39 * 2,
     );

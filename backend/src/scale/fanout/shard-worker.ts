@@ -6,7 +6,6 @@ import {
   BATCH_BYTE_BUDGET,
   CELL_BUCKETS,
   DENSE_CELL_RECIPIENTS,
-  DENSE_PARTS,
   type CellIndex,
   type SendBatch,
   type SendQueue,
@@ -14,6 +13,7 @@ import {
 import { checkEligibility, type EligibilityDeps, type FanoutRefusal } from './common.js';
 import { bucketFor, densePartFor } from './hash.js';
 import type { ResumableShardJob } from './messages.js';
+import { bucketKey, denseCellKey, denseMarkerKey, densePartKey } from './keys.js';
 import { splitToFit } from './pack.js';
 import { isPrimaryCell } from './primary-cell.js';
 import type { ShardDispatcher } from './queues.js';
@@ -30,6 +30,12 @@ export interface ShardWorkerDeps extends EligibilityDeps {
    * plans of one alert version could then double-send those buckets.
    */
   idempotency?: Required<Pick<IdempotencyStore, 'claim' | 'markSent' | 'peek'>>;
+  /**
+   * Re-runs a job later (the paused queue: about 60 s, then back to the shard function). Used for
+   * the cells of a dense bucket that another attempt holds, so they settle without failing the job
+   * into Lambda's retries and the shard DLQ. Absent: the job throws DenseBucketContendedError.
+   */
+  retryLater?: (job: ResumableShardJob) => Promise<void>;
   /** Cells processed at the same time. Default 16. */
   cellConcurrency?: number;
   /** Cell-index page size. Default 1,000. */
@@ -133,25 +139,12 @@ function roughBytes(recipients: Recipient[]): number {
 const byDeviceId = (a: Recipient, b: Recipient): number =>
   a.deviceId < b.deviceId ? -1 : a.deviceId > b.deviceId ? 1 : 0;
 
-/** The key of a normal cell's bucket, which is also the tombstone of a dense cell's bucket. */
-export const bucketKey = (
-  alert: Pick<Alert, 'id' | 'relaySeverity'>,
-  h3Cell: string,
-  bucket: number,
-): string => `${alert.id}:${alert.relaySeverity}:${h3Cell}:${bucket}`;
+export { bucketKey, denseCellKey, denseMarkerKey, densePartKey } from './keys.js';
 
-/** The key of one part of one bucket of a dense cell. */
-export const densePartKey = (
-  alert: Pick<Alert, 'id' | 'relaySeverity'>,
-  h3Cell: string,
-  bucket: number,
-  part: number,
-): string => `${bucketKey(alert, h3Cell, bucket)}.${part}/${DENSE_PARTS}`;
-
-/** Marks that a dense plan (not a normal batch) owns this bucket's tombstone. */
-export const denseMarkerKey = (normalKey: string): string => `${normalKey}:dense`;
-
-/** Thrown after a shard finished all it could, when some dense bucket's tombstone was contended. */
+/**
+ * Thrown after a shard finished all it could, when some dense bucket's tombstone was contended and
+ * there is no `retryLater` to hand the cells to (Lambda's async retry then runs the job again).
+ */
 export class DenseBucketContendedError extends Error {
   constructor(readonly buckets: number) {
     super(`${buckets} dense bucket(s) are held by another attempt; the shard will retry`);
@@ -271,6 +264,7 @@ export async function processShard(
   // sending while the retry starts.
   let failed = false;
   let contended = 0;
+  const contendedCells: string[] = [];
 
   const doCell = async (h3Cell: string): Promise<void> => {
     // Normal mode: bucket -> recipients for the whole cell. Dense mode: (bucket -> recipients) for
@@ -307,7 +301,11 @@ export async function processShard(
       const emitBucket = await tombstoneDenseCell(alert, h3Cell, deps);
       result.denseCells++;
       result.coveredBuckets += emitBucket.filter((e) => e === 'covered').length;
-      contended += emitBucket.filter((e) => e === 'contended').length;
+      const held = emitBucket.filter((e) => e === 'contended').length;
+      if (held > 0) {
+        contended += held;
+        contendedCells.push(h3Cell);
+      }
       dense = { part: -1, emitBucket: emitBucket.map((e) => e === 'emit') };
       deps.logger.info('fanout.dense_cell', { alertId: alert.id, h3Cell, recipientsSoFar: held });
       // Regroup what was read so far by part. The stream is sorted, so every part but the highest
@@ -394,7 +392,12 @@ export async function processShard(
       }
       // A cell under the dense size whose bucket would still not fit the budget goes dense too.
       // Exact measuring is a full serialization, so only for batches a cheap estimate puts near it.
-      if (normal.some((b) => roughBytes(b.recipients) > maxBytes / 2 && bytesOf(b) > maxBytes)) {
+      // And a cell that went dense in any earlier plan of this alert version stays dense: its
+      // normal keys may be tombstones, so normal batches would be dropped as duplicates (one read).
+      if (
+        normal.some((b) => roughBytes(b.recipients) > maxBytes / 2 && bytesOf(b) > maxBytes) ||
+        (normal.length > 0 && (await wentDense(alert, h3Cell, deps)))
+      ) {
         normal = [];
         await goDense();
       }
@@ -438,14 +441,26 @@ export async function processShard(
   await flush(true);
 
   if (contended > 0) {
-    // Everything else went out. A retry of the whole job re-sends identical keys (deduped by the
-    // sender) and settles these buckets once the other attempt has finished or its lease ran out.
+    // Everything else went out. Running these cells again later re-sends identical keys (deduped by
+    // the sender) and settles the held buckets once the other attempt has finished or its lease ran
+    // out (30 s for a shard's tombstone, 45 s for a sender's claim; the paused queue waits 60 s).
     deps.logger.warn('fanout.dense_bucket_contended', {
       alertId: alert.id,
       shardId: job.shardId,
       buckets: contended,
+      cells: contendedCells.length,
+      deferred: deps.retryLater !== undefined,
     });
-    throw new DenseBucketContendedError(contended);
+    if (!deps.retryLater) throw new DenseBucketContendedError(contended);
+    // A fresh job of just those cells; the kill switch is re-read when it runs.
+    const {
+      killSwitch: _ks,
+      startAt: _sa,
+      ...rest
+    } = job as ResumableShardJob & {
+      killSwitch?: unknown;
+    };
+    await deps.retryLater({ ...rest, cells: contendedCells });
   }
 
   // Every cell pulled so far has finished (the pool is joined above), so `next` is exactly the
@@ -472,6 +487,13 @@ export async function processShard(
   return result;
 }
 
+/** Whether an earlier plan of this alert version took this cell dense (its cell marker). */
+async function wentDense(alert: Alert, h3Cell: string, deps: ShardWorkerDeps): Promise<boolean> {
+  return deps.idempotency
+    ? (await deps.idempotency.peek(denseCellKey(alert, h3Cell))) === 'sent'
+    : false;
+}
+
 type BucketFate = 'emit' | 'covered' | 'contended';
 
 /**
@@ -486,6 +508,18 @@ type BucketFate = 'emit' | 'covered' | 'contended';
  *  - N is leased and D is not: a sender is sending the normal batch, or another dense attempt is
  *    between its claim and its mark. 'contended': nothing now, the shard is retried.
  * D is marked before N: a crash between the two can only lead to a duplicate later, never a miss.
+ *
+ * Why tombstone first, parts after, and why that cannot miss: the order is cell marker C, then per
+ * bucket D, N, then the parts. Parts first would let a still-queued normal batch and the parts both
+ * send (a duplicate of every device). Tombstone first leaves one window: N is a tombstone but some
+ * parts are not enqueued yet (SQS error, timeout, another cell throwing). Every way out of that
+ * window runs this cell again for this alert version (the job's retry, its continuation, a redrive,
+ * a re-plan), and C makes every such run take the dense path whatever the cell's size is by then,
+ * which finds D sent and re-emits the parts. A normal plan that read C as absent just before C was
+ * written is covered by the per-bucket cases above: its N batch is dropped (tombstone won), being
+ * sent (contended: retried until it is 'covered') or sent ('covered'). The only loss is the same as
+ * for any shard job: an
+ * attempt that is never run again (a shard DLQ message nobody redrives), which alarms.
  */
 async function tombstoneDenseCell(
   alert: Alert,
@@ -499,6 +533,9 @@ async function tombstoneDenseCell(
   }
   const lease = new Date(deps.clock.now().getTime() + TOMBSTONE_LEASE_MS);
   const keep = claimExpiry(alert);
+  // The cell marker goes first: from here on every plan of this alert version takes this cell
+  // dense, so a tombstone written below is always followed (now or on a retry) by its parts.
+  await store.markSent(denseCellKey(alert, h3Cell), keep);
   return Promise.all(
     Array.from({ length: CELL_BUCKETS }, async (_, bucket): Promise<BucketFate> => {
       const normal = bucketKey(alert, h3Cell, bucket);

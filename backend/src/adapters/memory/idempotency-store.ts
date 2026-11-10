@@ -44,7 +44,7 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
     this.attempts.set(key, attempt);
     this.inherited.set(
       key,
-      progress.map((p) => ({ chunk: p.chunk, redo: [...p.redo] })),
+      progress.map((p) => ({ ...p, redo: [...p.redo] })),
     );
     return 'claimed';
   }
@@ -79,7 +79,7 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
     if (attempt === undefined || existing?.state !== 'leased' || existing.attempt !== attempt) {
       return false;
     }
-    (existing.progress ??= []).push({ chunk: progress.chunk, redo: [...progress.redo] });
+    (existing.progress ??= []).push({ ...progress, redo: [...progress.redo] });
     return true;
   }
 

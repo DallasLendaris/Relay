@@ -8,6 +8,7 @@ import type {
   ShardJob,
 } from '../../../src/scale/contracts.js';
 import { bucketFor, densePartFor } from '../../../src/scale/fanout/hash.js';
+import { plannedKeyFor } from '../../../src/scale/fanout/keys.js';
 import { MAX_MESSAGE_BYTES } from '../../../src/scale/fanout/pack.js';
 import {
   DenseBucketContendedError,
@@ -147,7 +148,7 @@ describe('dense cells: a re-plan of the same alert version is exactly-once acros
     noDuplicates(w.pushes);
   });
 
-  it('dense plan sent, devices removed, normal re-plan: nothing new is sent', async () => {
+  it('dense plan sent, devices removed below the dense size: the cell stays dense, nothing new is sent', async () => {
     const alert = signed();
     const w = world(alert, { denseCellRecipients: 1_000 });
     add(w, 0, 1_400);
@@ -158,22 +159,25 @@ describe('dense cells: a re-plan of the same alert version is exactly-once acros
 
     for (let i = 0; i < 600; i++) w.shard.cellIndex.remove(CELL, uid(i));
     const second = await w.plan();
-    expect(second.result.denseCells).toBe(0);
-    expect(second.batches.length).toBeGreaterThan(0); // normal keys, tombstoned: duplicates
+    // Sticky: the cell marker keeps it dense for this alert version, so its keys repeat.
+    expect(second.result.denseCells).toBe(1);
+    const firstKeys = new Set(first.batches.map((b) => b.batchKey));
+    for (const b of second.batches) expect(firstKeys.has(b.batchKey)).toBe(true);
     await w.deliver(second.batches);
     expect(w.pushes.size).toBe(1_400);
     noDuplicates(w.pushes);
   });
 
-  it('dense plan queued, devices removed, normal re-plan: the dense parts still send once', async () => {
+  it('dense plan queued, devices removed below the dense size, re-plan: every remaining device once', async () => {
     const alert = signed();
     const w = world(alert, { denseCellRecipients: 1_000 });
     add(w, 0, 1_400);
     const first = await w.plan();
     for (let i = 0; i < 600; i++) w.shard.cellIndex.remove(CELL, uid(i));
     const second = await w.plan();
+    expect(second.result.denseCells).toBe(1);
     await w.deliver([...second.batches, ...first.batches]);
-    expect(w.pushes.size).toBe(1_400);
+    for (let i = 600; i < 1_400; i++) expect(w.pushes.get(uid(i))).toBe(1);
     noDuplicates(w.pushes);
   });
 
@@ -234,6 +238,93 @@ describe('dense cells: a re-plan of the same alert version is exactly-once acros
     // re-sent by the dense parts.
     for (const r of sent3.flatMap((b) => b.recipients)) expect(pushed.has(r.deviceId)).toBe(false);
     noDuplicates(w.pushes);
+  });
+});
+
+describe('dense cells: a failed dense attempt never strands its tombstones', () => {
+  /** A send queue whose `failAt`-th enqueue throws (an SQS error or the worker dying). */
+  const flaky = (w: ReturnType<typeof world>, failAt: number) => {
+    let n = 0;
+    const real = w.shard.deps.sendQueue;
+    return {
+      enqueue: async (...args: Parameters<typeof real.enqueue>) => {
+        if (++n === failAt) throw new Error('SQS unavailable');
+        return real.enqueue(...args);
+      },
+    };
+  };
+
+  it("reviewer's probe: 1,050 devices, dense at 1,000, first enqueue throws, 100 cleared, retry: all 950 once", async () => {
+    const alert = signed();
+    const w = world(alert, { denseCellRecipients: 1_000 });
+    add(w, 0, 1_050);
+    await expect(
+      processShard(jobFor(alert), { ...w.shard.deps, sendQueue: flaky(w, 1) }),
+    ).rejects.toThrow('SQS unavailable');
+    expect(w.shard.sendQueue.batches('urgent')).toHaveLength(0);
+    // The tombstones are written: every normal key reads as sent.
+    expect(await w.sender.idempotency.peek(bucketKey(alert, CELL, 0))).toBe('sent');
+
+    // Dead-target clears shrink the cell under the dense size before the retry.
+    for (let i = 0; i < 100; i++) w.shard.cellIndex.remove(CELL, uid(i));
+    const retry = await w.plan();
+    expect(retry.result).toMatchObject({ denseCells: 1, recipients: 950 }); // stays dense
+    for (const b of retry.batches) expect(b.batchKey).toMatch(/:\d+\.\d+\/16$/);
+    await w.deliver(retry.batches);
+    expect(w.pushes.size).toBe(950);
+    noDuplicates(w.pushes);
+  });
+
+  it('the same when the attempt dies partway (some parts enqueued, then a throw)', async () => {
+    const alert = signed();
+    const w = world(alert, { denseCellRecipients: 1_000, flushBatches: 1 });
+    add(w, 0, 1_050);
+    await expect(
+      processShard(jobFor(alert), { ...w.shard.deps, sendQueue: flaky(w, 2) }),
+    ).rejects.toThrow();
+    const partial = w.shard.sendQueue.batches('urgent').slice();
+    expect(partial.length).toBeGreaterThan(0);
+    for (let i = 0; i < 100; i++) w.shard.cellIndex.remove(CELL, uid(i));
+    const retry = await w.plan();
+    await w.deliver([...partial, ...retry.batches]);
+    for (let i = 100; i < 1_050; i++) expect(w.pushes.get(uid(i))).toBe(1);
+    noDuplicates(w.pushes);
+  });
+
+  it('late join reads a stranded tombstone as not planned, and the part key once it is sent', async () => {
+    const alert = signed();
+    const w = world(alert, { denseCellRecipients: 1_000 });
+    add(w, 0, 1_050);
+    await expect(
+      processShard(jobFor(alert), { ...w.shard.deps, sendQueue: flaky(w, 1) }),
+    ).rejects.toThrow();
+    const peek = (k: string) => w.sender.idempotency.peek(k);
+    const device = uid(500);
+    expect(await plannedKeyFor(alert, CELL, device, peek)).toMatchObject({ state: 'absent' });
+    const retry = await w.plan();
+    await w.deliver(retry.batches);
+    const planned = await plannedKeyFor(alert, CELL, device, peek);
+    expect(planned).toEqual({
+      key: `${bucketKey(alert, CELL, bucketFor(device))}.${densePartFor(device)}/16`,
+      state: 'sent',
+    });
+  });
+
+  it('a contended bucket defers just its cells through retryLater instead of failing the job', async () => {
+    const alert = signed();
+    const deferred: ShardJob[] = [];
+    const w = world(alert, {
+      denseCellRecipients: 1_000,
+      retryLater: async (j) => void deferred.push(j),
+    });
+    add(w, 0, 900);
+    await w.plan();
+    add(w, 900, 1_400);
+    await w.sender.idempotency.claim(bucketKey(alert, CELL, 3), new Date('2026-11-10T10:06:00Z'));
+    const r = await w.plan(); // does not throw
+    expect(r.result.denseCells).toBe(1);
+    expect(deferred).toEqual([{ ...jobFor(alert), cells: [CELL] }]);
+    expect(w.shard.lines.some((l) => l.msg === 'fanout.dense_bucket_contended')).toBe(true);
   });
 });
 

@@ -10,7 +10,7 @@ import {
   type SendBatch,
   type SendQueue,
 } from '../contracts.js';
-import { bucketFor } from '../fanout/hash.js';
+import { plannedKeyFor } from '../fanout/keys.js';
 import { primaryCellOf } from '../fanout/primary-cell.js';
 import { pushTargetHash, type PushTargetMeta } from './push-target-rules.js';
 
@@ -181,10 +181,11 @@ async function wasPlanned(
   if (!meta || !Number.isFinite(sent) || !Number.isFinite(placeAt)) return false;
   if (!(placeAt < sent && meta.changedAt.getTime() < sent)) return false;
 
-  // The key the shard worker used for this device's (cell, bucket). A pure read: claiming it to
-  // probe would make the real sender see 'leased' and delay an urgent batch.
-  const key = `${alert.id}:${alert.relaySeverity}:${h3Cell}:${bucketFor(deviceId)}`;
-  return (await idempotency.peek(key)) !== 'absent'; // 'sent' or 'leased': planned
+  // The key the shard worker used for this device: its (cell, bucket), or in a dense cell (whose
+  // bucket key is a tombstone) its dense part. Pure reads: claiming to probe would make the real
+  // sender see 'leased' and delay an urgent batch.
+  const { state } = await plannedKeyFor(alert, h3Cell, deviceId, (k) => idempotency.peek(k));
+  return state !== 'absent'; // 'sent' or 'leased': planned
 }
 
 async function sendOne(

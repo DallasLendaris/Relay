@@ -255,6 +255,12 @@ export interface IdempotencyStore {
 
 /** One finished sub-chunk: offsets (within the chunk) that still need sending. See recordChunk. */
 export interface ChunkProgress {
+  /**
+   * Fingerprint of the batch's ordered recipient list (and chunk size) the offsets refer to. A
+   * batch key can come back with a different list (re-plan after devices were added or removed),
+   * so progress whose fingerprint does not match the batch being sent must be ignored.
+   */
+  set: string;
   chunk: number;
   redo: number[];
 }
