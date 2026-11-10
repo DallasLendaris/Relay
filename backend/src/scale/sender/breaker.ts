@@ -28,13 +28,18 @@ import type { PushTarget } from '../contracts.js';
  * instead of treating them as dead, and DeadTargetGate (dead-target-gate.ts) holds every clear
  * for a short delay and re-checks the target's platform before clearing.
  *
- * Only fresh traffic is evidence. A re-check batch (a key with an `:h<n>` segment: recipients
- * already answered permanent once, re-sent because their platform looked misconfigured) is about
- * 100% permanent when the tokens really are dead, so recording its results would make a healthy
- * platform look systemic and re-queue more re-checks: a loop that, once fresh traffic ends, keeps
- * every dead token cycling until the 30-minute budget. The sender records nothing of those
- * batches (sender.ts carriesEvidence); they are judged against these windows as fresh traffic
- * left them.
+ * Only fresh traffic is evidence. A re-check batch (a key with an `:h`, `:v` or `:u` segment:
+ * recipients already answered permanent once while a breaker said their platform looked
+ * misconfigured, sender.ts carriesEvidence) is about 100% permanent when the tokens really are
+ * dead, so recording its results would make a healthy platform look systemic and re-queue more
+ * re-checks: a self-feeding loop. The sender records nothing of those batches. They are judged
+ * by DeadTargetGate (dead-target-gate.ts, "Re-check verdicts") on positive fresh evidence:
+ * `healthyAfter` before the re-check was sent and fresh results after it, never on the absence
+ * of evidence (a cold process, a process that saw only the healthy past, no traffic at all).
+ *
+ * Staleness: a platform window that has recorded nothing for PLATFORM_EVIDENCE_TTL_MS is reset
+ * at its next result, so a verdict left by the end of one alert's traffic (a chance "systemic"
+ * or a healthy one) never judges the next alert's first results.
  */
 export const BATCH_RATE_LIMIT = 0.25;
 export const BATCH_MIN_PERMANENT = 20;
@@ -50,6 +55,8 @@ export const PLATFORM_SHORT_WINDOW = 20;
 export const SYSTEMIC_RATE = 0.2;
 /** ...from at least 5 permanents. */
 export const SYSTEMIC_MIN_PERMANENT = 5;
+/** A platform window idle this long is stale: its next result starts it afresh. */
+export const PLATFORM_EVIDENCE_TTL_MS = 10 * 60_000;
 const WILSON_Z = 1.96;
 
 /** Lower bound of the 95% Wilson score interval for k successes in n trials. */
@@ -67,28 +74,41 @@ export function wilsonLower(k: number, n: number, z = WILSON_Z): number {
  * and 55 of 200 (0.22) are systemic; 4 of 4 (too few), 7 of 20 (0.18), 3 of 60 and 10 of 200
  * (normal 5% churn) are not. At 5% churn the short window reaches 8 of 20 with probability
  * ~3e-6 per result, so a 1M-device fan-out (about 1M results over all windows) sees it about once.
- * Such a false alarm costs only one re-check of the affected dead tokens (sender.ts), because
- * re-check results never feed the windows.
+ * Such a false alarm cannot feed itself (re-check results never feed the windows). Its dead tokens
+ * are re-checked and cleared once fresh traffic proves the platform healthy around the re-check;
+ * if fresh traffic has ended, each is pushed at most 1 + MAX_BLIND_RECHECKS more times and kept
+ * (dead-target-gate.ts "Re-check verdicts").
  */
 export function isSystemic(permanents: number, samples: number): boolean {
   return permanents >= SYSTEMIC_MIN_PERMANENT && wilsonLower(permanents, samples) > SYSTEMIC_RATE;
 }
 
-/** Fixed-size ring of the last results: 1 = permanent. */
+/** Fixed-size ring of the last results: 1 = permanent. Optionally keeps each result's time. */
 class Ring {
   private readonly ring: Uint8Array;
+  private readonly times: Float64Array | undefined;
   private head = 0;
   filled = 0;
   permanents = 0;
-  constructor(private readonly size: number) {
+  constructor(
+    private readonly size: number,
+    timed = false,
+  ) {
     this.ring = new Uint8Array(size);
+    this.times = timed ? new Float64Array(size) : undefined;
   }
-  push(v: 0 | 1): void {
+  push(v: 0 | 1, atMs = 0): void {
     if (this.filled === this.size) this.permanents -= this.ring[this.head] ?? 0;
     else this.filled++;
     this.ring[this.head] = v;
+    if (this.times) this.times[this.head] = atMs;
     this.permanents += v;
     this.head = (this.head + 1) % this.size;
+  }
+  /** Time of the oldest result in the ring (a timed ring that is full); else undefined. */
+  get oldestMs(): number | undefined {
+    if (!this.times || this.filled < this.size) return undefined;
+    return this.times[this.head];
   }
   get systemic(): boolean {
     return isSystemic(this.permanents, this.filled);
@@ -101,30 +121,54 @@ export const platformKeyOf = (target: PushTarget): string =>
 
 /**
  * Rolling windows per platform key. A handful of keys (platforms x FCM projects), each a fixed
- * 220 bytes, so memory is bounded by the configuration.
+ * ~400 bytes, so memory is bounded by the configuration.
  */
 export class PlatformWindows {
   private readonly windows = new Map<
     string,
-    { long: Ring; short: Ring; seq: number; lastSystemicSeq: number }
+    {
+      long: Ring;
+      short: Ring;
+      seq: number;
+      lastSystemicSeq: number;
+      lastSystemicMs: number;
+      newestMs: number;
+    }
   >();
 
-  record(key: string, permanent: boolean): void {
+  /**
+   * Records one fresh result at `nowMs` (the sender passes its clock; without it the result has
+   * no time, so it never counts as evidence for healthyAfter and never ages out).
+   */
+  record(key: string, permanent: boolean, nowMs = 0): void {
     let w = this.windows.get(key);
     if (!w) {
       w = {
         long: new Ring(PLATFORM_WINDOW),
-        short: new Ring(PLATFORM_SHORT_WINDOW),
+        short: new Ring(PLATFORM_SHORT_WINDOW, true),
         seq: 0,
         lastSystemicSeq: -1,
+        lastSystemicMs: -Infinity,
+        newestMs: nowMs,
       };
       this.windows.set(key, w);
+    } else if (nowMs - w.newestMs > PLATFORM_EVIDENCE_TTL_MS) {
+      // Stale: start afresh, verdict included (no held batch is that old: holds last 30 s), so a
+      // batch that began on the stale state is not judged by it. seq keeps counting, and
+      // lastSystemicMs stays as the time of the last suspicion (only ever a stricter bound).
+      w.long = new Ring(PLATFORM_WINDOW);
+      w.short = new Ring(PLATFORM_SHORT_WINDOW, true);
+      w.lastSystemicSeq = -1;
     }
     const v = permanent ? 1 : 0;
     w.long.push(v);
-    w.short.push(v);
+    w.short.push(v, nowMs);
     w.seq++;
-    if (w.long.systemic || w.short.systemic) w.lastSystemicSeq = w.seq;
+    w.newestMs = Math.max(w.newestMs, nowMs);
+    if (w.long.systemic || w.short.systemic) {
+      w.lastSystemicSeq = w.seq;
+      w.lastSystemicMs = Math.max(w.lastSystemicMs, nowMs);
+    }
   }
 
   /** Whether this platform's recent results look like a misconfiguration (either window). */
@@ -149,6 +193,33 @@ export class PlatformWindows {
   systemicSince(key: string, from: number): boolean {
     const w = this.windows.get(key);
     return w !== undefined && w.lastSystemicSeq >= from;
+  }
+
+  /** Number of the last result that left the platform systemic (-1: never). */
+  lastSystemicSeq(key: string): number {
+    return this.windows.get(key)?.lastSystemicSeq ?? -1;
+  }
+
+  /** Time of the last result that left the platform systemic (-Infinity: never). */
+  lastSystemicMs(key: string): number {
+    return this.windows.get(key)?.lastSystemicMs ?? -Infinity;
+  }
+
+  /**
+   * Positive evidence that the platform is healthy after `afterMs`: the whole short window
+   * (PLATFORM_SHORT_WINDOW fresh results) was recorded strictly after `afterMs` and after the
+   * last systemic verdict, neither window is systemic now, and the newest result is not older
+   * than `newestAtLeastMs`. A cold, stale or quiet window is never healthy: no evidence is not
+   * evidence of health.
+   */
+  healthyAfter(key: string, afterMs: number, newestAtLeastMs = -Infinity): boolean {
+    const w = this.windows.get(key);
+    if (!w || w.long.systemic || w.short.systemic || w.newestMs < newestAtLeastMs) return false;
+    const oldest = w.short.oldestMs;
+    // Locally, order by result number (a batch's results share one timestamp); `afterMs` comes
+    // from another clock (or process), so only time can order it.
+    const oldestSeq = w.seq - w.short.filled + 1;
+    return oldest !== undefined && oldest > afterMs && oldestSeq > w.lastSystemicSeq;
   }
 
   stats(key: string): { samples: number; permanents: number; recentPermanents: number } {
@@ -188,10 +259,7 @@ export class PermanentBreaker {
     return { open: reason !== undefined, ...(reason ? { reason } : {}), batchRate, rollingRate };
   }
 
-  /**
-   * The rolling rule on the results recorded so far, without recording anything. Re-check
-   * batches (sender.ts carriesEvidence) are judged by it: their own results are not evidence.
-   */
+  /** The rolling rule on the results recorded so far, without recording anything. */
   get rollingOpen(): boolean {
     return (
       this.filled >= ROLLING_MIN_SAMPLES &&

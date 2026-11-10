@@ -3,6 +3,8 @@ import type { NativePushResult, PushTarget, SendBatch } from '../../../src/scale
 import { PermanentBreaker } from '../../../src/scale/sender/breaker.js';
 import { DeadTargetQueue } from '../../../src/scale/sender/dead-target-queue.js';
 import {
+  blindRecheckKey,
+  blindRechecks,
   createDeadTargetGate,
   carriesEvidence,
   heldRetryKey,
@@ -30,7 +32,12 @@ function rng(seed: number): () => number {
   };
 }
 
-type Node = Pick<SendBatch, 'batchKey' | 'attempt'> & { r: boolean; h: boolean; v: boolean };
+type Node = Pick<SendBatch, 'batchKey' | 'attempt'> & {
+  r: boolean;
+  h: boolean;
+  v: boolean;
+  b: boolean;
+};
 
 /** Planned keys of every shape the fan-out produces (normal, dense part, late-join). */
 const PLANNED = [
@@ -58,7 +65,7 @@ describe('derived batch keys are unique by construction', () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  it('random derivation trees (each batch retried, held-re-queued and re-checked once, at most): all keys distinct', () => {
+  it('random derivation trees (each batch retried, held-re-queued, re-checked and blind-re-queued once, at most): all keys distinct', () => {
     for (let seed = 1; seed <= 40; seed++) {
       const random = rng(seed);
       const nodes: Node[] = PLANNED.map((k) => ({
@@ -67,13 +74,14 @@ describe('derived batch keys are unique by construction', () => {
         r: false,
         h: false,
         v: false,
+        b: false,
       }));
       const seen = new Map<string, string>();
       for (const n of nodes) seen.set(n.batchKey, 'planned');
       for (let step = 0; step < 3000; step++) {
         const n = nodes[Math.floor(random() * nodes.length)] as Node;
         const u = random();
-        const kind = u < 1 / 3 ? 'r' : u < 2 / 3 ? 'h' : 'v';
+        const kind = u < 1 / 4 ? 'r' : u < 2 / 4 ? 'h' : u < 3 / 4 ? 'v' : 'b';
         if (n[kind]) continue; // one processing of a batch derives each kind at most once
         n[kind] = true;
         const key =
@@ -81,26 +89,37 @@ describe('derived batch keys are unique by construction', () => {
             ? retryKey(n as unknown as SendBatch)
             : kind === 'h'
               ? heldRetryKey(n)
-              : recheckKey(n);
+              : kind === 'v'
+                ? recheckKey(n)
+                : blindRecheckKey(n);
         const how = `${kind}(${n.batchKey}@${n.attempt})`;
         expect(
           seen.get(key),
           `seed ${seed}: ${how} collides with ${seen.get(key)}`,
         ).toBeUndefined();
         seen.set(key, how);
-        nodes.push({ batchKey: key, attempt: n.attempt + 1, r: false, h: false, v: false });
+        nodes.push({
+          batchKey: key,
+          attempt: n.attempt + 1,
+          r: false,
+          h: false,
+          v: false,
+          b: false,
+        });
       }
       expect(seen.size).toBeGreaterThan(1000);
     }
   });
 
-  it('every chain of up to 7 derivations from one key is distinct (exhaustive)', () => {
+  it('every chain of up to 6 derivations from one key is distinct (exhaustive)', () => {
     const seen = new Set<string>(['X']);
     let frontier: Array<Pick<SendBatch, 'batchKey' | 'attempt'>> = [{ batchKey: 'X', attempt: 0 }];
-    for (let depth = 1; depth <= 7; depth++) {
+    for (let depth = 1; depth <= 6; depth++) {
       const next: typeof frontier = [];
       for (const n of frontier) {
-        for (const key of [retryKey(n as SendBatch), heldRetryKey(n), recheckKey(n)]) {
+        const children = [retryKey(n as SendBatch), heldRetryKey(n), recheckKey(n)];
+        children.push(blindRecheckKey(n));
+        for (const key of children) {
           expect(seen.has(key), key).toBe(false);
           seen.add(key);
           next.push({ batchKey: key, attempt: n.attempt + 1 });
@@ -108,10 +127,10 @@ describe('derived batch keys are unique by construction', () => {
       }
       frontier = next;
     }
-    expect(seen.size).toBe((3 ** 8 - 1) / 2);
+    expect(seen.size).toBe((4 ** 7 - 1) / 3);
   });
 
-  it('carriesEvidence: planned keys and their `:r` retries do; anything below an `:h` or `:v` does not', () => {
+  it('carriesEvidence: planned keys and their `:r` retries do; anything below an `:h`, `:v` or `:u` does not', () => {
     const random = rng(3);
     const hex = () =>
       Array.from({ length: 16 }, () => '0123456789abcdef'[Math.floor(random() * 16)]).join('');
@@ -128,10 +147,44 @@ describe('derived batch keys are unique by construction', () => {
           { batchKey: retryKey(n), attempt: n.attempt + 1, clean: n.clean },
           { batchKey: heldRetryKey(n), attempt: n.attempt + 1, clean: false },
           { batchKey: recheckKey(n), attempt: n.attempt + 1, clean: false },
+          { batchKey: blindRecheckKey(n), attempt: n.attempt + 1, clean: false },
         ]);
         for (const n of frontier) expect(carriesEvidence(n.batchKey), n.batchKey).toBe(n.clean);
       }
     }
+  });
+
+  it('the review probe (P4): key classification, and blindRechecks counts only `:u` segments', () => {
+    const planned = [
+      'a:warning:8928308280fffff:12',
+      'a:warning:8928308280fffff:12.3/16',
+      'a:warning:late:0123456789abcdef',
+      'a:warning:late:bb12bb34bb56bb78',
+      'a:warning:late:b123456789012345',
+      'a:warning:late:d123456789012345',
+      'a:warning:8928308280fffff:12:s0101',
+      'a:warning:8928308280fffff:12:r3',
+      'a:warning:8928308280fffff:12.3/16:r2',
+    ];
+    for (const k of planned) {
+      expect(carriesEvidence(k), k).toBe(true);
+      expect(blindRechecks(k), k).toBe(0);
+    }
+    const re = [
+      'K:h1',
+      'K:v1',
+      'K:u1',
+      'K:v1:r2',
+      'K:r1:v2',
+      'K:r1:v2:r3',
+      'K:h1:r2:v3',
+      'K:v1:u2',
+    ];
+    for (const k of re) expect(carriesEvidence(`a:warning:c:1${k.slice(1)}`), k).toBe(false);
+    expect(retryKey({ batchKey: 'K:v1:r2', attempt: 2 })).toBe('K:v1:r3');
+    expect(retryKey({ batchKey: 'K:u1', attempt: 1 })).toBe('K:u1:r2');
+    expect(blindRecheckKey({ batchKey: 'K:v1:r2', attempt: 2 })).toBe('K:v1:r2:u3');
+    expect(blindRechecks('a:warning:late:b123456789012345:v1:u2:h3:u4:r5')).toBe(2);
   });
 });
 
@@ -219,10 +272,12 @@ describe('cold start + misconfiguration + retryable errors (review scenario)', (
     expect(lines.filter((l) => l.msg === 'delivery.gave_up')).toEqual([]); // within the budget
     expect(cleared).toEqual([]);
     expect([...keys].some((k) => /:h\d+$/.test(k))).toBe(true); // held re-queues happened
-    // ...and were re-checked again while the platform still looked misconfigured
-    expect([...keys].some((k) => /:h\d+:v\d+$/.test(k))).toBe(true);
+    // ...and were re-queued again (confirmed) while fresh traffic still said misconfigured; a
+    // re-check's permanents always go to the gate, so the sender never re-checks a re-check (`:v:v`)
+    expect([...keys].some((k) => /:h\d+:h\d+$/.test(k))).toBe(true);
     expect([...keys].some((k) => /:r\d+:h\d+$/.test(k))).toBe(true); // retries were held
-    expect([...keys].some((k) => /:v\d+:v\d+$/.test(k))).toBe(true); // re-checks re-checked
+    expect([...keys].some((k) => /:v\d+:h\d+$/.test(k))).toBe(true); // re-checks re-queued
+    expect([...keys].some((k) => /:v\d+:v\d+/.test(k))).toBe(false);
     for (const tok of all) expect(delivered.get(tok), tok).toBe(1);
   });
 });
