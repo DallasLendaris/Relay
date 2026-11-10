@@ -14,11 +14,131 @@ import {
   type SpawnOptions,
 } from '../../lib/child.js';
 import { sendMessage } from '../../lib/child.js';
-import { HttpError, call, startServer } from '../t5-chaos/common.js';
+import http from 'node:http';
+import { HttpError, startServer } from '../t5-chaos/common.js';
 import type { Worker as T2Worker } from '../t2-fanout/proc.js';
 
 export const sleep = (ms: number): Promise<void> =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// ---------- harness HTTP client ----------
+
+/**
+ * Every harness-to-harness call goes through here: one keep-alive agent per process with a small
+ * socket cap (few long-lived loopback connections, never a connection per request), at most
+ * MAX_CONCURRENT calls in flight (the rest wait), and a retry with backoff for errors that mean the
+ * OS refused a connection before anything was sent (ENOBUFS, EADDRINUSE, EAGAIN, EMFILE, connection
+ * refused). A reset after the request went out is retried only for read-only routes. Only harness
+ * calls use this; the code under test never does.
+ */
+const ctlAgent = new http.Agent({
+  keepAlive: true,
+  maxSockets: 16,
+  maxFreeSockets: 16,
+  scheduling: 'lifo',
+});
+const MAX_CONCURRENT = 32;
+const SAFE_TO_REPEAT = new Set(['/status', '/info', '/stats', '/final', '/overlay', '/lj_context']);
+const CONNECT_ERRORS = new Set(['ENOBUFS', 'EADDRINUSE', 'EAGAIN', 'EMFILE', 'ECONNREFUSED']);
+
+export interface ConnStats {
+  /** Calls retried after a connection error. */
+  retried: number;
+  /** Calls that still failed with a connection error after the retries. */
+  failed: number;
+  byCode: Record<string, number>;
+  /** Highest number of calls in flight at once. */
+  peakInFlight: number;
+}
+
+export const connStats: ConnStats = { retried: 0, failed: 0, byCode: {}, peakInFlight: 0 };
+
+let inFlight = 0;
+const waiting: Array<() => void> = [];
+async function acquire(): Promise<void> {
+  if (inFlight >= MAX_CONCURRENT) await new Promise<void>((resolve) => waiting.push(resolve));
+  inFlight++;
+  connStats.peakInFlight = Math.max(connStats.peakInFlight, inFlight);
+}
+function release(): void {
+  inFlight--;
+  waiting.shift()?.();
+}
+
+function once<T>(
+  base: string,
+  path: string,
+  payload: string | undefined,
+  timeoutMs: number,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const req = http.request(
+      `${base}${path}`,
+      {
+        method: 'POST',
+        agent: ctlAgent,
+        timeout: timeoutMs,
+        headers:
+          payload === undefined
+            ? {}
+            : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          if ((res.statusCode ?? 500) >= 400) {
+            reject(new HttpError(res.statusCode ?? 500, text, path));
+            return;
+          }
+          try {
+            resolve((text === '' ? {} : JSON.parse(text)) as T);
+          } catch (e) {
+            reject(e instanceof Error ? e : new Error(String(e)));
+          }
+        });
+        res.on('error', reject);
+      },
+    );
+    req.on('timeout', () => req.destroy(new Error(`timeout calling ${path}`)));
+    req.on('error', reject);
+    if (payload !== undefined) req.write(payload);
+    req.end();
+  });
+}
+
+/** POST `body` as JSON to `${base}${path}` (path starts with a slash). */
+export async function ctlCall<T = unknown>(
+  base: string,
+  path: string,
+  body: unknown = {},
+  timeoutMs = 120_000,
+): Promise<T> {
+  const payload = JSON.stringify(body);
+  await acquire();
+  try {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await once<T>(base, path, payload, timeoutMs);
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code ?? '';
+        const retryable =
+          CONNECT_ERRORS.has(code) || (code === 'ECONNRESET' && SAFE_TO_REPEAT.has(path));
+        if (!retryable) throw e;
+        connStats.byCode[code] = (connStats.byCode[code] ?? 0) + 1;
+        if (attempt >= 8) {
+          connStats.failed++;
+          throw e;
+        }
+        connStats.retried++;
+        await sleep(Math.min(2_000, 50 * 2 ** attempt) + Math.random() * 50);
+      }
+    }
+  } finally {
+    release();
+  }
+}
 
 // ---------- child side ----------
 
@@ -119,12 +239,12 @@ export async function spawnCtl(
     kill: () => handle.kill(),
     req: <T>(name: string, payload: unknown = {}, timeoutMs = 600_000) => {
       if (!alive) return Promise.reject(new Error(`${role} is not running`));
-      return call<T>(base, 'POST', `/${name}`, payload, timeoutMs);
+      return ctlCall<T>(base, `/${name}`, payload, timeoutMs);
     },
     stop: async () => {
       if (!alive) return;
       try {
-        await call(base, 'POST', '/stop', {}, 5_000);
+        await ctlCall(base, '/stop', {}, 5_000);
       } catch {
         /* going down anyway */
       }

@@ -25,8 +25,7 @@ import { SqsSendQueue } from '../../../../../backend/src/scale/sender/sqs-send-q
 import { createCheckInToken } from '../../../../../backend/src/tokens/checkInToken.js';
 import { TOKEN_KEY, verifierFromPem } from '../t2-fanout/alert.js';
 import { BrokerClient, QUEUE_URLS, RemoteIdempotencyStore, fakeSqs } from '../t2-fanout/wire.js';
-import { call } from '../t5-chaos/common.js';
-import { runCtlWorker, sleep } from '../t8-concurrent/ctl.js';
+import { ctlCall, runCtlWorker, sleep } from '../t8-concurrent/ctl.js';
 import { quantile } from '../t8-concurrent/ledger.js';
 
 interface Context {
@@ -82,7 +81,7 @@ runCtlWorker(async () => {
   const fetchContext = (deviceId: string, fresh: boolean): Promise<Context> => {
     const hit = contexts.get(deviceId);
     if (!fresh && hit) return hit.value;
-    const value = call<Context>(api, 'POST', '/lj_context', { deviceId }, 60_000);
+    const value = ctlCall<Context>(api, '/lj_context', { deviceId }, 60_000);
     contexts.set(deviceId, { at: Date.now(), value });
     return value;
   };
@@ -109,10 +108,10 @@ runCtlWorker(async () => {
       for (const r of due) retries.splice(retries.indexOf(r), 1);
       records = due;
       if (running && records.length < batchSize) {
-        const r = await call<{
+        const r = await ctlCall<{
           items: Array<{ intent: LateJoinIntent; at: number }>;
           waiting: number;
-        }>(api, 'POST', '/lj_poll', { max: batchSize - records.length }, 60_000);
+        }>(api, '/lj_poll', { max: batchSize - records.length }, 60_000);
         apiWaiting = r.waiting;
         polled += r.items.length;
         for (const it of r.items) {

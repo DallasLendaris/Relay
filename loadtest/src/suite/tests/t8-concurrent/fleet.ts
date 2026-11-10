@@ -21,7 +21,7 @@ import {
   seedDirFor,
   type SeedManifest,
 } from '../t2-fanout/seed-data.js';
-import { spawnCtl, sleep, t2Proc, type CtlProc, type Proc } from './ctl.js';
+import { spawnCtl, sleep, t2Proc, type ConnStats, type CtlProc, type Proc } from './ctl.js';
 import type { AlertPlanStatus } from './planner-worker.js';
 import type { SenderStartOptions, SenderStopReply } from './sender-worker.js';
 
@@ -383,6 +383,7 @@ export interface DrainState {
     alerts: AlertPlanStatus[];
     error: string | null;
     log: Record<string, number>;
+    conn?: ConnStats;
   };
   broker: BrokerStats;
   wallMs: number;

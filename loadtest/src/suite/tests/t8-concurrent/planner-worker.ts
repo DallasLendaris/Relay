@@ -16,8 +16,7 @@ import { CachedAlertReader } from '../../../../../backend/src/scale/fanout/alert
 import { planShards } from '../../../../../backend/src/scale/fanout/planner.js';
 import type { ShardResult } from '../../../../../backend/src/scale/fanout/shard-worker.js';
 import { verifierFromPem } from '../t2-fanout/alert.js';
-import { call } from '../t5-chaos/common.js';
-import { sleep, runCtlWorker } from './ctl.js';
+import { connStats, ctlCall, sleep, runCtlWorker } from './ctl.js';
 import { isUrgent } from './alerts.js';
 
 interface InitBody {
@@ -93,7 +92,7 @@ runCtlWorker(async () => {
     const st = status[idx] as AlertPlanStatus;
     for (let attempt = 0; ; attempt++) {
       try {
-        const r = await call<ShardResult>(w.base, 'POST', '/shard', { job }, 900_000);
+        const r = await ctlCall<ShardResult>(w.base, '/shard', { job }, 900_000);
         if (r.refused) st.refusedJobs++;
         st.cells += r.cells;
         st.entries += r.entries;
@@ -208,6 +207,7 @@ runCtlWorker(async () => {
           arrived,
           alerts: status,
           error: jobError ?? null,
+          conn: connStats,
           log: Object.fromEntries(logs),
         };
       },
