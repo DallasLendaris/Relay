@@ -37,3 +37,4 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+loadtest/.suite-data/
