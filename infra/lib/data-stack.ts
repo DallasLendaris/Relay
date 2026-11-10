@@ -10,7 +10,7 @@ import {
 } from 'aws-cdk-lib/aws-rds';
 import type { ISecret } from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
-import { DB_ROLES, dbRoleSecretName, type DbRole } from './grants.js';
+import { DB_ROLES, dbAdminSecretName, dbRoleSecretName, type DbRole } from './grants.js';
 
 export interface DataStackProps extends StackProps {
   stage: 'dev' | 'prod';
@@ -74,7 +74,9 @@ export class DataStack extends Stack {
       storageEncrypted: true,
       defaultDatabaseName: this.databaseName,
       // CDK generates the credentials and keeps them in Secrets Manager.
-      credentials: Credentials.fromGeneratedSecret('relay_admin'),
+      credentials: Credentials.fromGeneratedSecret('relay_admin', {
+        secretName: dbAdminSecretName(props.stage),
+      }),
       // Prod keeps a final snapshot on removal; dev is disposable.
       removalPolicy: isProd ? RemovalPolicy.SNAPSHOT : RemovalPolicy.DESTROY,
       deletionProtection: isProd,

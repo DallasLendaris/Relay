@@ -214,6 +214,27 @@ export class IngestStack extends Stack {
       treatMissingData: TreatMissingData.BREACHING,
     });
 
+    // PollsOk is emitted every invocation (polls that got a 200/304 from NWS; a fetch error or a
+    // pacing skip does not count). The poller runs every minute, so 10 minutes without a
+    // success means the feed is stale: NWS unreachable or blocking us, or the poller not running
+    // (missing data breaches). Alerts stop arriving silently otherwise.
+    new Alarm(this, 'IngestFeedStaleAlarm', {
+      alarmDescription:
+        'No successful NWS poll for 10 minutes: the alert feed is stale (NWS unreachable or rate-limiting us, ' +
+        'or the ingest Lambda is not running). Check the ingest logs for poll.fetch_error / poll.throttled.',
+      metric: new Metric({
+        namespace: 'Relay/Ingest',
+        metricName: 'PollsOk',
+        statistic: 'Sum',
+        period: Duration.minutes(1),
+      }),
+      threshold: 1,
+      evaluationPeriods: 10,
+      datapointsToAlarm: 10,
+      comparisonOperator: ComparisonOperator.LESS_THAN_THRESHOLD,
+      treatMissingData: TreatMissingData.BREACHING,
+    });
+
     // A quarantined alert is marked seen and never delivered, so a person must look at it.
     new Alarm(this, 'IngestQuarantinedAlarm', {
       alarmDescription:

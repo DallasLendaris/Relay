@@ -48,6 +48,7 @@ describe('buildEmf', () => {
               { Name: 'Quarantined', Unit: 'Count' },
               { Name: 'UnknownZones', Unit: 'Count' },
               { Name: 'PublishFailed', Unit: 'Count' },
+              { Name: 'PollsOk', Unit: 'Count' },
             ],
           },
         ],
@@ -60,7 +61,16 @@ describe('buildEmf', () => {
       Quarantined: 2,
       UnknownZones: 0,
       PublishFailed: 0,
+      PollsOk: 1,
     });
+  });
+
+  it('PollsOk counts polls that got an answer: a 304 or 200 yes, a fetch error or a throttled skip no', () => {
+    const ok = (polls: PollCounts[]) => buildEmf(polls)['PollsOk'];
+    expect(ok([counts({}), counts({ fetched: 4 })])).toBe(2);
+    expect(ok([counts({ fetchFailed: 1, errors: 1 }), counts({ throttled: 1 })])).toBe(0);
+    expect(ok([counts({ fetchFailed: 1 }), counts({})])).toBe(1);
+    expect(ok([])).toBe(0);
   });
 
   it('still reports zeros when there were no polls', () => {

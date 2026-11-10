@@ -63,12 +63,39 @@ const VALID_RETENTION = new Set<number>(
   Object.values(RetentionDays).filter((v): v is number => typeof v === 'number'),
 );
 
+const oneMinute = Duration.minutes(1);
+
+/** Secrets Manager events that change a secret, its policy or its replicas. */
+export const SECRET_EVENTS = [
+  'PutSecretValue',
+  'UpdateSecret',
+  'DeleteSecret',
+  'RotateSecret',
+  'RestoreSecret',
+  'PutResourcePolicy',
+  'DeleteResourcePolicy',
+  'ReplicateSecretToRegions',
+] as const;
+/** KMS events on the alert-signing keys themselves. */
+export const KMS_KEY_EVENTS = [
+  'ScheduleKeyDeletion',
+  'CancelKeyDeletion',
+  'DisableKey',
+  'EnableKey',
+  'PutKeyPolicy',
+  'CreateGrant',
+] as const;
+/** KMS events on their aliases. */
+export const KMS_ALIAS_EVENTS = ['CreateAlias', 'UpdateAlias', 'DeleteAlias'] as const;
+
 export const alertsTopicName = (stage: string) => `relay-${stage}-alerts`;
 
 export interface MonitoringStackProps extends StackProps, MonitoringOptions {
   stage: 'dev' | 'prod';
   /** SSM parameter name of the delivery kill switch (changes to it are reported). */
   killSwitchParamName: string;
+  /** ARNs of every alert-signing KMS key (ConfigStack). Changes to them or their aliases are reported. */
+  alertSigningKeyArns: string[];
 }
 
 /**
@@ -175,6 +202,7 @@ export class MonitoringStack extends Stack {
       source: string,
       description: string,
       detail: Record<string, unknown>,
+      headline = 'security event',
     ) =>
       new Rule(this, ruleId, {
         description,
@@ -186,7 +214,7 @@ export class MonitoringStack extends Stack {
         targets: [
           new SnsTopic(topic, {
             message: RuleTargetInput.fromText(
-              `Relay ${stage} security event: ${EventField.fromPath('$.detail.eventName')} ` +
+              `Relay ${stage} ${headline}: ${EventField.fromPath('$.detail.eventName')} ` +
                 `by ${EventField.fromPath('$.detail.userIdentity.arn')} ` +
                 `at ${EventField.fromPath('$.detail.eventTime')} ` +
                 `from ${EventField.fromPath('$.detail.sourceIPAddress')}`,
@@ -194,27 +222,137 @@ export class MonitoringStack extends Stack {
           }),
         ],
       });
+    // PutParameter / DeleteParameter name one parameter; DeleteParameters (plural) lists them in
+    // `names`. An EventBridge pattern on an array field matches when any element matches.
+    const ssmDetail = (names: string[], field: 'name' | 'names') => ({
+      eventSource: ['ssm.amazonaws.com'],
+      eventName: names,
+      requestParameters: { [field]: [props.killSwitchParamName] },
+    });
     report(
       'KillSwitchChangedRule',
       'aws.ssm',
       'The delivery kill switch parameter was written or deleted',
-      {
-        eventSource: ['ssm.amazonaws.com'],
-        eventName: ['PutParameter', 'DeleteParameter'],
-        requestParameters: { name: [props.killSwitchParamName] },
-      },
+      ssmDetail(['PutParameter', 'DeleteParameter'], 'name'),
+    );
+    report(
+      'KillSwitchBulkDeleteRule',
+      'aws.ssm',
+      'The delivery kill switch parameter was deleted through DeleteParameters',
+      ssmDetail(['DeleteParameters'], 'names'),
+    );
+    // Deleting the parameter is worse than a change: a missing parameter means "running", so the
+    // switch silently stops working. Its own rule and wording so it is not read as routine.
+    report(
+      'KillSwitchDeletedRule',
+      'aws.ssm',
+      'The delivery kill switch parameter was DELETED: a missing parameter counts as running',
+      ssmDetail(['DeleteParameter'], 'name'),
+      'KILL SWITCH PARAMETER DELETED (a missing parameter fails open to running; recreate it)',
+    );
+    report(
+      'KillSwitchBulkDeletedRule',
+      'aws.ssm',
+      'The delivery kill switch parameter was DELETED (DeleteParameters): a missing parameter counts as running',
+      ssmDetail(['DeleteParameters'], 'names'),
+      'KILL SWITCH PARAMETER DELETED (a missing parameter fails open to running; recreate it)',
     );
     report(
       'SecretChangedRule',
       'aws.secretsmanager',
-      'A relay secret (keys, push credentials, DB password) was written, updated or deleted',
+      'A relay secret (keys, push credentials, DB passwords incl. the Aurora admin secret) was written, updated, deleted, restored, rotated, replicated or had its resource policy changed',
       {
         eventSource: ['secretsmanager.amazonaws.com'],
-        eventName: ['PutSecretValue', 'UpdateSecret', 'DeleteSecret'],
-        // secretId is a name or a full ARN depending on the caller; match both.
+        eventName: [...SECRET_EVENTS],
+        // secretId is a name or a full ARN depending on the caller; match both. Every Relay
+        // secret is named relay/<stage>/... (a test pins that, the Aurora admin secret included).
         requestParameters: { secretId: [{ wildcard: `*relay/${stage}/*` }] },
       },
     );
+    // The alert-signing keys (KMS). The key events name the key by id, ARN or alias; the alias
+    // events carry the alias name. Anyone who can use or re-policy a key can forge alerts.
+    const keyIds = props.alertSigningKeyArns.map((arn) => ({
+      wildcard: Fn.join('', ['*', Fn.select(1, Fn.split('/', arn))]),
+    }));
+    const aliasPattern = { wildcard: `*alias/relay/${stage}/alert-signing-*` };
+    report(
+      'AlertSigningKeyChangedRule',
+      'aws.kms',
+      'An alert-signing KMS key was disabled, scheduled for deletion, re-enabled, had its key policy changed, or got a grant',
+      {
+        eventSource: ['kms.amazonaws.com'],
+        eventName: [...KMS_KEY_EVENTS],
+        requestParameters: { keyId: [...keyIds, aliasPattern] },
+      },
+      'ALERT SIGNING KEY event',
+    );
+    report(
+      'AlertSigningAliasChangedRule',
+      'aws.kms',
+      'An alert-signing KMS key alias was created, repointed or deleted',
+      {
+        eventSource: ['kms.amazonaws.com'],
+        eventName: [...KMS_ALIAS_EVENTS],
+        requestParameters: { aliasName: [aliasPattern] },
+      },
+      'ALERT SIGNING KEY ALIAS event',
+    );
+
+    // ---- Kill-switch health (metrics from backend/src/config/kill-switch.ts, EMF) ----
+    // Delivery stops on its own when the switch is mis-set or unreadable. Without these alarms
+    // the only signal was the shard-paused DLQ alarm about a day later.
+    const killMetric = (metricName: string, statistic: string, period: Duration) =>
+      new Metric({
+        namespace: 'Relay/Config',
+        metricName,
+        dimensionsMap: { Source: 'killswitch' },
+        statistic,
+        period,
+      });
+    const fiveMinutes = Duration.minutes(5);
+    const killAlarm = (id: string, metricName: string, description: string) =>
+      new Alarm(this, id, {
+        alarmDescription: description,
+        metric: killMetric(metricName, 'Sum', fiveMinutes),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator: ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: TreatMissingData.NOT_BREACHING,
+      });
+    killAlarm(
+      'KillSwitchInvalidValueAlarm',
+      'KillSwitchInvalidValue',
+      `Delivery is PAUSED because ${props.killSwitchParamName} holds a value other than running/paused ` +
+        '(a typo?). Check the parameter value in SSM and set it to "running" or "paused".',
+    );
+    killAlarm(
+      'KillSwitchFailedClosedAlarm',
+      'KillSwitchFailedClosed',
+      'Delivery is PAUSED because the kill switch could not be read from SSM and the last good value ' +
+        `is older than 10 minutes (or never loaded). Check SSM availability/throttling and the IAM ` +
+        `grant on ${props.killSwitchParamName}.`,
+    );
+    killAlarm(
+      'KillSwitchParameterMissingAlarm',
+      'KillSwitchParameterMissing',
+      `${props.killSwitchParamName} does not exist; a missing parameter counts as RUNNING, so the ` +
+        'kill switch cannot stop delivery. Recreate it (value "running") by redeploying the config stack.',
+    );
+    // Heartbeat: ingest reads the switch every minute, so a paused switch reports every minute.
+    // Minimum over the minute is 1 only when every read in it said paused. 14 of 15 minutes
+    // tolerates one minute without a read.
+    new Alarm(this, 'KillSwitchPausedAlarm', {
+      alarmDescription:
+        'Delivery has been paused for about 15 minutes (kill switch "paused", or an invalid value, ' +
+        `or SSM unreadable). If intentional, this is a reminder; otherwise set ${props.killSwitchParamName} ` +
+        'to "running" and check the other KillSwitch alarms for the cause.',
+      metric: killMetric('KillSwitchPaused', 'Minimum', oneMinute),
+      threshold: 1,
+      evaluationPeriods: 15,
+      datapointsToAlarm: 14,
+      comparisonOperator: ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: TreatMissingData.NOT_BREACHING,
+    });
 
     // IAM is a global service: its events are recorded in us-east-1, where no us-west-2 EventBridge
     // rule can see them. The multi-region trail delivers them to this log group, so IAM policy
@@ -392,7 +530,6 @@ function child<T>(stack: Stack, id: string, type: abstract new (...a: never[]) =
   return found;
 }
 
-const oneMinute = Duration.minutes(1);
 const atLeastOne = (scope: Construct, id: string, description: string, metric: IMetric) =>
   new Alarm(scope, id, {
     alarmDescription: description,

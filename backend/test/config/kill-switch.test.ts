@@ -167,3 +167,71 @@ describe('kill switch', () => {
     });
   });
 });
+
+describe('kill switch metrics (OPS-1 follow-up)', () => {
+  /** EMF lines for one metric name: its value. */
+  const emf = (name: string): number[] =>
+    logs
+      .filter((l) => l.startsWith('{') && l.includes('"_aws"'))
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .filter((l) => name in l)
+      .map((l) => {
+        const m = (l['_aws'] as { CloudWatchMetrics: Array<{ Namespace: string }> })
+          .CloudWatchMetrics[0];
+        expect(m?.Namespace).toBe('Relay/Config');
+        expect(l['Source']).toBe('killswitch');
+        return l[name] as number;
+      });
+
+  it('emits KillSwitchPaused 1 for paused, 0 for running, once per real read', async () => {
+    const client = new SSMClient({});
+    ssm.on(GetParameterCommand).resolves(value('paused'));
+    const isPaused = createKillSwitch('/relay/kill', client, () => 0);
+    await isPaused();
+    await isPaused(); // cached: no second metric
+    expect(emf('KillSwitchPaused')).toEqual([1]);
+    logs.length = 0;
+    ssm.on(GetParameterCommand).resolves(value('running'));
+    await createKillSwitch('/relay/kill', client, () => 0)();
+    expect(emf('KillSwitchPaused')).toEqual([0]);
+    expect(emf('KillSwitchInvalidValue')).toEqual([]);
+    expect(emf('KillSwitchFailedClosed')).toEqual([]);
+  });
+
+  it('an invalid value emits KillSwitchInvalidValue and counts as paused', async () => {
+    ssm.on(GetParameterCommand).resolves(value('pause'));
+    expect(await createKillSwitch('/relay/kill', new SSMClient({}), () => 0)()).toBe(true);
+    expect(emf('KillSwitchInvalidValue')).toEqual([1]);
+    expect(emf('KillSwitchPaused')).toEqual([1]);
+  });
+
+  it('fail-closed with no fresh value (never loaded) emits KillSwitchFailedClosed', async () => {
+    ssm.on(GetParameterCommand).rejects(throttled());
+    expect(await createKillSwitch('/relay/kill', new SSMClient({}), () => 0)()).toBe(true);
+    expect(emf('KillSwitchFailedClosed')).toEqual([1]);
+    expect(emf('KillSwitchPaused')).toEqual([1]);
+  });
+
+  it('fail-closed after the stale value expired emits it; serving a stale value does not', async () => {
+    let t = 0;
+    const isPaused = createKillSwitch('/relay/kill', new SSMClient({}), () => t);
+    ssm.on(GetParameterCommand).resolves(value('running'));
+    await isPaused();
+    ssm.on(GetParameterCommand).rejects(throttled());
+    t = 9 * 60_000;
+    expect(await isPaused()).toBe(false);
+    expect(emf('KillSwitchFailedClosed')).toEqual([]);
+    t = 10 * 60_000 + 1_000;
+    expect(await isPaused()).toBe(true);
+    expect(emf('KillSwitchFailedClosed')).toEqual([1]);
+  });
+
+  it('a missing parameter still means running, and emits KillSwitchParameterMissing', async () => {
+    ssm
+      .on(GetParameterCommand)
+      .rejects(Object.assign(new Error('x'), { name: 'ParameterNotFound' }));
+    expect(await createKillSwitch('/relay/kill', new SSMClient({}), () => 0)()).toBe(false);
+    expect(emf('KillSwitchParameterMissing')).toEqual([1]);
+    expect(emf('KillSwitchPaused')).toEqual([0]);
+  });
+});

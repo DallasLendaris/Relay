@@ -15,8 +15,13 @@ export interface CacheEntry<T> {
 
 export const CONFIG_METRIC_NAMESPACE = 'Relay/Config';
 
-/** One CloudWatch EMF line: a count metric with a Source dimension. */
-export function configMetric(name: string, source: string, now: number = Date.now()): string {
+/** One CloudWatch EMF line: a metric (a count of 1 unless `value` is given) with a Source dimension. */
+export function configMetric(
+  name: string,
+  source: string,
+  now: number = Date.now(),
+  value = 1,
+): string {
   return JSON.stringify({
     _aws: {
       Timestamp: now,
@@ -29,7 +34,7 @@ export function configMetric(name: string, source: string, now: number = Date.no
       ],
     },
     Source: source,
-    [name]: 1,
+    [name]: value,
   });
 }
 

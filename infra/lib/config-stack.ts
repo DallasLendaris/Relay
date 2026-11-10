@@ -127,7 +127,9 @@ export class ConfigStack extends Stack {
       removalPolicy,
     });
 
-    // "paused" stops all delivery; any other value means running.
+    // Only "running" and "paused" are valid (after trim and lower-casing). "paused" stops all
+    // delivery; any other value (a typo, empty) counts as paused too and raises an alarm; a missing
+    // parameter counts as running (so deleting it is alarmed). See backend/src/config/kill-switch.ts.
     const killSwitch = new StringParameter(this, 'DeliveryKillSwitch', {
       parameterName: `/relay/${stage}/delivery-kill-switch`,
       stringValue: 'running',

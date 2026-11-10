@@ -25,6 +25,11 @@ export const DB_ROLES = {
 export type DbRole = keyof typeof DB_ROLES;
 
 /** Secrets Manager name of a role's credentials: relay/<stage>/db/<postgres role>. */
+/** The Aurora cluster admin secret. Named under relay/<stage>/ so the secret-change alarm covers it. */
+export function dbAdminSecretName(stage: string): string {
+  return `relay/${stage}/db/relay_admin`;
+}
+
 export function dbRoleSecretName(stage: string, role: DbRole): string {
   return `relay/${stage}/db/${DB_ROLES[role]}`;
 }

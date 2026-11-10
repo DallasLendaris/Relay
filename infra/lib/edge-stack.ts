@@ -19,6 +19,10 @@ import {
   ViewerProtocolPolicy,
 } from 'aws-cdk-lib/aws-cloudfront';
 import { HttpOrigin, S3BucketOrigin } from 'aws-cdk-lib/aws-cloudfront-origins';
+import { Alarm, ComparisonOperator, Metric, TreatMissingData } from 'aws-cdk-lib/aws-cloudwatch';
+import { SnsAction } from 'aws-cdk-lib/aws-cloudwatch-actions';
+import { Topic } from 'aws-cdk-lib/aws-sns';
+import { EmailSubscription } from 'aws-cdk-lib/aws-sns-subscriptions';
 import { BlockPublicAccess, Bucket, BucketEncryption } from 'aws-cdk-lib/aws-s3';
 import { CfnWebACL } from 'aws-cdk-lib/aws-wafv2';
 import { Construct } from 'constructs';
@@ -69,7 +73,18 @@ export interface EdgeStackProps extends StackProps {
    * Resolved by CloudFormation at deploy time; the value never appears in the template.
    */
   originVerifySecretName?: string;
+  /**
+   * Alarm email (the same `alarmEmail` as the monitoring stack). CloudWatch alarms can only notify
+   * an SNS topic in their own region, and this stack lives in us-east-1, so it owns a small topic
+   * of its own; its email subscription needs its own confirmation click.
+   */
+  alarmEmail?: string;
+  /** Requests blocked by the web ACL in 5 minutes that raise the alarm (default 1,000). */
+  wafBlockedThreshold?: number;
 }
+
+/** Name of the web ACL (also the WebACL metric dimension). */
+export const webAclName = (stage: string): string => `relay-${stage}-web-acl`;
 
 /** Header CloudFront adds to API requests (must match backend/src/api/origin-guard.ts). */
 export const ORIGIN_VERIFY_HEADER = 'x-relay-origin-verify';
@@ -86,6 +101,9 @@ export const ORIGIN_VERIFY_HEADER = 'x-relay-origin-verify';
  * writes to it through the bucket's regional endpoint, which is why bin/relay.ts also passes the
  * bucket region.
  */
+/** Default blocked requests per 5 minutes that raise the WAF alarm. */
+export const WAF_BLOCKED_THRESHOLD = 1000;
+
 export class EdgeStack extends Stack {
   readonly publicAlertsBucket: Bucket;
   readonly distribution: Distribution;
@@ -175,6 +193,36 @@ export class EdgeStack extends Stack {
       },
     });
 
+    // Rate-limit and managed-rule blocks are normal in small numbers; a burst of them is an attack
+    // (or a rule blocking real users). CloudFront web ACL metrics live in us-east-1, dimension
+    // Region "Global", so the alarm and its SNS topic live in this stack.
+    const edgeTopic = new Topic(this, 'EdgeAlertsTopic', {
+      topicName: `relay-${props.stage}-edge-alerts`,
+      displayName: `Relay ${props.stage} edge alerts`,
+      enforceSSL: true,
+    });
+    const email = props.alarmEmail?.trim();
+    if (email) edgeTopic.addSubscription(new EmailSubscription(email));
+    const wafBlocked = new Alarm(this, 'WafBlockedRequestsAlarm', {
+      alarmDescription:
+        `The edge web ACL blocked at least ${props.wafBlockedThreshold ?? WAF_BLOCKED_THRESHOLD} requests in 5 minutes ` +
+        '(rate limits or managed rules). Check WAF sampled requests for the web ACL: an attack, or a rule ' +
+        'blocking real users.',
+      metric: new Metric({
+        namespace: 'AWS/WAFV2',
+        metricName: 'BlockedRequests',
+        dimensionsMap: { WebACL: webAclName(props.stage), Rule: 'ALL', Region: 'Global' },
+        statistic: 'Sum',
+        period: Duration.minutes(5),
+      }),
+      threshold: props.wafBlockedThreshold ?? WAF_BLOCKED_THRESHOLD,
+      evaluationPeriods: 1,
+      comparisonOperator: ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: TreatMissingData.NOT_BREACHING,
+    });
+    wafBlocked.addAlarmAction(new SnsAction(edgeTopic));
+    wafBlocked.addOkAction(new SnsAction(edgeTopic));
+
     new CfnOutput(this, 'DistributionDomainName', {
       value: this.distribution.distributionDomainName,
     });
@@ -244,6 +292,7 @@ export class EdgeStack extends Stack {
     });
 
     return new CfnWebACL(this, 'WebAcl', {
+      name: webAclName(stage),
       scope: 'CLOUDFRONT',
       defaultAction: { allow: {} },
       visibilityConfig: vis('web-acl'),
