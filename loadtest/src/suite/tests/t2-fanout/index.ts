@@ -380,6 +380,7 @@ async function runScenario(
     coveredBuckets: 0,
     peakBufferedRecipients: 0,
     rereadPasses: 0,
+    planRecords: 0,
     cells: 0,
     entries: 0,
     skippedNoTarget: 0,
@@ -410,6 +411,7 @@ async function runScenario(
         shardTotals.denseCells += r.denseCells ?? 0;
         shardTotals.coveredBuckets += r.coveredBuckets ?? 0;
         shardTotals.rereadPasses += r.rereadPasses ?? 0;
+        shardTotals.planRecords += r.planRecords ?? 0;
         shardTotals.peakBufferedRecipients = Math.max(
           shardTotals.peakBufferedRecipients,
           r.peakBufferedRecipients ?? 0,
