@@ -4,6 +4,8 @@ import { t1Baseline } from './t1-baseline.js';
 import { t2 } from './t2-fanout/index.js';
 import { t3 } from './t3-checkins/index.js';
 import { t4Databases } from './t4-databases/index.js';
+import { t5Chaos } from './t5-chaos/index.js';
+import { t6Ingest } from './t6-ingest/index.js';
 import { t7Soak } from './t7-soak/index.js';
 
 // prettier-ignore
@@ -12,5 +14,7 @@ export const SUITE_TESTS: SuiteTest[] = [
   t2,
   t3,
   t4Databases,
+  t5Chaos,
+  t6Ingest,
   t7Soak,
 ];
