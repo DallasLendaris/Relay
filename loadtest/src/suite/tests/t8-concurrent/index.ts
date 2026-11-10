@@ -19,7 +19,7 @@ import { fmt, writeTestReport } from '../../lib/report.js';
 import type { Metric, ScenarioResult, SuiteContext, SuiteTest, TestResult } from '../../types.js';
 import { createAlertKeys } from '../t2-fanout/alert.js';
 import { sortedUnique } from '../t2-fanout/verify.js';
-import { spawnCtl } from './ctl.js';
+import { connStats, spawnCtl } from './ctl.js';
 import {
   FULL_SCRIPT,
   SMOKE_SCRIPT,
@@ -349,6 +349,23 @@ function buildScenario(
   add(
     'no shard job failed or was refused',
     drain.planner.alerts.every((a) => a.failedJobs === 0 && a.refusedJobs === 0),
+  );
+
+  // ----- harness connection errors (the harness's own calls, not the code under test) -----
+  const pc = drain.planner.conn;
+  const connRetried = connStats.retried + (pc?.retried ?? 0);
+  const connFailed = connStats.failed + (pc?.failed ?? 0);
+  const connPeak = Math.max(connStats.peakInFlight, pc?.peakInFlight ?? 0);
+  metrics.push(
+    { name: 'harness connection errors retried (ENOBUFS etc.)', value: connRetried, unit: 'calls' },
+    { name: 'harness calls that failed on a connection error', value: connFailed, unit: 'calls' },
+    { name: 'most harness calls in flight at once (one process)', value: connPeak, unit: 'calls' },
+  );
+  const missedAll = outcomes.reduce((n, o) => n + o.eo.missed, 0);
+  add(
+    'harness connection errors did not cause a miss',
+    connFailed === 0 || missedAll === 0,
+    `${connRetried} retried, ${connFailed} failed, ${missedAll} missed`,
   );
 
   // ----- exactly once per (alert, device) -----

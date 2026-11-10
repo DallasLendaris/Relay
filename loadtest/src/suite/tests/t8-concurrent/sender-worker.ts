@@ -228,6 +228,8 @@ runCtlWorker(async () => {
           projectId: f.projectId,
           tokenUri: `${f.url}/token`,
           baseUrl: f.url,
+          // Bounded sockets per project: 20 alerts at once must not open thousands of loopback connections.
+          maxInFlight: 16,
           logger,
         }),
     );

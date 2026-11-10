@@ -20,8 +20,7 @@ import { createCheckInToken } from '../../../../../backend/src/tokens/checkInTok
 import { TOKEN_KEY, verifierFromPem } from '../t2-fanout/alert.js';
 import { DiskCellIndex, SeedReader } from '../t2-fanout/seed-data.js';
 import { BrokerClient, QUEUE_URLS, fakeSqs } from '../t2-fanout/wire.js';
-import { call } from '../t5-chaos/common.js';
-import { runCtlWorker } from './ctl.js';
+import { ctlCall, runCtlWorker } from './ctl.js';
 import { LayeredCellIndex } from './layered-index.js';
 
 runCtlWorker(async () => {
@@ -64,9 +63,8 @@ runCtlWorker(async () => {
           overlayBase
             ? async (cell) =>
                 (
-                  await call<{ entries: CellIndexEntry[] }>(
+                  await ctlCall<{ entries: CellIndexEntry[] }>(
                     overlayBase,
-                    'POST',
                     '/overlay',
                     { cell },
                     120_000,
