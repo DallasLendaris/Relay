@@ -266,6 +266,7 @@ function buildPlanner(env: Record<string, string | undefined>) {
 
 function buildShard(env: Record<string, string | undefined>) {
   const e = requireEnv(env, SHARD_ENV);
+  const paused = new SqsPausedQueue(new SQSClient({}), e.PAUSED_QUEUE_URL);
   const doc = DynamoDBDocumentClient.from(new DynamoDBClient({}));
   const base = {
     alerts: new CachedAlertReader(alertStore(e)),
@@ -288,8 +289,10 @@ function buildShard(env: Record<string, string | undefined>) {
     }),
     clock,
     logger,
+    // Cells whose dense bucket another attempt holds come back through the paused queue (~60 s).
+    retryLater: (job: ResumableShardJob) =>
+      paused.park({ kind: 'shard', job, parkedAt: clock.now().toISOString() }),
   };
-  const paused = new SqsPausedQueue(new SQSClient({}), e.PAUSED_QUEUE_URL);
   const withKeys = async (): Promise<ShardWorkerDeps> => {
     const [verifyAlert, tokenKeys] = await Promise.all([
       alertVerifierFromEnv(env),

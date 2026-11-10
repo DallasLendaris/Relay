@@ -144,8 +144,10 @@ export const CELL_BUCKETS = 64;
  *    makes the sender drop it as a duplicate and the parts carry its devices.
  *  - dense plan, then normal re-plan: the normal key is tombstoned, so the sender drops it.
  *  - dense, then dense again: part keys depend only on (bucket, first character), so they repeat.
- * A crash between the two marks fails toward a duplicate push, never a miss. Late-join peeks the
- * normal key, which the tombstone makes read as planned. See shard-worker.ts.
+ * A cell marker written before the tombstones keeps the cell dense for every later plan of the
+ * version, so a dense attempt that dies before enqueuing its parts is finished by the next run.
+ * A crash between marks fails toward a duplicate push, never a miss. Late join follows a
+ * tombstoned normal key to the device's part key (fanout/keys.ts plannedKeyFor). See shard-worker.ts.
  */
 export const DENSE_CELL_RECIPIENTS = 20_000;
 export const DENSE_PARTS = 16;
