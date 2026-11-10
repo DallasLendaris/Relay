@@ -28,6 +28,7 @@ import {
   validateApnsSecret,
   validateFcmServiceAccounts,
   FcmProjectSender,
+  EcsFleetSize,
   fcmRateFromEnv,
   fleetSizeFromEnv,
   parseFcmProjectIds,
@@ -124,7 +125,16 @@ async function main(): Promise<void> {
   logger.info('fcm.rate', { mode: fcmRate.mode, ratePerSecond: fcmSender.ratePerSecond });
   if (fcmRate.mode === 'fleet') {
     setInterval(() => {
-      void fleetSize.refresh().then(() => fcmSender.refreshRate());
+      void fleetSize.refresh().then(() => {
+        const rate = fcmSender.refreshRate();
+        if (fleetSize instanceof EcsFleetSize && fleetSize.inFallback) {
+          // Fail safe: ECS reads are failing, so the fleet maximum is assumed. Logged for a metric filter.
+          logger.warn('fcm.fleet_size_fallback', {
+            fleetSize: fleetSize.size(),
+            ratePerSecond: rate,
+          });
+        }
+      });
     }, 5_000).unref();
   }
 

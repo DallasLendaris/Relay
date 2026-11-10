@@ -273,6 +273,8 @@ export class SenderStack extends Stack {
         // The sender counts its own fleet (ecs:DescribeServices) to split the FCM budget.
         ECS_CLUSTER: senderClusterName(props.stage),
         ECS_SERVICE: senderServiceName(props.stage),
+        // Fleet size to assume while ECS cannot be read: the fleet maximum (fail safe).
+        FCM_FLEET_SIZE_FALLBACK: String(senderMaxTasks(props.stage)),
         FCM_PROJECT_FLEET_RATE_PER_SEC: String(fcmProjectFleetRate(this)),
         ...(props.publicAlertBaseUrl ? { PUBLIC_ALERT_BASE_URL: props.publicAlertBaseUrl } : {}),
         ...(projectIds.length > 0 ? { FCM_PROJECT_IDS: projectIds.join(',') } : {}),
