@@ -218,8 +218,11 @@ export interface LateJoinOptions {
  *   - K not sent, device in the PLAN set (it registered during the read, or long before): K is
  *     queued or being sent and only its SENT set will say whether the sent K holds it (a re-plan
  *     can put two versions of K in the queue) = 'wait'.
- *   - No PLAN record: the shard worker has not finished this cell, and its read may include the
- *     device = 'wait'.
+ *   - No PLAN record, or one without a member set (a dense part whose batches are not all known
+ *     yet: a contended bucket, or buckets set aside to be re-read): the shard worker has not
+ *     finished this cell, and its read may include the device = 'wait'.
+ * Every attempt writes a key's PLAN record before any batch of the key leaves it (G5c), so a
+ * target set (kept only on a key's first record) always describes every sendable batch it covers.
  * Without exact data (an older sender or store, a split batch, a set over its size cap, or the
  * wait given up) it falls back to REL-12: skip only when K is sent or leased AND the device's
  * place and push target both predate `alert.sent` (never later than the planner's read) and the
@@ -305,8 +308,13 @@ async function plannedFate(
     return predates && !(await notInPlan()) ? 'planned' : 'send';
   }
   if (await notInPlan()) return 'send';
-  // In the plan, but with an older target (G5b): its batch pushes that one. Send now.
-  if ((await carriedTarget()) === 'no') return 'send';
+  // In the plan, but with an older target (G5b): its batch pushes that one. Send now. Only with a
+  // member set (so "in the plan" is known): without one (a dense part not settled yet, G5c) a
+  // device outside the target set may simply not be in this attempt's batches, and the retry's
+  // may carry it; it waits like any device of an unsettled part.
+  if ((await inspect(planKey)).members !== undefined && (await carriedTarget()) === 'no') {
+    return 'send';
+  }
   // The cell is not planned yet, or the device is in a planned batch that is not sent yet.
   if (mayWait) return 'wait';
   return state === 'leased' && predates ? 'planned' : 'send';

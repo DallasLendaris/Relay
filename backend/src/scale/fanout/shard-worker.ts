@@ -103,7 +103,10 @@ export interface ShardResult {
   rereadPasses: number;
   /** Most recipients held in memory at once (cell buffers plus unflushed batches). */
   peakBufferedRecipients: number;
-  /** Plan records written for late join (one per normal cell, one per part of a dense cell). */
+  /**
+   * Plan records written for late join (one per normal cell, one per part of a dense cell; two
+   * for a part with buckets set aside: one before its first batch, the full set after re-read).
+   */
   planRecords: number;
   /** Set when time ran short: the `startAt` of the continuation job that was dispatched. */
   continuedAt?: number;
@@ -316,32 +319,38 @@ export async function processShard(
   });
 
   /**
-   * The plan record of a normal cell (part undefined) or of one dense part (G5): written once its
-   * batches are decided (they may still be in `pending`), with the member set of every recipient
-   * they carry. Late join waits while it is absent and sends at once to a device not in it.
-   * Best effort: without it late join waits (bounded) and then sends, a possible duplicate.
+   * The plan record of a normal cell (part undefined) or of one dense part (G5), with the member
+   * set of every recipient its batches carry (`ids`; null: not all known yet, see below). Late
+   * join waits while it is absent or has no member set, and sends at once to a device not in it.
+   *
+   * G5c, the rule every caller keeps: a key's record is written, and has landed, BEFORE any batch
+   * of that key leaves this attempt (enters `pending`), on every path. The store keeps a target
+   * set only on a key's first record, and every later write removes it, so a record that still
+   * has one was written by the only attempt that wrote the key, before it enqueued anything; any
+   * other attempt that enqueued a batch of the key wrote its own record first and stripped it.
+   * `carried` is exactly what this attempt enqueues for the key next (it may be a subset of the
+   * key's devices; a device outside it is never skipped on the strength of this set). A failed
+   * write throws: this attempt then sends nothing more for the key, and a retry writes its own.
    */
   const writePlan = async (
     h3Cell: string,
     part: number | undefined,
-    ids: string[],
+    ids: string[] | null,
     carried?: readonly Recipient[],
   ) => {
     const store = deps.idempotency;
     if (!store?.markPlanned || failed) return;
-    const members = encodeMemberSet(ids, PLAN_HASH_BYTES);
-    // G5b: the (device, target) pairs, only for a normal cell (whose record is written before any
-    // of its batches can be enqueued) and only within the item's room. Without it late join falls
-    // back to its timestamp rule for a device whose target may have changed.
-    const targets =
-      carried && members
-        ? encodeMemberSet(
-            carried.map((r) => targetMemberOf(r.deviceId, r.target)),
-            TARGET_HASH_BYTES,
-            MAX_SET_BYTES - members.length,
-          )
-        : undefined;
-    if (!members) {
+    const members = ids ? encodeMemberSet(ids, PLAN_HASH_BYTES) : undefined;
+    // G5b: the (device, target) pairs, within the item's room. Without it late join falls back to
+    // its timestamp rule for a device whose target may have changed.
+    const targets = carried
+      ? encodeMemberSet(
+          carried.map((r) => targetMemberOf(r.deviceId, r.target)),
+          TARGET_HASH_BYTES,
+          MAX_SET_BYTES - (members?.length ?? 0),
+        )
+      : undefined;
+    if (ids && !members) {
       deps.logger.warn('fanout.plan_set_over_cap', {
         alertId: alert.id,
         h3Cell,
@@ -364,10 +373,7 @@ export async function processShard(
         part,
         error: err instanceof Error ? err.name : 'UnknownError',
       });
-      // A record with a target set must describe every batch of its key that can be sent: if it
-      // did not land, this attempt sends nothing for the cell and the retry writes it (the
-      // retry's write finds no record or an older one, and late join stays exact either way).
-      if (targets) throw err;
+      throw err;
     }
   };
 
@@ -527,25 +533,22 @@ export async function processShard(
       buckets = new Map();
       const setAside = d.dropped;
       d.dropped = [];
-      const record = !contendedHere && !failed && part >= 0;
-      // The stream is sorted, so this part is complete. With nothing set aside its batches are all
-      // known now, and its record (with the target set, G5b) goes out before any of them can be
-      // enqueued, like a normal cell's. A part with buckets set aside is recorded after its
-      // re-read, without a target set.
-      const early = record && setAside.length === 0;
-      if (early) {
+      if (failed || part < 0) return;
+      // The stream is sorted, so this part is complete. Its record goes out, and must land, before
+      // any of its batches can be enqueued (writePlan, G5c), with the targets of exactly the
+      // batches emitted here. Its member set only when those are all of the part's batches: not
+      // while a bucket is contended (the retry that settles it sends more of this part; until it
+      // writes its record late join waits, as with no record) nor with buckets set aside (the
+      // re-read sends more; the full set is written after it, which also drops the target set).
+      const exact = !contendedHere && setAside.length === 0;
+      if (going.length > 0 || setAside.length > 0) {
         const carried = going.flatMap(([, recipients]) => recipients);
-        await writePlan(
-          h3Cell,
-          part,
-          carried.map((r) => r.deviceId),
-          carried,
-        );
-        plannedParts.add(part);
+        await writePlan(h3Cell, part, exact ? carried.map((r) => r.deviceId) : null, carried);
         if (failed) return;
+        if (exact) plannedParts.add(part);
       }
       for (const [bucket, recipients] of going) {
-        if (!early) carry(part, recipients);
+        if (!exact) carry(part, recipients);
         emit(makeBatch(densePartKey(alert, h3Cell, bucket, part), recipients), true);
         countDupes(part, bucket);
         // Recipients move to `pending` (still counted in `buffered` until flushed).
@@ -554,10 +557,10 @@ export async function processShard(
       if (setAside.length > 0) {
         await flush(false);
         await rereadPart(part, d.partCursor, setAside);
-      }
-      if (record && !early && !contendedHere && !failed) {
-        await writePlan(h3Cell, part, partIds.get(part) ?? []);
-        plannedParts.add(part);
+        if (!contendedHere && !failed) {
+          await writePlan(h3Cell, part, partIds.get(part) ?? []);
+          plannedParts.add(part);
+        }
       }
       partIds.delete(part);
     };

@@ -430,17 +430,17 @@ describe('DynamoIdempotencyStore member sets', () => {
 });
 
 describe('G5: plan records are only written for settled cells', () => {
-  it('a dense cell with a contended bucket writes no plan record (its retry does)', async () => {
+  it('a dense cell with a contended bucket writes no member set (its retry does)', async () => {
     const w = await world({ denseCellRecipients: 8 });
     const [d] = await w.seed(40);
     const held = bucketKey(w.alert, SJ_CELL, bucketFor(d?.deviceId as string));
     // A sender is mid-way through the normal batch of one bucket: that bucket is contended.
     await w.h.idempotency.claim(held, new Date(w.h.time.now.getTime() + 45_000));
     await expect(w.plan()).rejects.toThrow('held by another attempt');
+    // G5c: a part whose batches went out has a record (written before them), but no member set.
     for (let part = 0; part < 16; part++) {
-      expect((await w.h.idempotency.inspect(planMarkerKey(w.alert, SJ_CELL, part))).state).toBe(
-        'absent',
-      );
+      const rec = await w.h.idempotency.inspect(planMarkerKey(w.alert, SJ_CELL, part));
+      expect(rec.members).toBeUndefined();
     }
     // So a device registering now waits rather than racing the retry's parts.
     await w.register();
