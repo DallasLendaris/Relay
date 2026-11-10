@@ -9,10 +9,17 @@
  * A record the handler reports as failed goes back for another try after half a second, like SQS
  * visibility; after ten tries it counts as dead-lettered.
  *
+ * The harness runs several of these processes side by side (T9_LJ_PROCS), each with a share of the
+ * consumer loops: in production every concurrent invocation is its own Lambda container with its
+ * own CPU, so one Node thread standing in for all of them would measure that thread's CPU, not the
+ * handler. Each process reports how busy its event loop was (busyPeak) so a saturated stand-in
+ * shows in the report instead of reading as queue latency.
+ *
  * Control: init, start, status, finish, stop.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { performance, type EventLoopUtilization } from 'node:perf_hooks';
 import type { SQSEvent } from 'aws-lambda';
 import type { Alert } from '@relay/shared';
 import { InMemoryAlertStore } from '../../../../../backend/src/adapters/memory/alert-store.js';
@@ -45,6 +52,8 @@ export interface LateJoinFinal {
   parked: number;
   /** Token hashes of devices that waited (BigUint64 file). */
   deferredTokensFile: string;
+  /** Every intent's wait in the queue, ms (Float64 file), so the harness can merge processes. */
+  waitsFile: string;
   /** Time an intent waited in the queue before it was picked up, ms. */
   waitP50: number;
   waitP99: number;
@@ -53,7 +62,13 @@ export interface LateJoinFinal {
   handleP50: number;
   handleP99: number;
   logEvents: Record<string, number>;
+  /** Event-loop utilization (0-1) while consuming: highest 5 s window, and over the whole run. */
+  busyPeak: number;
+  busyMean: number;
 }
+
+/** Window over which busyPeak is taken, in one-second samples. */
+const BUSY_WINDOW_S = 5;
 
 const MAX_TRIES = 10;
 
@@ -105,10 +120,37 @@ runCtlWorker(async () => {
   };
 
   const writeDeferred = (): string => {
-    const file = join(outDir, 'latejoin-deferred-tokens.bin');
+    const file = join(outDir, `latejoin-deferred-tokens-${process.pid}.bin`);
     const w = deferredTokens.toArray();
     writeFileSync(file, Buffer.from(w.buffer, w.byteOffset, w.byteLength));
     return file;
+  };
+  const writeWaits = (): string => {
+    const file = join(outDir, `latejoin-waits-${process.pid}.bin`);
+    const w = Float64Array.from(waits);
+    writeFileSync(file, Buffer.from(w.buffer, w.byteOffset, w.byteLength));
+    return file;
+  };
+
+  // Event-loop utilization, sampled each second while the loops run.
+  const busy: number[] = [];
+  let busyFrom: EventLoopUtilization | undefined;
+  let busyAll: EventLoopUtilization | undefined;
+  const busyTimer = setInterval(() => {
+    if (!busyFrom) return;
+    const now = performance.eventLoopUtilization();
+    busy.push(performance.eventLoopUtilization(now, busyFrom).utilization);
+    busyFrom = now;
+  }, 1_000);
+  busyTimer.unref();
+  const busyPeak = (): number => {
+    let peak = 0;
+    for (let i = 0; i + BUSY_WINDOW_S <= busy.length; i++) {
+      let sum = 0;
+      for (let j = i; j < i + BUSY_WINDOW_S; j++) sum += busy[j] as number;
+      peak = Math.max(peak, sum / BUSY_WINDOW_S);
+    }
+    return peak;
   };
 
   const sweep = setInterval(() => {
@@ -255,6 +297,7 @@ runCtlWorker(async () => {
       start: (p: { concurrency: number; batchSize: number }) => {
         if (running) throw new Error('already running');
         running = true;
+        busyFrom = busyAll = performance.eventLoopUtilization();
         loops = Array.from({ length: p.concurrency }, () => loop(p.batchSize));
         return { ok: true };
       },
@@ -269,11 +312,17 @@ runCtlWorker(async () => {
       finish: async (): Promise<LateJoinFinal> => {
         running = false;
         await Promise.all(loops);
+        clearInterval(busyTimer);
+        const busyMean = busyAll
+          ? performance.eventLoopUtilization(performance.eventLoopUtilization(), busyAll)
+              .utilization
+          : 0;
         return {
           polled,
           processed: processed - parkedCount,
           parked: parkedCount,
           deferredTokensFile: writeDeferred(),
+          waitsFile: writeWaits(),
           retried,
           deadLettered: dead,
           waitP50: quantile(waits, 0.5),
@@ -282,11 +331,14 @@ runCtlWorker(async () => {
           handleP50: quantile(handles, 0.5),
           handleP99: quantile(handles, 0.99),
           logEvents: Object.fromEntries(logEvents),
+          busyPeak: busyPeak(),
+          busyMean,
         };
       },
     },
     onStop: () => {
       clearInterval(sweep);
+      clearInterval(busyTimer);
       broker?.close();
     },
   };

@@ -15,7 +15,7 @@
  * late-join per-target claim; late-join "fails toward a duplicate" for a place newer than the alert).
  * Such "racers" may get two pushes; a device registered after the read must get exactly one.
  */
-import { mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Alert } from '@relay/shared';
@@ -77,11 +77,78 @@ export interface SurgeSizes {
   perMin: number;
   /** Cap on pushes per second over all senders (0 = unlimited). Smoke only. */
   smokePushesPerSec: number;
+  /**
+   * Late-join stand-in processes (T9_LJ_PROCS, full scale only). The consumer loops (LATEJOIN_LOOPS)
+   * are shared out over them: production runs each concurrent invocation in its own Lambda
+   * container, so one Node thread for all of them was CPU-bound at 50,000 signups a minute.
+   */
+  lateJoinProcs: number;
+}
+
+/** Consumer loops of the late-join stand-in (like the event source's concurrency), batch 10 each. */
+export const LATEJOIN_LOOPS = { full: 16, smoke: 4 } as const;
+/** Default number of late-join stand-in processes at full scale. */
+export const LATEJOIN_PROCS_DEFAULT = 4;
+
+/** Loops per late-join process: `total` shared out as evenly as possible over `procs`. */
+export function lateJoinLoops(total: number, procs: number): number[] {
+  const n = Math.max(1, Math.min(total, Math.floor(procs)));
+  return Array.from({ length: n }, (_, i) => Math.floor(total / n) + (i < total % n ? 1 : 0));
+}
+
+/**
+ * One LateJoinFinal for all late-join processes: counters and log events summed, the deferred
+ * tokens written to one file in `outDir`, the queue-wait percentiles taken over every process's
+ * waits (not averaged), and the busiest process's event-loop utilization.
+ */
+export function mergeLateJoinFinals(parts: LateJoinFinal[], outDir: string): LateJoinFinal {
+  const sum = (f: (p: LateJoinFinal) => number): number => parts.reduce((n, p) => n + f(p), 0);
+  const logEvents: Record<string, number> = {};
+  for (const p of parts) {
+    for (const [k, v] of Object.entries(p.logEvents)) logEvents[k] = (logEvents[k] ?? 0) + v;
+  }
+  const deferred = concatWords(parts.map((p) => readWords(p.deferredTokensFile)));
+  const deferredTokensFile = join(outDir, 'latejoin-deferred-tokens.bin');
+  writeFileSync(
+    deferredTokensFile,
+    Buffer.from(deferred.buffer, deferred.byteOffset, deferred.byteLength),
+  );
+  const waits: number[] = [];
+  for (const p of parts) for (const w of readDoubles(p.waitsFile)) waits.push(w);
+  const waitsFile = join(outDir, 'latejoin-waits.bin');
+  const w64 = Float64Array.from(waits);
+  writeFileSync(waitsFile, Buffer.from(w64.buffer, w64.byteOffset, w64.byteLength));
+  const max = (f: (p: LateJoinFinal) => number): number =>
+    parts.reduce((m, p) => Math.max(m, f(p)), 0);
+  return {
+    polled: sum((p) => p.polled),
+    processed: sum((p) => p.processed),
+    retried: sum((p) => p.retried),
+    deadLettered: sum((p) => p.deadLettered),
+    parked: sum((p) => p.parked),
+    deferredTokensFile,
+    waitsFile,
+    waitP50: quantile(waits, 0.5),
+    waitP99: quantile(waits, 0.99),
+    waitMax: max((p) => p.waitMax),
+    // Per-record handling time is only reported per process; the slowest process stands for all.
+    handleP50: max((p) => p.handleP50),
+    handleP99: max((p) => p.handleP99),
+    logEvents,
+    busyPeak: max((p) => p.busyPeak),
+    busyMean: max((p) => p.busyMean),
+  };
 }
 
 export function sizesFor(scale: 'full' | 'smoke', env = process.env): SurgeSizes {
   if (scale === 'smoke') {
-    return { seedDevices: 6_000, newDevices: 2_000, perMin: 4_000, smokePushesPerSec: 600 };
+    return {
+      seedDevices: 6_000,
+      newDevices: 2_000,
+      perMin: 4_000,
+      smokePushesPerSec: 600,
+      lateJoinProcs: 1,
+    };
   }
   const num = (name: string, dflt: number, min: number): number => {
     const n = Number(env[name]);
@@ -94,6 +161,7 @@ export function sizesFor(scale: 'full' | 'smoke', env = process.env): SurgeSizes
     newDevices: perMin * minutes,
     perMin,
     smokePushesPerSec: 0,
+    lateJoinProcs: Math.min(LATEJOIN_LOOPS.full, num('T9_LJ_PROCS', LATEJOIN_PROCS_DEFAULT, 1)),
   };
 }
 
@@ -200,6 +268,12 @@ interface SurgeOutcome {
   /** Planned pushes to non-seed tokens (new devices the shards read). */
   plannedNew: number;
   latency: { all: number[]; during: number[]; after: number[]; waited: number[] };
+  /**
+   * Late-join pushes to moved push tokens whose intent waited for the plan. Left out of `waited`
+   * like every moved token (the first place is the donor's), but counted so a "0 waited" row says
+   * whether nothing waited or only moved tokens did.
+   */
+  waitedMoved: number;
   cellsTimed: number;
 }
 
@@ -240,7 +314,11 @@ async function runOnce(
   const tag = withSurge ? 'surge' : 'baseline';
   const fleet = await startFleet(cfg, publicPem);
   let api: CtlProc | undefined;
-  let lj: CtlProc | undefined;
+  const ljs: CtlProc[] = [];
+  const loopsPer = lateJoinLoops(
+    cfg.scale === 'smoke' ? LATEJOIN_LOOPS.smoke : LATEJOIN_LOOPS.full,
+    sizes.lateJoinProcs,
+  );
   let load: CtlProc | undefined;
   let peakRssMb = 0;
   let error: string | undefined;
@@ -257,19 +335,23 @@ async function runOnce(
         fcmProjects: cfg.projects > 1 ? fleet.projectIds : [],
       });
       apiPub = initReply.pub;
-      lj = await spawnCtl(here('latejoin-worker.ts'), 'latejoin', {
-        heapMb: cfg.scale === 'smoke' ? 384 : 1024,
-      });
-      fleet.extra.push(lj);
-      await lj.req('init', {
-        apiCtl: api.base,
-        brokerPort: fleet.brokerPort,
-        publicPem,
-        alertsFile,
-        // Production waits 15 s between decisions for a device that may be in the planned fan-out.
-        planWaitDelayS: cfg.scale === 'smoke' ? 1 : 15,
-        outDir: dir,
-      });
+      for (let i = 0; i < loopsPer.length; i++) {
+        const lj = await spawnCtl(here('latejoin-worker.ts'), `latejoin${i}`, {
+          heapMb: cfg.scale === 'smoke' ? 384 : 1024,
+        });
+        fleet.extra.push(lj);
+        ljs.push(lj);
+        await lj.req('init', {
+          apiCtl: api.base,
+          brokerPort: fleet.brokerPort,
+          publicPem,
+          alertsFile,
+          // Production waits at most 15 s between decisions for a device that may be in the
+          // planned fan-out.
+          planWaitDelayS: cfg.scale === 'smoke' ? 1 : 15,
+          outDir: dir,
+        });
+      }
       load = await spawnCtl(here('load-worker.ts'), 'load', {
         heapMb: cfg.scale === 'smoke' ? 384 : 1024,
       });
@@ -296,23 +378,20 @@ async function runOnce(
     const drain = await conduct(fleet, [MAIN], {
       log: (m) => ctx.log(`t9 ${tag}: ${m}`),
       onStart: async () => {
-        if (!api || !lj || !load) return;
-        await lj.req('start', { concurrency: cfg.scale === 'smoke' ? 4 : 16, batchSize: 10 });
+        if (!api || ljs.length === 0 || !load) return;
+        await Promise.all(
+          ljs.map((lj, i) => lj.req('start', { concurrency: loopsPer[i], batchSize: 10 })),
+        );
         await load.req('run', loadOpts);
       },
       extraDone: async () => {
-        if (!api || !lj || !load) return true;
+        if (!api || ljs.length === 0 || !load) return true;
         if (!loadDone) {
           const s = await load.req<{ done: boolean }>('status');
           if (!s.done) return false;
           loadDone = true;
         }
-        const [a, l] = await Promise.all([
-          api.req<ApiStats>('stats'),
-          lj.req<{ polled: number; processed: number; inflight: number; retryWaiting: number }>(
-            'status',
-          ),
-        ]);
+        const [a, l] = await Promise.all([api.req<ApiStats>('stats'), lateJoinStatus(ljs)]);
         return (
           a.intents.waiting === 0 &&
           l.polled === a.intents.enqueued &&
@@ -322,10 +401,10 @@ async function runOnce(
         );
       },
       extraProgress: async () => {
-        if (!load || !lj) return '';
+        if (!load || ljs.length === 0) return '';
         const [s, l] = await Promise.all([
           load.req<{ finishedFlows: number }>('status'),
-          lj.req<{ processed: number }>('status'),
+          lateJoinStatus(ljs),
         ]);
         return `${s.finishedFlows}/${l.processed}`;
       },
@@ -353,7 +432,13 @@ async function runOnce(
         }
       }
     }
-    const ljFinal = lj && !error ? await lj.req<LateJoinFinal>('finish', {}, 120_000) : undefined;
+    const ljFinal =
+      ljs.length > 0 && !error
+        ? mergeLateJoinFinals(
+            await Promise.all(ljs.map((lj) => lj.req<LateJoinFinal>('finish', {}, 120_000))),
+            dir,
+          )
+        : undefined;
     const collected = await collect(fleet, dir);
     peakRssMb = rss.stop();
 
@@ -411,9 +496,30 @@ async function runOnce(
     return out;
   } finally {
     peakRssMb = Math.max(peakRssMb, rss.stop());
-    await Promise.allSettled([api?.stop(), lj?.stop(), load?.stop()]);
+    await Promise.allSettled([api?.stop(), ...ljs.map((lj) => lj.stop()), load?.stop()]);
     await fleet.stop();
   }
+}
+
+interface LateJoinStatus {
+  polled: number;
+  processed: number;
+  inflight: number;
+  retryWaiting: number;
+}
+
+/** The late-join processes' status, summed. */
+async function lateJoinStatus(ljs: CtlProc[]): Promise<LateJoinStatus> {
+  const all = await Promise.all(ljs.map((lj) => lj.req<LateJoinStatus>('status')));
+  return all.reduce(
+    (t, s) => ({
+      polled: t.polled + s.polled,
+      processed: t.processed + s.processed,
+      inflight: t.inflight + s.inflight,
+      retryWaiting: t.retryWaiting + s.retryWaiting,
+    }),
+    { polled: 0, processed: 0, inflight: 0, retryWaiting: 0 },
+  );
 }
 
 function upperBound(a: BigUint64Array, v: bigint): number {
@@ -558,11 +664,15 @@ function analyseSurge(
     after: [] as number[],
     waited: [] as number[],
   };
+  let waitedMoved = 0;
   for (let i = 0; i < late.tokens.length; i++) {
     const v = late.tokens[i] as bigint;
     const p = lowerBound(e.tokens, v);
     if (!(p < e.tokens.length && e.tokens[p] === v)) continue;
-    if (hasToken(moved, v)) continue;
+    if (hasToken(moved, v)) {
+      if (hasToken(waited, v)) waitedMoved++;
+      continue;
+    }
     const placeAt = e.values[p] as number;
     const ms = Math.max(0, (late.values[i] as number) - placeAt);
     lat.all.push(ms);
@@ -582,6 +692,7 @@ function analyseSurge(
     strayPlanned,
     plannedNew: extras.length,
     latency: lat,
+    waitedMoved,
     cellsTimed: cellPlans.size,
   };
 }
@@ -801,6 +912,11 @@ function buildScenario(
 
   // ----- every new device got the alert exactly once (planned or late-join, never both) -----
   const ev = s.latency;
+  const ljLoops = lateJoinLoops(
+    scale === 'smoke' ? LATEJOIN_LOOPS.smoke : LATEJOIN_LOOPS.full,
+    sizes.lateJoinProcs,
+  );
+  const loopsLabel = `${ljLoops.length} process${ljLoops.length === 1 ? '' : 'es'}, loops ${ljLoops.join('/')}`;
   add(
     `new devices missed == 0 (${fmt(s.expected)} new push targets expected)`,
     s.missed === 0,
@@ -1021,6 +1137,21 @@ function buildScenario(
       unit: 's',
     },
     {
+      name: 'moved push tokens that waited for the plan (left out of the latencies above)',
+      value: s.waitedMoved,
+      unit: 'tokens',
+    },
+    {
+      name: `late-join stand-in (${loopsLabel}): busiest event loop, highest 5 s`,
+      value: round(s.lateJoin.busyPeak * 100, 0),
+      unit: '%',
+    },
+    {
+      name: 'late-join stand-in: busiest event loop, start to finish',
+      value: round(s.lateJoin.busyMean * 100, 0),
+      unit: '%',
+    },
+    {
       name: 'main alert: time to 90%, baseline',
       value: round(base.main.t90Ms / 1000, 2),
       unit: 's',
@@ -1057,7 +1188,8 @@ function buildScenario(
   if (seed) metrics.push({ name: 'seed time', value: round(seed.seedMs / 1000, 1), unit: 's' });
   notes.push(
     'Late-join sends go onto the same urgent queue as the main alert, behind the messages already queued, so a place saved during the fan-out waits for that backlog (see the "during" and "after" latencies). The queue is first in, first out within a lane.',
-    'Late-join (G5) checks the planned fan-out first: the shard workers write a plan record per cell and the senders store the recipient set of each batch they send. A device in the plan is skipped; one that is not is sent at once; where the plan is not known yet the intent waits (latejoin.waiting_for_plan, 15 s in production, 1 s in smoke) and is decided again. Devices are classified by when their place was saved against the read window of their cell (fanout.cell_planned).',
+    "Late-join (G5) checks the planned fan-out first: the shard workers write a plan record per cell and the senders store the recipient set of each batch they send. A device in the plan is skipped; one that is not is sent at once; where the plan is not known yet the intent waits (latejoin.waiting_for_plan, re-checked after 2 s backing off to 15 s in production, 1 s in smoke) and is decided again. Devices are classified by when their place was saved against the read window of their cell (fanout.cell_planned). Moved push tokens are left out of every latency (their first place is the donor's); the ones that waited are counted on their own row.",
+    'The late-join handler runs in several stand-in processes because each concurrent Lambda invocation has its own CPU. A busiest event loop near 100% means the stand-in, not the handler, set the intent wait in the late-join queue.',
     `The slowdown bound is a limit of x${SLOWDOWN_LIMIT[scale].factor} plus ${SLOWDOWN_LIMIT[scale].slackS} s over the baseline's time to last push.`,
   );
   const verdict = checks.every((c) => c.ok) ? 'pass' : 'fail';
@@ -1068,6 +1200,6 @@ function intro(cfg: FleetConfig, sizes: SurgeSizes, smoke: boolean): string {
   return [
     `One county-wide warning fans out to ${fmt(sizes.seedDevices)} seeded devices (real planner, shard workers, senders in separate processes, mock APNs and FCM). While it does, ${fmt(sizes.newDevices)} new devices register at ${fmt(sizes.perMin)} per minute through the real API handler behind node:http (POST /devices, PUT /devices/me/push-token, POST /places), served by a separate process with indexed in-memory stores. The API writes the cell index (the shard workers read those entries too) and queues late-join intents; the real late-join handler sends the active alert to each new device through the same queues and senders.`,
     '',
-    `The same fan-out is run first without the surge (baseline) and then with it. ${smoke ? 'Smoke scale caps the senders at ' + fmt(sizes.smokePushesPerSec) + ' pushes per second so the fan-out overlaps the surge. ' : ''}${cfg.senders} senders, ${cfg.shardWorkers} shard workers, ${cfg.projects} FCM projects.`,
+    `The same fan-out is run first without the surge (baseline) and then with it. ${smoke ? 'Smoke scale caps the senders at ' + fmt(sizes.smokePushesPerSec) + ' pushes per second so the fan-out overlaps the surge. ' : ''}${cfg.senders} senders, ${cfg.shardWorkers} shard workers, ${cfg.projects} FCM projects, ${sizes.lateJoinProcs} late-join process${sizes.lateJoinProcs === 1 ? '' : 'es'} (${smoke ? LATEJOIN_LOOPS.smoke : LATEJOIN_LOOPS.full} consumer loops, batch 10).`,
   ].join('\n');
 }
