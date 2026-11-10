@@ -46,6 +46,12 @@ export interface ShardWorkerDeps extends EligibilityDeps {
   flushRecipients?: number;
   /** Recipients above which a cell is dense. Default DENSE_CELL_RECIPIENTS. */
   denseCellRecipients?: number;
+  /**
+   * Most recipients held for the open part of a dense cell (default: denseCellRecipients). Over it,
+   * buckets are set aside and the part is re-read for them (ids not spread over their first hex
+   * digit, e.g. sequential test ids). Keys do not change.
+   */
+  partHoldCap?: number;
   /** Serialized-size budget of one batch. Default BATCH_BYTE_BUDGET. */
   maxBatchBytes?: number;
   /**
@@ -77,6 +83,8 @@ export interface ShardResult {
   denseCells: number;
   /** Dense-cell buckets skipped because an earlier plan's normal batch already covered them. */
   coveredBuckets: number;
+  /** Extra reads of a dense part because its open part outgrew partHoldCap (0 for random UUIDs). */
+  rereadPasses: number;
   /** Most recipients held in memory at once (cell buffers plus unflushed batches). */
   peakBufferedRecipients: number;
   /** Set when time ran short: the `startAt` of the continuation job that was dispatched. */
@@ -114,6 +122,7 @@ const emptyResult = (cells: number): ShardResult => ({
   batches: 0,
   denseCells: 0,
   coveredBuckets: 0,
+  rereadPasses: 0,
   peakBufferedRecipients: 0,
 });
 
@@ -196,6 +205,7 @@ export async function processShard(
   const flushAt = deps.flushBatches ?? FLUSH_BATCHES;
   const flushRecipients = deps.flushRecipients ?? FLUSH_RECIPIENTS;
   const denseAt = deps.denseCellRecipients ?? DENSE_CELL_RECIPIENTS;
+  const partHoldCap = deps.partHoldCap ?? denseAt;
   const maxBytes = deps.maxBatchBytes ?? BATCH_BYTE_BUDGET;
 
   // Memory accounting: recipients held in cell buffers plus unflushed batches.
@@ -263,6 +273,20 @@ export async function processShard(
   };
   const bytesOf = (b: SendBatch): number => Buffer.byteLength(JSON.stringify(b), 'utf8');
 
+  const recipientOf = (
+    entry: {
+      deviceId: string;
+      target: Recipient['target'] | null;
+      language: Recipient['language'];
+    },
+    h3Cell: string,
+  ): Recipient => ({
+    deviceId: entry.deviceId,
+    target: entry.target as Recipient['target'],
+    language: entry.language,
+    checkInToken: deps.makeCheckInToken(alert.id, entry.deviceId, h3Cell, expiresAt),
+  });
+
   const makeBatch = (batchKey: string, recipients: Recipient[]): SendBatch => ({
     alertId: alert.id,
     sourceId: alert.sourceId,
@@ -280,25 +304,135 @@ export async function processShard(
 
   const doCell = async (h3Cell: string): Promise<void> => {
     // Normal mode: bucket -> recipients for the whole cell. Dense mode: (bucket -> recipients) for
-    // the current part only; `emitBucket[b]` says whether bucket b's parts are sent at all.
+    // the current part only; `emitBucket[b]` says whether bucket b's parts are sent at all, and
+    // `dropped` holds the buckets of the current part set aside to be re-read (partHoldCap).
     let buckets = new Map<number, Recipient[]>();
     let held = 0; // recipients in `buckets`
     let seen = new Set<string>();
-    let dense: { part: number; emitBucket: boolean[] } | undefined;
+    let dense:
+      | { part: number; partCursor: string | undefined; emitBucket: boolean[]; dropped: number[] }
+      | undefined;
+    // The highest part seen so far and the cursor of the page it first appeared in (any mode).
+    let topPart = -1;
+    let topCursor: string | undefined;
+    // Duplicate entries per (part, bucket) not yet counted in the result.
+    const dupes = new Map<number, number>();
+    const countDupes = (part: number, bucket: number): void => {
+      const k = part * CELL_BUCKETS + bucket;
+      result.duplicates += dupes.get(k) ?? 0;
+      dupes.delete(k);
+    };
 
     const release = (n: number): void => {
       held -= n;
       buffered -= n;
     };
 
-    /** Emits the current dense part and frees it. */
-    const emitPart = (part: number): void => {
+    /**
+     * Sets buckets aside (highest index first) until at most half the cap is held, keeping at least
+     * one. Their entries are read again later, from the part's first page.
+     */
+    const shrink = (
+      map: Map<number, Recipient[]>,
+      count: () => number,
+      drop: (bucket: number, n: number) => void,
+    ): void => {
+      for (const bucket of [...map.keys()].sort((a, b) => b - a)) {
+        if (count() <= partHoldCap / 2 || map.size <= 1) break;
+        const n = map.get(bucket)?.length ?? 0;
+        map.delete(bucket);
+        drop(bucket, n);
+      }
+    };
+
+    /**
+     * Re-reads one dense part for the given buckets only, in passes that each hold at most about
+     * partHoldCap recipients, and emits each bucket once it is complete. The keys are the same part
+     * keys a single pass makes: which pass covers a bucket changes nothing that is sent. Only needed
+     * when ids are not spread over their first hex digit (random v4 UUIDs, the production format,
+     * never get here); each pass is one more read of the part.
+     */
+    const rereadPart = async (
+      part: number,
+      fromCursor: string | undefined,
+      setAside: number[],
+    ): Promise<void> => {
+      let todo = setAside;
+      let passes = 0;
+      while (todo.length > 0) {
+        if (failed) return;
+        passes++;
+        const active = new Set(todo);
+        todo = [];
+        const map = new Map<number, Recipient[]>();
+        let count = 0;
+        const seenHere = new Set<string>();
+        const passDupes = new Map<number, number>(); // counted only for buckets this pass emits
+        let c = fromCursor;
+        let past = false;
+        do {
+          if (failed) return;
+          const page = await deps.cellIndex.listForCell(h3Cell, c, pageSize);
+          c = page.cursor;
+          for (const entry of page.entries) {
+            const p = densePartFor(entry.deviceId);
+            if (p < part) continue;
+            if (p > part) {
+              past = true;
+              break;
+            }
+            if (!entry.target || !isPrimaryCell(entry, alertCellSet)) continue;
+            const bucket = bucketFor(entry.deviceId);
+            if (!active.has(bucket)) continue;
+            if (seenHere.has(entry.deviceId)) {
+              passDupes.set(bucket, (passDupes.get(bucket) ?? 0) + 1);
+              continue;
+            }
+            seenHere.add(entry.deviceId);
+            let list = map.get(bucket);
+            if (!list) map.set(bucket, (list = []));
+            list.push(recipientOf(entry, h3Cell));
+            count++;
+            hold(1);
+          }
+          if (count > partHoldCap) {
+            shrink(
+              map,
+              () => count,
+              (bucket, n) => {
+                active.delete(bucket);
+                todo.push(bucket);
+                count -= n;
+                buffered -= n;
+              },
+            );
+          }
+        } while (c && !past);
+        for (const [bucket, recipients] of map) {
+          emit(makeBatch(densePartKey(alert, h3Cell, bucket, part), recipients), true);
+          result.duplicates += passDupes.get(bucket) ?? 0;
+        }
+        await flush(false);
+      }
+      result.rereadPasses += passes;
+      deps.logger.warn('fanout.dense_part_reread', {
+        alertId: alert.id,
+        h3Cell,
+        part,
+        buckets: setAside.length,
+        passes,
+      });
+    };
+
+    /** Emits the current dense part, frees it, and re-reads the buckets set aside for it. */
+    const emitPart = async (part: number): Promise<void> => {
       if (!dense) return;
       for (let bucket = 0; bucket < CELL_BUCKETS; bucket++) {
         const recipients = buckets.get(bucket);
         if (!recipients || recipients.length === 0) continue;
         if (dense.emitBucket[bucket]) {
           emit(makeBatch(densePartKey(alert, h3Cell, bucket, part), recipients), true);
+          countDupes(part, bucket);
           // Recipients move to `pending` (still counted in `buffered` until flushed).
           held -= recipients.length;
         } else {
@@ -306,19 +440,26 @@ export async function processShard(
         }
       }
       buckets = new Map();
+      const setAside = dense.dropped;
+      dense.dropped = [];
+      if (setAside.length > 0) {
+        await flush(false);
+        await rereadPart(part, dense.partCursor, setAside);
+      }
     };
 
     /** Switches this cell to dense parts: tombstones its buckets, emits the parts already read. */
     const goDense = async (): Promise<void> => {
-      const emitBucket = await tombstoneDenseCell(alert, h3Cell, deps);
+      const fates = await tombstoneDenseCell(alert, h3Cell, deps);
       result.denseCells++;
-      result.coveredBuckets += emitBucket.filter((e) => e === 'covered').length;
-      const held = emitBucket.filter((e) => e === 'contended').length;
-      if (held > 0) {
-        contended += held;
+      result.coveredBuckets += fates.filter((e) => e === 'covered').length;
+      const taken = fates.filter((e) => e === 'contended').length;
+      if (taken > 0) {
+        contended += taken;
         contendedCells.push(h3Cell);
       }
-      dense = { part: -1, emitBucket: emitBucket.map((e) => e === 'emit') };
+      const emitBucket = fates.map((e) => e === 'emit');
+      dense = { part: -1, partCursor: undefined, emitBucket, dropped: [] };
       deps.logger.info('fanout.dense_cell', { alertId: alert.id, h3Cell, recipientsSoFar: held });
       // Regroup what was read so far by part. The stream is sorted, so every part but the highest
       // seen is complete and goes out now.
@@ -338,19 +479,28 @@ export async function processShard(
           j++;
         }
         dense.part = part;
-        if (j < all.length) emitPart(part);
+        if (j < all.length) await emitPart(part);
         i = j;
       }
+      // The open part is the highest one seen; it began on the page topCursor fetched.
+      dense.part = Math.max(dense.part, topPart);
+      dense.partCursor = topCursor;
       await flush(false);
     };
 
     let cursor: string | undefined;
     do {
       if (failed) return;
+      const requested = cursor;
       const page = await deps.cellIndex.listForCell(h3Cell, cursor, pageSize);
       cursor = page.cursor;
       for (const entry of page.entries) {
         result.entries++;
+        const part = densePartFor(entry.deviceId);
+        if (part > topPart) {
+          topPart = part;
+          topCursor = requested;
+        }
         if (!entry.target) {
           result.skippedNoTarget++;
           continue;
@@ -359,37 +509,49 @@ export async function processShard(
           result.skippedNonPrimary++;
           continue;
         }
+        const bucket = bucketFor(entry.deviceId);
         if (dense) {
-          const part = densePartFor(entry.deviceId);
           if (part < dense.part) {
             // The stream is not sorted by deviceId: emitted parts would be incomplete. Never
             // happens with DynamoDB (sk order); fail loudly rather than skip or double-send.
             throw new Error(`cell index for ${h3Cell} is not in deviceId order`);
           }
           if (part > dense.part) {
-            emitPart(dense.part);
+            await emitPart(dense.part);
+            if (failed) return;
             dense.part = part;
+            dense.partCursor = requested;
             seen = new Set(); // a device's entries are all in one part
           }
+          // Nothing is sent for this bucket, or it is set aside to be re-read: hold nothing.
+          if (!dense.emitBucket[bucket] || dense.dropped.includes(bucket)) continue;
         }
         if (seen.has(entry.deviceId)) {
-          result.duplicates++;
+          // Counted when the batch goes out (a set-aside bucket is re-read and counted then).
+          const k = part * CELL_BUCKETS + bucket;
+          dupes.set(k, (dupes.get(k) ?? 0) + 1);
           continue;
         }
         seen.add(entry.deviceId);
-        const bucket = bucketFor(entry.deviceId);
         let list = buckets.get(bucket);
         if (!list) buckets.set(bucket, (list = []));
-        list.push({
-          deviceId: entry.deviceId,
-          target: entry.target,
-          language: entry.language,
-          checkInToken: deps.makeCheckInToken(alert.id, entry.deviceId, h3Cell, expiresAt),
-        });
+        list.push(recipientOf(entry, h3Cell));
         held++;
         hold(1);
       }
       if (!dense && held > denseAt) await goDense();
+      if (dense && held > partHoldCap) {
+        const d = dense;
+        shrink(
+          buckets,
+          () => held,
+          (bucket, n) => {
+            d.dropped.push(bucket);
+            dupes.delete(d.part * CELL_BUCKETS + bucket); // the re-read counts them
+            release(n);
+          },
+        );
+      }
       if (dense) await flush(false);
     } while (cursor);
     if (failed) return;
@@ -415,8 +577,9 @@ export async function processShard(
       }
     }
     if (dense) {
-      emitPart(dense.part);
+      await emitPart(dense.part);
     } else {
+      for (const v of dupes.values()) result.duplicates += v;
       for (const b of normal) {
         emit(b, false); // measured just above
         held -= b.recipients.length;
