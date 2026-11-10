@@ -16,6 +16,9 @@ import type {
   SendQueue,
   SendQueueName,
 } from '../../../src/scale/contracts.js';
+import { PermanentBreaker } from '../../../src/scale/sender/breaker.js';
+import { DeadTargetGate } from '../../../src/scale/sender/dead-target-gate.js';
+import { DeadTargetQueue } from '../../../src/scale/sender/dead-target-queue.js';
 import type { SenderDeps } from '../../../src/scale/sender/sender.js';
 import { signed, verifyAlert } from '../../delivery/fakes.js';
 
@@ -115,6 +118,41 @@ export function makeDeps(over: Partial<SenderDeps> = {}) {
     ...over,
   };
   return { deps, state, alerts, idempotency, sendQueue, push, dead, events };
+}
+
+/**
+ * Turns off the dead-target hold (dead-target-gate.ts) for tests about the cleanup itself:
+ * clears go to the real background queue as soon as the batch settles.
+ */
+export function clearAtOnce(deps: SenderDeps): SenderDeps {
+  const breaker = deps.breaker ?? new PermanentBreaker();
+  const queue = new DeadTargetQueue({ process: deps.onDeadTarget, logger: deps.logger });
+  deps.breaker = breaker;
+  deps.deadTargets = queue;
+  deps.deadTargetGate = new DeadTargetGate({ breaker, queue, logger: deps.logger, minSamples: 0 });
+  return deps;
+}
+
+/** A manual timer for DeadTargetGate: `fire()` runs what is scheduled. */
+export function manualTimer() {
+  let pending: (() => void) | undefined;
+  const scheduled: number[] = [];
+  return {
+    scheduled,
+    setTimer: (fn: () => void, ms: number) => {
+      pending = fn;
+      scheduled.push(ms);
+      return { cancel: () => void (pending = undefined) };
+    },
+    get armed() {
+      return pending !== undefined;
+    },
+    fire() {
+      const f = pending;
+      pending = undefined;
+      f?.();
+    },
+  };
 }
 
 export async function seedAlert(

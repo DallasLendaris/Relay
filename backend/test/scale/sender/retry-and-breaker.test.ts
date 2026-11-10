@@ -13,7 +13,15 @@ import type {
   SendQueue,
   SendQueueName,
 } from '../../../src/scale/contracts.js';
-import { FakePush, makeBatch, makeDeps, recordingLogger, seedAlert, waitFor } from './fakes.js';
+import {
+  FakePush,
+  clearAtOnce,
+  makeBatch,
+  makeDeps,
+  recordingLogger,
+  seedAlert,
+  waitFor,
+} from './fakes.js';
 
 /** A queue that honors delaySeconds against the test's fake clock, like SQS does. */
 class DelayQueue implements SendQueue {
@@ -249,8 +257,13 @@ describe('circuit breaker in processBatch', () => {
     });
     await seedAlert(t.alerts);
     await processBatch(makeBatch({}, 20), t.deps); // 1 permanent: under the 20 minimum
-    await waitFor(() => cleared.length === 1);
-    expect(cleared).toEqual(['dev0']);
+    await new Promise((r) => setTimeout(r, 20));
+    // Held: the breaker has seen 20 results, too few to tell a dead token from a misconfiguration.
+    expect(cleared).toEqual([]);
+    for (let i = 1; i < 10; i++) await processBatch(makeBatch({ batchKey: `k:${i}` }, 20), t.deps);
+    // 200 results with a 5% permanent rate: the held clear is released.
+    await waitFor(() => cleared.length === 10);
+    expect(cleared).toEqual(Array.from({ length: 10 }, () => 'dev0'));
   });
 
   it('opens on the process-wide rolling rate across many small batches', async () => {
@@ -273,11 +286,15 @@ describe('circuit breaker in processBatch', () => {
       await processBatch(b, t.deps);
     }
     await new Promise((r) => setTimeout(r, 20));
-    // The window reaches 200 results at batch 40; from then on nothing is cleared.
-    expect(cleared).toHaveLength(39 * 2);
+    // The window reaches 200 results at batch 40 and opens. Before the fix the 78 dead targets of
+    // batches 1-39 had already been cleared; now they were held, and are dropped.
+    expect(cleared).toEqual([]);
     const opened = lines.filter((l) => l.msg === 'delivery.permanent_breaker_open');
     expect(opened).toHaveLength(21); // batches 40-60
     expect(opened[0]?.fields).toMatchObject({ reason: 'rolling_rate' });
+    const dropped = lines.filter((l) => l.msg === 'sender.dead_targets_dropped');
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]?.fields).toMatchObject({ count: 39 * 2, reason: 'breaker_open' });
   });
 
   it('a message-scoped permanent failure (payload too large) is never cleared, retried or counted toward the breaker', async () => {
@@ -329,6 +346,7 @@ describe('asynchronous dead-target cleanup', () => {
         order.push('cleanup-done');
       },
     });
+    clearAtOnce(t.deps); // about the cleanup queue, not the hold
     const realSent = t.idempotency.markSent.bind(t.idempotency);
     t.idempotency.markSent = async (k, e) => (order.push('markSent'), realSent(k, e));
     await seedAlert(t.alerts);

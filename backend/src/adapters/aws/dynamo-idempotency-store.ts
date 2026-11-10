@@ -7,7 +7,7 @@ import {
   UpdateCommand,
   type DynamoDBDocumentClient,
 } from '@aws-sdk/lib-dynamodb';
-import type { Clock, IdempotencyStore } from '../../ports.js';
+import type { ChunkProgress, Clock, IdempotencyStore } from '../../ports.js';
 
 const DAY_SECONDS = 24 * 60 * 60;
 
@@ -65,9 +65,33 @@ export interface ThrottleRetryOptions {
  * only touch the item if it is still this attempt's (a later attempt may own it after our
  * lease ran out). The port has no attempt parameter, hence the per-instance map.
  * Items written before leases existed have no `state`; they count as sent.
+ *
+ * Sub-chunk progress (recordChunk) lives on the same item as a string set `sentChunks`, one
+ * element per finished sub-chunk: `${chunk}:${redo offsets, comma-separated}`. A claim that takes
+ * over an expired lease reads the old item back (PutItem ReturnValues ALL_OLD, so no extra read)
+ * and writes its progress back onto the new lease; release() of a key with progress ends the
+ * lease (leaseUntil 0) instead of deleting the item, so the next claim inherits it too.
  */
+export const encodeChunkProgress = (p: ChunkProgress): string => `${p.chunk}:${p.redo.join(',')}`;
+
+export function decodeChunkProgress(s: string): ChunkProgress | undefined {
+  const m = /^(\d+):([\d,]*)$/.exec(s);
+  if (!m) return undefined;
+  const redo = (m[2] ?? '') === '' ? [] : (m[2] ?? '').split(',').map(Number);
+  return { chunk: Number(m[1]), redo };
+}
+
+const progressOf = (raw: unknown): string[] =>
+  raw instanceof Set
+    ? [...(raw as Set<unknown>)].filter((x): x is string => typeof x === 'string')
+    : Array.isArray(raw)
+      ? raw.filter((x): x is string => typeof x === 'string')
+      : [];
+
 export class DynamoIdempotencyStore implements IdempotencyStore {
   private readonly attempts = new Map<string, string>();
+  /** Progress inherited by our claim (encoded), per key; also marks keys whose release must keep the item. */
+  private readonly progress = new Map<string, string[]>();
 
   constructor(
     private readonly doc: Pick<DynamoDBDocumentClient, 'send'>,
@@ -107,8 +131,9 @@ export class DynamoIdempotencyStore implements IdempotencyStore {
 
   async claim(key: string, leaseUntil: Date): Promise<'claimed' | 'sent' | 'leased'> {
     const attemptId = randomUUID();
+    let old: Record<string, unknown> | undefined;
     try {
-      await this.send(() =>
+      const out = await this.send(() =>
         this.doc.send(
           new PutCommand({
             TableName: this.tableName,
@@ -125,23 +150,76 @@ export class DynamoIdempotencyStore implements IdempotencyStore {
               'attribute_not_exists(pk) OR (#state = :leased AND leaseUntil < :now)',
             ExpressionAttributeNames: { '#state': 'state' },
             ExpressionAttributeValues: { ':leased': 'leased', ':now': this.clock.now().getTime() },
+            // The replaced item (an expired lease) carries the progress of the attempt before us.
+            ReturnValues: 'ALL_OLD',
           }),
         ),
       );
-      this.attempts.set(key, attemptId);
-      return 'claimed';
+      old = (out as { Attributes?: Record<string, unknown> } | undefined)?.Attributes;
     } catch (err) {
       if (!(err instanceof ConditionalCheckFailedException)) throw err;
+      // Lost the race: find out whether it is already sent or another attempt is in flight.
+      const { Item } = await this.send(() =>
+        this.doc.send(
+          new GetCommand({ TableName: this.tableName, Key: { pk: key }, ConsistentRead: true }),
+        ),
+      );
+      // Item gone in between (released): report 'leased' so SQS retries shortly.
+      if (!Item || Item['state'] === 'leased') return 'leased';
+      return 'sent';
     }
-    // Lost the race: find out whether it is already sent or another attempt is in flight.
-    const { Item } = await this.send(() =>
-      this.doc.send(
-        new GetCommand({ TableName: this.tableName, Key: { pk: key }, ConsistentRead: true }),
-      ),
-    );
-    // Item gone in between (released): report 'leased' so SQS retries shortly.
-    if (!Item || Item['state'] === 'leased') return 'leased';
-    return 'sent';
+    this.attempts.set(key, attemptId);
+    this.progress.delete(key);
+    const inherited = progressOf(old?.['sentChunks']);
+    if (inherited.length > 0) {
+      this.progress.set(key, inherited);
+      // The put replaced the item: write the inherited progress back onto our lease, so a crash
+      // of this attempt does not lose it. Best effort: this attempt has it in memory either way.
+      await this.addProgress(key, attemptId, inherited).catch(() => false);
+    }
+    return 'claimed';
+  }
+
+  /** ADDs elements to sentChunks, only while the item is still our lease. */
+  private async addProgress(key: string, attemptId: string, items: string[]): Promise<boolean> {
+    try {
+      await this.send(() =>
+        this.doc.send(
+          new UpdateCommand({
+            TableName: this.tableName,
+            Key: { pk: key },
+            UpdateExpression: 'ADD sentChunks :p',
+            // Same guard as extend: still leased, and still this attempt's.
+            ConditionExpression: '#state = :leased AND attemptId = :attempt',
+            ExpressionAttributeNames: { '#state': 'state' },
+            ExpressionAttributeValues: {
+              ':leased': 'leased',
+              ':attempt': attemptId,
+              ':p': new Set(items),
+            },
+          }),
+        ),
+      );
+      return true;
+    } catch (err) {
+      if (!(err instanceof ConditionalCheckFailedException)) throw err;
+      return false;
+    }
+  }
+
+  async recordChunk(key: string, progress: ChunkProgress): Promise<boolean> {
+    const attemptId = this.attempts.get(key);
+    if (!attemptId) return false; // not claimed by this instance
+    const ok = await this.addProgress(key, attemptId, [encodeChunkProgress(progress)]);
+    // From now on release() must keep the item (see the class comment).
+    if (ok && !this.progress.has(key)) this.progress.set(key, []);
+    return ok;
+  }
+
+  async claimedProgress(key: string): Promise<ChunkProgress[]> {
+    return (this.progress.get(key) ?? [])
+      .map(decodeChunkProgress)
+      .filter((p): p is ChunkProgress => p !== undefined);
   }
 
   async peek(key: string): Promise<'absent' | 'leased' | 'sent'> {
@@ -165,6 +243,7 @@ export class DynamoIdempotencyStore implements IdempotencyStore {
   async markSent(key: string, expiresAt: Date): Promise<void> {
     const attemptId = this.attempts.get(key);
     this.attempts.delete(key);
+    this.progress.delete(key);
     try {
       await this.doc.send(
         new UpdateCommand({
@@ -191,19 +270,31 @@ export class DynamoIdempotencyStore implements IdempotencyStore {
   async release(key: string): Promise<void> {
     const attemptId = this.attempts.get(key);
     this.attempts.delete(key);
+    const keep = this.progress.has(key);
+    this.progress.delete(key);
+    // Only give back a lease that is still ours; never delete a sent key or a newer lease.
+    const guard = {
+      ConditionExpression: '#state = :leased' + (attemptId ? ' AND attemptId = :attempt' : ''),
+      ExpressionAttributeNames: { '#state': 'state' },
+    };
+    const values = { ':leased': 'leased', ...(attemptId ? { ':attempt': attemptId } : {}) };
     try {
       await this.doc.send(
-        new DeleteCommand({
-          TableName: this.tableName,
-          Key: { pk: key },
-          // Only give back a lease that is still ours; never delete a sent key or a newer lease.
-          ConditionExpression: '#state = :leased' + (attemptId ? ' AND attemptId = :attempt' : ''),
-          ExpressionAttributeNames: { '#state': 'state' },
-          ExpressionAttributeValues: {
-            ':leased': 'leased',
-            ...(attemptId ? { ':attempt': attemptId } : {}),
-          },
-        }),
+        keep
+          ? // Progress was recorded: end the lease but keep the item, so the next claim inherits it.
+            new UpdateCommand({
+              TableName: this.tableName,
+              Key: { pk: key },
+              UpdateExpression: 'SET leaseUntil = :zero',
+              ...guard,
+              ExpressionAttributeValues: { ...values, ':zero': 0 },
+            })
+          : new DeleteCommand({
+              TableName: this.tableName,
+              Key: { pk: key },
+              ...guard,
+              ExpressionAttributeValues: values,
+            }),
       );
     } catch (err) {
       if (!(err instanceof ConditionalCheckFailedException)) throw err; // not ours any more
