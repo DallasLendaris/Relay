@@ -54,7 +54,7 @@ import {
 import { errorFields } from '../../delivery/redact.js';
 import { publicAlertDocUrl } from '../publish/paths.js';
 import { PermanentBreaker, type BreakerVerdict } from './breaker.js';
-import { DeadTargetGate } from './dead-target-gate.js';
+import { DeadTargetGate, type DeadTargetGateOptions, type HeldGroup } from './dead-target-gate.js';
 import { DeadTargetQueue } from './dead-target-queue.js';
 import { consoleMetricWriter, emfLine, type MetricWriter } from './metrics.js';
 
@@ -339,19 +339,92 @@ function breakerFor(deps: SenderDeps): PermanentBreaker {
 
 const defaultGates = new WeakMap<object, DeadTargetGate>();
 
+/**
+ * The gate for these deps, built on their breaker and cleanup queue, re-queueing held recipients
+ * through their send queue. `extra` overrides gate options (tests: timer, minSamples).
+ */
+export function createDeadTargetGate(
+  deps: SenderDeps,
+  extra: Partial<DeadTargetGateOptions> = {},
+): DeadTargetGate {
+  return new DeadTargetGate({
+    breaker: breakerFor(deps),
+    queue: deadTargetsFor(deps),
+    requeue: (groups) => requeueHeld(groups, deps),
+    logger: deps.logger,
+    ...(deps.writeMetric ? { writeMetric: deps.writeMetric } : {}),
+    ...extra,
+  });
+}
+
 function gateFor(deps: SenderDeps): Pick<DeadTargetGate, 'submit'> {
   if (deps.deadTargetGate) return deps.deadTargetGate;
   let g = defaultGates.get(deps);
-  if (!g) {
-    g = new DeadTargetGate({
-      breaker: breakerFor(deps),
-      queue: deadTargetsFor(deps),
-      logger: deps.logger,
-      ...(deps.writeMetric ? { writeMetric: deps.writeMetric } : {}),
-    });
-    defaultGates.set(deps, g);
-  }
+  if (!g) defaultGates.set(deps, (g = createDeadTargetGate(deps)));
   return g;
+}
+
+/** Key of a retry of held recipients: its own `:held` base, so it never meets the batch's own `:r<n>`. */
+export const heldRetryKey = (batch: SendBatch): string => {
+  const base = baseBatchKey(batch.batchKey);
+  return `${base.endsWith(':held') ? base : `${base}:held`}:r${batch.attempt + 1}`;
+};
+
+const REQUEUE_TRIES = 3;
+
+/**
+ * Re-queues recipients the gate held when the breaker found the "dead" tokens to be a
+ * misconfiguration: one retry batch per source batch, on its severity's queue, attempt + 1,
+ * firstAttemptAt kept (same 30-minute budget), the usual retry delay. Tokens are not touched.
+ * Resolves with how many recipients were re-queued.
+ */
+async function requeueHeld(groups: HeldGroup[], deps: SenderDeps): Promise<number> {
+  const random = deps.random ?? Math.random;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let requeued = 0;
+  for (const g of groups) {
+    const { batch } = g;
+    const delay = retryDelaySeconds(batch.attempt, 0, random);
+    const nowMs = deps.clock.now().getTime();
+    if (nowMs + delay * 1000 >= g.deadlineMs) {
+      deps.logger.error('delivery.gave_up', {
+        alertId: batch.alertId,
+        batchKey: batch.batchKey,
+        attempt: batch.attempt,
+        count: g.recipients.length,
+        reason: nowMs >= g.deadlineMs ? 'budget_spent' : 'retry_would_miss_budget',
+        held: true,
+      });
+      continue;
+    }
+    const retryBatch: SendBatch = {
+      ...batch,
+      batchKey: heldRetryKey(batch),
+      recipients: g.recipients,
+      attempt: batch.attempt + 1,
+      firstAttemptAt: new Date(g.firstAttemptMs).toISOString(),
+    };
+    const queue = QUEUE_FOR_SEVERITY[batch.relaySeverity] ?? 'standard';
+    for (let i = 1; ; i++) {
+      try {
+        await deps.sendQueue.enqueue(queue, [retryBatch], { delaySeconds: delay });
+        requeued += g.recipients.length;
+        break;
+      } catch (err) {
+        if (i >= REQUEUE_TRIES) {
+          deps.logger.error('sender.held_requeue_failed', {
+            alertId: batch.alertId,
+            batchKey: retryBatch.batchKey,
+            count: g.recipients.length,
+            ...errorFields(err),
+          });
+          break;
+        }
+        await sleep(200 * i);
+      }
+    }
+  }
+  return requeued;
 }
 
 /**
@@ -494,7 +567,7 @@ export async function processBatch(
       (r): NativePushResult => r ?? { ok: false, kind: 'retryable', error: 'NoResult' },
     );
     let sent = 0;
-    const permanent: Array<{ deviceId: string; target: PushTarget }> = [];
+    const permanent: SendBatch['recipients'] = [];
     const failed: SendBatch['recipients'] = [];
     let messageFailed = 0;
     let resumed = 0; // sent by an earlier attempt: not new evidence for the breaker
@@ -505,8 +578,7 @@ export async function processBatch(
       if (r === ALREADY_SENT) resumed++;
       if (r.ok) sent++;
       else if (r.kind === 'permanent' && r.scope === 'message') messageFailed++;
-      else if (r.kind === 'permanent')
-        permanent.push({ deviceId: rec.deviceId, target: rec.target });
+      else if (r.kind === 'permanent') permanent.push(rec);
       else {
         failed.push(rec);
         retryAfter = Math.max(retryAfter, r.retryAfterSeconds ?? 0);
@@ -532,10 +604,7 @@ export async function processBatch(
           errors: topErrors(settled),
         });
         write(emfLine('PermanentBreakerOpen', 1, deps.clock.now().getTime()));
-        for (const d of permanent) {
-          const rec = batch.recipients.find((x) => x.deviceId === d.deviceId);
-          if (rec) failed.push(rec);
-        }
+        failed.push(...permanent);
         dead = [];
       }
     }
@@ -549,13 +618,13 @@ export async function processBatch(
         count: messageFailed,
       });
     }
+    const firstMs = Date.parse(batch.firstAttemptAt ?? '');
+    const firstAttemptMs = Number.isNaN(firstMs) ? now.getTime() : firstMs;
+    const deadline = Math.min(alertEndTime(alert).getTime(), firstAttemptMs + RETRY_BUDGET_MS);
     if (failed.length > 0) {
       const random = deps.random ?? Math.random;
       const delay = retryDelaySeconds(batch.attempt, retryAfter, random);
       const nowMs = deps.clock.now().getTime();
-      const firstMs = Date.parse(batch.firstAttemptAt ?? '');
-      const firstAttemptMs = Number.isNaN(firstMs) ? now.getTime() : firstMs;
-      const deadline = Math.min(alertEndTime(alert).getTime(), firstAttemptMs + RETRY_BUDGET_MS);
       if (nowMs + delay * 1000 >= deadline) {
         gaveUp += failed.length;
         logger.error('delivery.gave_up', {
@@ -591,7 +660,13 @@ export async function processBatch(
 
     // Cleanup comes after markSent and is asynchronous: submit is synchronous and cheap. The
     // gate holds the clears until the breaker has seen enough results (dead-target-gate.ts).
-    if (verdict) gateFor(deps).submit(dead, verdict);
+    // Held recipients carry their batch so the gate can re-queue them if the breaker opens.
+    if (verdict) {
+      gateFor(deps).submit(
+        { batch, firstAttemptMs, deadlineMs: deadline, recipients: dead },
+        verdict,
+      );
+    }
 
     logger.info('sender.batch_done', {
       alertId: alert.id,

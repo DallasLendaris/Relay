@@ -287,14 +287,22 @@ describe('circuit breaker in processBatch', () => {
     }
     await new Promise((r) => setTimeout(r, 20));
     // The window reaches 200 results at batch 40 and opens. Before the fix the 78 dead targets of
-    // batches 1-39 had already been cleared; now they were held, and are dropped.
+    // batches 1-39 had already been cleared; now they were held, and are re-queued as retries.
     expect(cleared).toEqual([]);
     const opened = lines.filter((l) => l.msg === 'delivery.permanent_breaker_open');
     expect(opened).toHaveLength(21); // batches 40-60
     expect(opened[0]?.fields).toMatchObject({ reason: 'rolling_rate' });
-    const dropped = lines.filter((l) => l.msg === 'sender.dead_targets_dropped');
-    expect(dropped).toHaveLength(1);
-    expect(dropped[0]?.fields).toMatchObject({ count: 39 * 2, reason: 'breaker_open' });
+    const requeued = lines.filter((l) => l.msg === 'sender.dead_targets_requeued');
+    expect(requeued).toHaveLength(1);
+    expect(requeued[0]?.fields).toMatchObject({ count: 39 * 2, reason: 'breaker_open' });
+    await waitFor(
+      () =>
+        t.sendQueue.enqueued
+          .flatMap((e) => e.batches)
+          .filter((b) => b.batchKey.endsWith(':held:r1'))
+          .reduce((n, b) => n + b.recipients.length, 0) ===
+        39 * 2,
+    );
   });
 
   it('a message-scoped permanent failure (payload too large) is never cleared, retried or counted toward the breaker', async () => {
