@@ -20,6 +20,8 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
+    "@types/pg": "^8.11.10",
+    "pg": "^8.13.1",
     "tsx": "^4.23.15"
   }
 }
