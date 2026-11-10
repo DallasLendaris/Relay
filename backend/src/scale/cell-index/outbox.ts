@@ -46,6 +46,13 @@ export async function insertOutboxRow(
   );
 }
 
+/**
+ * How long a claim holds its rows. Longer than a drainer run (the Lambda timeout is 60 s) so an
+ * overlapping run cannot take them, short enough that a crashed run's rows are retried by the
+ * run after next.
+ */
+export const OUTBOX_LEASE_MS = 75_000;
+
 export interface OutboxStats {
   pending: number;
   maxAttempts: number;
@@ -60,8 +67,25 @@ export interface CellIndexOutbox {
    * Claims up to `limit` rows older than `olderThanMs`, oldest first, and increments `attempts`
    * on each in the same statement (so a row that keeps failing is counted even if the drainer
    * crashes). Returns the rows with the incremented count.
+   *
+   * The claim leases the rows (`claimed_until` = now + `leaseMs`): rows under a live lease, or
+   * locked by a claim in flight, are skipped, so overlapping runs never take the same row.
+   * `excludeIds` skips rows (the ones that failed earlier in this run, so their attempts are not
+   * counted again until the next run).
    */
-  claimDue(olderThanMs: number, limit: number, now?: Date): Promise<OutboxRow[]>;
+  claimDue(
+    olderThanMs: number,
+    limit: number,
+    now?: Date,
+    opts?: { leaseMs?: number; excludeIds?: readonly string[] },
+  ): Promise<OutboxRow[]>;
+  /**
+   * Ends the lease on rows this run is done with. With `refundAttempt` (default) the attempt the
+   * claim counted is taken back too: for rows claimed but never tried (the run ran out of time).
+   * Without it, for rows that failed: they stay counted but are due again at the next run instead
+   * of waiting out the lease. Optional; without it the lease just expires.
+   */
+  release?(ids: string[], refundAttempt?: boolean): Promise<void>;
   stats(now?: Date): Promise<OutboxStats>;
 }
 
@@ -86,16 +110,36 @@ export class PostgresCellIndexOutbox implements CellIndexOutbox {
     );
   }
 
-  async claimDue(olderThanMs: number, limit: number, now: Date = new Date()): Promise<OutboxRow[]> {
+  async release(ids: string[], refundAttempt = true): Promise<void> {
+    if (ids.length === 0) return;
+    await this.db.query(
+      `UPDATE cell_index_outbox
+          SET claimed_until = NULL,
+              attempts = CASE WHEN $2::boolean THEN GREATEST(attempts - 1, 0) ELSE attempts END
+        WHERE id IN (SELECT jsonb_array_elements_text($1::jsonb)::uuid)`,
+      [JSON.stringify(ids), refundAttempt],
+    );
+  }
+
+  async claimDue(
+    olderThanMs: number,
+    limit: number,
+    now: Date = new Date(),
+    opts: { leaseMs?: number; excludeIds?: readonly string[] } = {},
+  ): Promise<OutboxRow[]> {
     const cutoff = new Date(now.getTime() - olderThanMs).toISOString();
+    const leaseUntil = new Date(now.getTime() + (opts.leaseMs ?? OUTBOX_LEASE_MS)).toISOString();
     const rows = await this.db.query<Row>(
-      `UPDATE cell_index_outbox SET attempts = attempts + 1
+      `UPDATE cell_index_outbox SET attempts = attempts + 1, claimed_until = $3::timestamptz
         WHERE id IN (SELECT id FROM cell_index_outbox
                       WHERE created_at < $1::timestamptz
-                      ORDER BY created_at LIMIT $2::int)
+                        AND (claimed_until IS NULL OR claimed_until <= $4::timestamptz)
+                        AND id NOT IN (SELECT jsonb_array_elements_text($5::jsonb)::uuid)
+                      ORDER BY created_at LIMIT $2::int
+                      FOR UPDATE SKIP LOCKED)
        RETURNING id, device_id, op, payload, attempts,
                  to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at`,
-      [cutoff, limit],
+      [cutoff, limit, leaseUntil, now.toISOString(), JSON.stringify(opts.excludeIds ?? [])],
     );
     return rows
       .map((r) => {
