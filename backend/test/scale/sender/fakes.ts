@@ -19,7 +19,7 @@ import type {
 import { PermanentBreaker } from '../../../src/scale/sender/breaker.js';
 import { DeadTargetGate } from '../../../src/scale/sender/dead-target-gate.js';
 import { DeadTargetQueue } from '../../../src/scale/sender/dead-target-queue.js';
-import type { SenderDeps } from '../../../src/scale/sender/sender.js';
+import { createDeadTargetGate, type SenderDeps } from '../../../src/scale/sender/sender.js';
 import { signed, verifyAlert } from '../../delivery/fakes.js';
 
 export const silent = { info() {}, warn() {}, error() {} };
@@ -129,8 +129,64 @@ export function clearAtOnce(deps: SenderDeps): SenderDeps {
   const queue = new DeadTargetQueue({ process: deps.onDeadTarget, logger: deps.logger });
   deps.breaker = breaker;
   deps.deadTargets = queue;
-  deps.deadTargetGate = new DeadTargetGate({ breaker, queue, logger: deps.logger, minSamples: 0 });
+  deps.deadTargetGate = new DeadTargetGate({ breaker, queue, logger: deps.logger, holdMs: 0 });
   return deps;
+}
+
+/**
+ * Gives `deps` the production gate (createDeadTargetGate) with a manual timer, for flow tests
+ * that check what is finally cleared. Call the returned function at the end: it decides
+ * everything held (as a graceful shutdown would), waits for re-queues and flushes the cleanups.
+ */
+export function holdDeadTargets(deps: SenderDeps): () => Promise<void> {
+  const breaker = deps.breaker ?? new PermanentBreaker();
+  const queue = new DeadTargetQueue({
+    process: deps.onDeadTarget,
+    logger: deps.logger,
+    writeMetric: () => {},
+  });
+  deps.breaker = breaker;
+  deps.deadTargets = queue;
+  const gate = createDeadTargetGate(deps, { setTimer: manualTimer().setTimer });
+  deps.deadTargetGate = gate;
+  return async () => {
+    gate.shutdown();
+    await gate.settle(5000);
+    await queue.flush(10_000);
+  };
+}
+
+/**
+ * A scheduler on the test clock: timers fire when `advance` moves `state.now` past them, in
+ * time order (a fired timer may schedule another).
+ */
+export function clockScheduler(state: { now: Date }) {
+  let timers: Array<{ at: number; fn: () => void; live: boolean }> = [];
+  return {
+    setTimer: (fn: () => void, ms: number) => {
+      const t = { at: state.now.getTime() + ms, fn, live: true };
+      timers.push(t);
+      return { cancel: () => void (t.live = false) };
+    },
+    get pending() {
+      return timers.filter((t) => t.live).length;
+    },
+    /** Moves the clock forward by `ms`, firing due timers in order. */
+    async advance(ms: number): Promise<void> {
+      const end = state.now.getTime() + ms;
+      for (;;) {
+        timers = timers.filter((t) => t.live);
+        const next = timers.filter((t) => t.at <= end).sort((a, b) => a.at - b.at)[0];
+        if (!next) break;
+        next.live = false;
+        if (next.at > state.now.getTime()) state.now = new Date(next.at);
+        next.fn();
+        await new Promise((r) => setTimeout(r, 0));
+      }
+      state.now = new Date(end);
+      await new Promise((r) => setTimeout(r, 0));
+    },
+  };
 }
 
 /** A manual timer for DeadTargetGate: `fire()` runs what is scheduled. */

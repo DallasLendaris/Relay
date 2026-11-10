@@ -12,7 +12,7 @@ import { MAX_BATCHES_PER_MESSAGE } from '../../../src/scale/contracts.js';
 import { SenderConsumer } from '../../../src/scale/sender/consumer.js';
 import { processBatch } from '../../../src/scale/sender/sender.js';
 import { signed, verifyAlert } from '../../delivery/fakes.js';
-import { FakeSendQueue, FakeSqs, silent, waitFor } from './fakes.js';
+import { FakeSendQueue, FakeSqs, holdDeadTargets, silent, waitFor } from './fakes.js';
 
 const TOTAL = 200_000;
 const BATCH_SIZE = 300;
@@ -108,6 +108,7 @@ describe('sender throughput (200,000 recipients, fake APNs/FCM)', () => {
       logger: silent,
       sleep: async () => {},
     };
+    const settleDeadTargets = holdDeadTargets(deps); // the production 30 s hold, decided at the end
     const totals = { sent: 0, permanent: 0, retried: 0, gaveUp: 0 };
     const consumer = new SenderConsumer({
       sqs: sqs as never,
@@ -130,6 +131,7 @@ describe('sender throughput (200,000 recipients, fake APNs/FCM)', () => {
     await waitFor(() => sqs.size(URGENT) === 0 && sqs.size(STANDARD) === 0, 90_000);
     consumer.stop();
     await run;
+    await settleDeadTargets();
     const seconds = (performance.now() - t0) / 1000;
 
     const permanentCount = Array.from({ length: TOTAL }, (_, i) => i).filter(

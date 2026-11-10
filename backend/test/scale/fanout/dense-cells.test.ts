@@ -413,3 +413,29 @@ describe('dense cells: memory', () => {
     }
   });
 });
+
+describe('dense cells: parts over the byte budget (review 2, P-split)', () => {
+  it('late join reads a split part as planned, before and after delivery (no duplicate)', async () => {
+    const alert = signed();
+    const w = world(alert, { denseCellRecipients: 1_000, maxBatchBytes: 2_500 });
+    add(w, 0, 12_000);
+    const { batches } = await w.plan();
+    const split = batches.filter((b) => /:s[01]+$/.test(b.batchKey));
+    expect(split.length).toBeGreaterThan(0);
+    const peek = (k: string) => w.sender.idempotency.peek(k);
+    const splitDevices = split.flatMap((b) => b.recipients.map((r) => r.deviceId));
+    // Planned but not yet sent: already not a late-join candidate.
+    for (const d of splitDevices.slice(0, 200)) {
+      expect((await plannedKeyFor(alert, CELL, d, peek)).state, d).not.toBe('absent');
+    }
+    await w.deliver(batches);
+    noDuplicates(w.pushes);
+    // Before the split marker, every device of a split part read as absent here (and late join
+    // pushed it a second time).
+    let absent = 0;
+    for (let i = 0; i < 12_000; i += 7) {
+      if ((await plannedKeyFor(alert, CELL, uid(i), peek)).state === 'absent') absent++;
+    }
+    expect(absent).toBe(0);
+  });
+});
