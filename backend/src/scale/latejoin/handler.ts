@@ -26,11 +26,18 @@ import {
   isLateJoinIntent,
   MAX_DELAY_SECONDS,
   PARK_GIVE_UP_MS,
+  PLAN_WAIT_DELAY_SECONDS,
+  PLAN_WAIT_GIVE_UP_MS,
   SqsLateJoinQueue,
   type LateJoinIntent,
   type LateJoinQueue,
 } from './intent.js';
-import { processLateJoin, type LateJoinDeps, type LateJoinResult } from './latejoin.js';
+import {
+  processLateJoin,
+  type LateJoinDeps,
+  type LateJoinOptions,
+  type LateJoinResult,
+} from './latejoin.js';
 
 const logger: Logger = {
   info: (msg, f) => console.log(JSON.stringify({ level: 'info', msg, ...f })),
@@ -46,9 +53,12 @@ export async function runIntent(
   intent: { deviceId: string; reason?: string },
   deps: LateJoinDeps,
   refresh?: () => Promise<LateJoinDeps>,
+  opts: LateJoinOptions = {},
 ): Promise<LateJoinResult> {
-  let result = await processLateJoin(intent, deps);
-  if (result.unsigned > 0 && refresh) result = await processLateJoin(intent, await refresh());
+  let result = await processLateJoin(intent, deps, opts);
+  if (result.unsigned > 0 && refresh) {
+    result = await processLateJoin(intent, await refresh(), opts);
+  }
   return result;
 }
 
@@ -59,6 +69,14 @@ export interface ParkOptions {
   delaySeconds?: number;
   /** Give up this long after the intent was first enqueued. Default 24 h. */
   giveUpMs?: number;
+  /**
+   * G5: wait for the planned fan-out instead of risking a duplicate of it. An alert the planned
+   * fan-out may still carry to the device (latejoin.ts plannedFate) is deferred: the intent goes
+   * back to this queue after `delaySeconds` (default PLAN_WAIT_DELAY_SECONDS), stamped with when
+   * the waiting began; once it has waited `giveUpMs` (default PLAN_WAIT_GIVE_UP_MS) late join
+   * decides without waiting, which sends where in doubt. Absent: no waiting (decide at once).
+   */
+  planWait?: { delaySeconds?: number; giveUpMs?: number };
 }
 
 /**
@@ -80,11 +98,22 @@ export const buildLateJoinHandler =
       try {
         const body: unknown = JSON.parse(record.body);
         if (!isLateJoinIntent(body)) throw new Error('message is not a late-join intent');
+        const nowMs = deps.clock.now().getTime();
+        const waitingSince = waitingSinceMs(body, nowMs);
+        const wait = park?.planWait;
+        const mayWait =
+          wait !== undefined &&
+          (waitingSince === undefined ||
+            nowMs - waitingSince < (wait.giveUpMs ?? PLAN_WAIT_GIVE_UP_MS));
+        if (wait && !mayWait) {
+          deps.logger.warn('latejoin.plan_wait_gave_up', { messageId: record.messageId });
+        }
         // Only the device id (and the advisory reason) is used; see processLateJoin.
         const result = await runIntent(
           { deviceId: body.deviceId, ...(body.reason === 'outbox' ? { reason: 'outbox' } : {}) },
           deps,
           refresh,
+          { waitForPlan: mayWait },
         );
         if (result.refused === 'paused') {
           if (!park) {
@@ -102,6 +131,20 @@ export const buildLateJoinHandler =
             delaySeconds: Math.min(MAX_DELAY_SECONDS, park.delaySeconds ?? MAX_DELAY_SECONDS),
           });
           deps.logger.info('latejoin.parked', { messageId: record.messageId });
+        } else if (result.deferred > 0 && park && wait) {
+          // The alerts sent in this run are 'sent' on their per-target claims, so the re-run
+          // skips them; only the deferred ones are decided again.
+          const again: LateJoinIntent = {
+            ...body,
+            waitingSince: new Date(waitingSince ?? nowMs).toISOString(),
+          };
+          await park.queue.enqueue(again, {
+            delaySeconds: Math.min(MAX_DELAY_SECONDS, wait.delaySeconds ?? PLAN_WAIT_DELAY_SECONDS),
+          });
+          deps.logger.info('latejoin.waiting_for_plan', {
+            messageId: record.messageId,
+            deferred: result.deferred,
+          });
         }
       } catch (err) {
         deps.logger.error('latejoin.record_failed', {
@@ -113,6 +156,12 @@ export const buildLateJoinHandler =
     }
     return { batchItemFailures };
   };
+
+/** When this intent first waited for the planned fan-out (never in the future), if it has. */
+function waitingSinceMs(intent: LateJoinIntent, now: number): number | undefined {
+  const t = intent.waitingSince ? Date.parse(intent.waitingSince) : NaN;
+  return Number.isFinite(t) ? Math.min(t, now) : undefined;
+}
 
 /** When the intent was first enqueued: our own stamp, else SQS's send time, else now. */
 function firstEnqueuedMs(
@@ -182,6 +231,7 @@ function build(env: Record<string, string | undefined>) {
   };
   const park: ParkOptions = {
     queue: new SqsLateJoinQueue(new SQSClient({}), e.LATEJOIN_QUEUE_URL),
+    planWait: {},
   };
   return async (event: SQSEvent) =>
     buildLateJoinHandler(

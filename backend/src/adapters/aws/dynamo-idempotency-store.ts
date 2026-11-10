@@ -7,7 +7,7 @@ import {
   UpdateCommand,
   type DynamoDBDocumentClient,
 } from '@aws-sdk/lib-dynamodb';
-import type { ChunkProgress, Clock, IdempotencyStore } from '../../ports.js';
+import type { ChunkProgress, Clock, IdempotencyStore, KeyInspection } from '../../ports.js';
 
 const DAY_SECONDS = 24 * 60 * 60;
 
@@ -72,6 +72,11 @@ export interface ThrottleRetryOptions {
  * over an expired lease reads the old item back (PutItem ReturnValues ALL_OLD, so no extra read)
  * and writes its progress back onto the new lease; release() of a key with progress ends the
  * lease (leaseUntil 0) instead of deleting the item, so the next claim inherits it too.
+ *
+ * Member sets (G5, scale/fanout/member-set.ts) live in a binary attribute `members`: the sender's
+ * markSent writes the recipients of the batch it sent (in the same UpdateItem, under the same
+ * "never overwrite another attempt's sent" condition); markPlanned writes the shard worker's plan
+ * record with one unconditional PutItem; inspect reads either back with the same GetItem peek does.
  */
 export const encodeChunkProgress = (p: ChunkProgress): string =>
   `${p.set}@${p.chunk}:${p.redo.join(',')}`;
@@ -226,33 +231,50 @@ export class DynamoIdempotencyStore implements IdempotencyStore {
   }
 
   async peek(key: string): Promise<'absent' | 'leased' | 'sent'> {
+    return (await this.inspect(key)).state;
+  }
+
+  async inspect(key: string): Promise<KeyInspection> {
     const { Item } = await this.send(() =>
       this.doc.send(
         new GetCommand({ TableName: this.tableName, Key: { pk: key }, ConsistentRead: true }),
       ),
     );
-    if (!Item) return 'absent';
-    // Same reading of an item as claim(): a lease that ran out unsent is claimable, so absent.
-    // Items without a state were written before leases existed and count as sent.
-    if (Item['state'] === 'leased') {
-      return typeof Item['leaseUntil'] === 'number' &&
-        Item['leaseUntil'] < this.clock.now().getTime()
-        ? 'absent'
-        : 'leased';
-    }
-    return 'sent';
+    const state = stateOf(Item, this.clock.now().getTime());
+    const members: unknown = Item?.['members'];
+    return state === 'sent' && members instanceof Uint8Array ? { state, members } : { state };
   }
 
-  async markSent(key: string, expiresAt: Date): Promise<void> {
+  async markPlanned(key: string, members: Uint8Array | null, expiresAt: Date): Promise<void> {
+    await this.send(() =>
+      this.doc.send(
+        new PutCommand({
+          TableName: this.tableName,
+          Item: {
+            pk: key,
+            state: 'sent',
+            ttl: Math.floor(expiresAt.getTime() / 1000),
+            ...(members ? { members } : {}),
+          },
+        }),
+      ),
+    );
+  }
+
+  async markSent(key: string, expiresAt: Date, detail?: { members?: Uint8Array }): Promise<void> {
     const attemptId = this.attempts.get(key);
     this.attempts.delete(key);
     this.progress.delete(key);
+    const members = detail?.members;
     try {
       await this.doc.send(
         new UpdateCommand({
           TableName: this.tableName,
           Key: { pk: key },
-          UpdateExpression: 'SET #state = :sent, #ttl = :ttl REMOVE leaseUntil',
+          UpdateExpression:
+            'SET #state = :sent, #ttl = :ttl' +
+            (members ? ', members = :members' : '') +
+            ' REMOVE leaseUntil',
           // Don't overwrite a key that a different attempt already marked sent.
           ConditionExpression:
             'attribute_not_exists(pk) OR #state <> :sent' +
@@ -262,6 +284,7 @@ export class DynamoIdempotencyStore implements IdempotencyStore {
             ':sent': 'sent',
             ':ttl': Math.floor(expiresAt.getTime() / 1000),
             ...(attemptId ? { ':attempt': attemptId } : {}),
+            ...(members ? { ':members': members } : {}),
           },
         }),
       );
@@ -330,4 +353,21 @@ export class DynamoIdempotencyStore implements IdempotencyStore {
       return false;
     }
   }
+}
+
+/**
+ * The same reading of an item as claim(): a lease that ran out unsent is claimable, so absent.
+ * Items without a state were written before leases existed and count as sent.
+ */
+function stateOf(
+  item: Record<string, unknown> | undefined,
+  nowMs: number,
+): 'absent' | 'leased' | 'sent' {
+  if (!item) return 'absent';
+  if (item['state'] === 'leased') {
+    return typeof item['leaseUntil'] === 'number' && item['leaseUntil'] < nowMs
+      ? 'absent'
+      : 'leased';
+  }
+  return 'sent';
 }

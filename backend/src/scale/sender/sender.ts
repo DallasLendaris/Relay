@@ -19,7 +19,7 @@
  *      with a delay: exponential with full jitter, never shorter than the largest Retry-After.
  *      There is no attempt cap; a retry is dropped (counted as GaveUp) once it would run after
  *      the alert ends or more than 30 minutes after the batch was first processed.
- *   5. markSent(batchKey)
+ *   5. markSent(batchKey), with the batch's recipients as a member set (G5, sentDetail)
  *   6. only now, hand dead targets to the gate (dead-target-gate.ts): it holds them until the
  *      breaker has seen enough results, then queues them for cleanup, or (breaker open)
  *      re-queues them as a retry batch `${batchKey}:h${attempt + 1}` (see retryKey and
@@ -56,11 +56,36 @@ import {
   type SendQueue,
 } from '../contracts.js';
 import { errorFields } from '../../delivery/redact.js';
+import { encodeMemberSet, SENT_HASH_BYTES } from '../fanout/member-set.js';
 import { publicAlertDocUrl } from '../publish/paths.js';
 import { PermanentBreaker, platformKeyOf, type BreakerVerdict } from './breaker.js';
 import { DeadTargetGate, type DeadTargetGateOptions, type HeldGroup } from './dead-target-gate.js';
 import { DeadTargetQueue } from './dead-target-queue.js';
 import { consoleMetricWriter, emfLine, type MetricWriter } from './metrics.js';
+
+/**
+ * markSent's detail for a planned batch: the member set of its recipients (every recipient the
+ * batch carried, whatever its push result: a failed one is retried under another key, a dead one
+ * would fail from late join too). Undefined for retries and late-join batches, and over the cap.
+ */
+export function sentDetail(
+  batch: Pick<SendBatch, 'batchKey' | 'attempt' | 'recipients'>,
+  logger: Logger,
+): { members: Uint8Array } | undefined {
+  if (batch.attempt !== 0 || batch.batchKey.includes(':late:')) return undefined;
+  const members = encodeMemberSet(
+    batch.recipients.map((r) => r.deviceId),
+    SENT_HASH_BYTES,
+  );
+  if (!members) {
+    logger.warn('sender.member_set_over_cap', {
+      batchKey: batch.batchKey,
+      recipients: batch.recipients.length,
+    });
+    return undefined;
+  }
+  return { members };
+}
 
 /** How long a claim holds. Must outlast a slow batch; the consumer extends it while the batch runs. */
 export const SENDER_LEASE_MS = 45_000;
@@ -799,9 +824,14 @@ export async function processBatch(
 
     // Only now is the batch finished for good. If this fails the pushes already went out;
     // ack anyway (failing the message would re-send once the lease runs out).
-    await idempotency.markSent(batch.batchKey, claimExpiry(alert)).catch((err: unknown) => {
-      logger.error('sender.mark_sent_failed', { batchKey: batch.batchKey, ...errorFields(err) });
-    });
+    // A planned batch also records whom it carried (G5), so late join can tell whether a device that
+    // registered during the fan-out was in it (latejoin.ts). Retries and late-join batches are
+    // never asked about.
+    await idempotency
+      .markSent(batch.batchKey, claimExpiry(alert), sentDetail(batch, logger))
+      .catch((err: unknown) => {
+        logger.error('sender.mark_sent_failed', { batchKey: batch.batchKey, ...errorFields(err) });
+      });
 
     // Cleanup comes after markSent and is asynchronous: submit is synchronous and cheap. The
     // gate holds every clear for a short delay and re-checks the target's platform before it

@@ -220,8 +220,24 @@ export interface IdempotencyStore {
    * attempt holds a live lease.
    */
   claim(key: string, leaseUntil: Date): Promise<'claimed' | 'sent' | 'leased'>;
-  /** Record that the push went out. The key is remembered until `expiresAt`. */
-  markSent(key: string, expiresAt: Date): Promise<void>;
+  /**
+   * Record that the push went out. The key is remembered until `expiresAt`. `detail.members`
+   * (scale sender, G5): the member set (scale/fanout/member-set.ts) of the recipients this batch
+   * sent, stored on the item for late join; like the state, it is never overwritten by another
+   * attempt once the key is sent.
+   */
+  markSent(key: string, expiresAt: Date, detail?: { members?: Uint8Array }): Promise<void>;
+  /**
+   * The shard worker's per-cell (or per dense part) plan record (G5): marks `key` sent and stores
+   * the planned recipients' member set, replacing any earlier record of the key (a later plan's
+   * read is newer). `members` null: the set was over MAX_SET_BYTES and is not stored.
+   */
+  markPlanned?(key: string, members: Uint8Array | null, expiresAt: Date): Promise<void>;
+  /**
+   * peek() plus the stored member set, in the same single read: `members` is undefined when the
+   * item has none (absent, leased, written by an older version, or over the size cap).
+   */
+  inspect?(key: string): Promise<KeyInspection>;
   /** Give a claim back after a retryable failure, so the next attempt can send. */
   release(key: string): Promise<void>;
   /**
@@ -251,6 +267,12 @@ export interface IdempotencyStore {
    * out: a recipient is done if any entry leaves it out of `redo`.
    */
   claimedProgress?(key: string): Promise<ChunkProgress[]>;
+}
+
+/** What IdempotencyStore.inspect returns. */
+export interface KeyInspection {
+  state: 'absent' | 'leased' | 'sent';
+  members?: Uint8Array;
 }
 
 /** One finished sub-chunk: offsets (within the chunk) that still need sending. See recordChunk. */

@@ -27,6 +27,15 @@ export const denseCellKey = (alert: AlertKey, h3Cell: string): string =>
   `${alert.id}:${alert.relaySeverity}:${h3Cell}:dense`;
 
 /**
+ * The shard worker's record that it has decided a cell's batches for this alert version (G5): a
+ * normal cell has one, `...:${h3Cell}:plan`; a dense cell one per part, `...:${h3Cell}:plan.${part}`.
+ * It carries the planned recipients as a member set (member-set.ts), so late join knows whether
+ * the planned read can still include a device (no record yet) or did not (not in the set).
+ */
+export const planMarkerKey = (alert: AlertKey, h3Cell: string, part?: number): string =>
+  `${alert.id}:${alert.relaySeverity}:${h3Cell}:plan${part === undefined ? '' : `.${part}`}`;
+
+/**
  * Marks that the batch with this key was over the byte budget and went out as `<key>:s<path>`
  * pieces (pack.ts splitToFit), so the key itself is never claimed. The shard worker writes it
  * before the pieces are enqueued.

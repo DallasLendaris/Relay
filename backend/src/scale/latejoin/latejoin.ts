@@ -2,7 +2,14 @@ import { createHash } from 'node:crypto';
 import type { Alert } from '@relay/shared';
 import { alertEndTime, claimExpiry, refusalFor } from '../../delivery/eligibility.js';
 import type { Logger } from '../../delivery/types.js';
-import type { AlertStore, Clock, DeviceStore, IdempotencyStore, PlaceStore } from '../../ports.js';
+import type {
+  AlertStore,
+  Clock,
+  DeviceStore,
+  IdempotencyStore,
+  KeyInspection,
+  PlaceStore,
+} from '../../ports.js';
 import { targetOf } from '../cell-index/util.js';
 import {
   QUEUE_FOR_SEVERITY,
@@ -10,7 +17,9 @@ import {
   type SendBatch,
   type SendQueue,
 } from '../contracts.js';
-import { plannedKeyFor } from '../fanout/keys.js';
+import { bucketFor, densePartFor } from '../fanout/hash.js';
+import { bucketKey, planMarkerKey, plannedKeyFor } from '../fanout/keys.js';
+import { hasMember, PLAN_HASH_BYTES, SENT_HASH_BYTES } from '../fanout/member-set.js';
 import { primaryCellOf } from '../fanout/primary-cell.js';
 import { pushTargetHash, type PushTargetMeta } from './push-target-rules.js';
 
@@ -51,6 +60,12 @@ export interface LateJoinResult {
   sent: number;
   /** Alerts skipped because their signature did not verify (the caller may refresh keys). */
   unsigned: number;
+  /**
+   * Alerts held back because the planned fan-out may still carry this device (G5): its cell is not
+   * planned yet, or its planned batch includes it and is not sent yet. Only with `waitForPlan`;
+   * the caller re-runs the intent shortly (claims make the re-run safe for the alerts sent now).
+   */
+  deferred: number;
   skipped: {
     noTarget: number;
     noPlaces: number;
@@ -65,6 +80,7 @@ export interface LateJoinResult {
 const emptyResult = (): LateJoinResult => ({
   sent: 0,
   unsigned: 0,
+  deferred: 0,
   skipped: {
     noTarget: 0,
     noPlaces: 0,
@@ -88,12 +104,13 @@ const emptyResult = (): LateJoinResult => ({
  * For each active, signed alert over the device's cells:
  *   1. Primary-cell rule (same as the shard worker): the device is sent from the smallest of its
  *      cells in the alert area; its other cells add nothing.
- *   2. REL-12: skip when the planned fan-out already covered this device. Its (cell, bucket)
- *      batch key (fanout helpers) is claimed AND the device's place and push target both predate
- *      the alert (`alert.sent`, which is never later than the planner's read). A device that
- *      registered after the alert was sent can be missing from an already-sent batch, so it is
- *      NOT skipped: a duplicate push (same collapse key) is better than a missed one. The same
- *      holds for an intent with `reason: 'outbox'` (the drainer indexed the device late).
+ *   2. REL-12 / G5: skip exactly when the planned fan-out carries this device (plannedFate below):
+ *      the sender's record of the device's planned batch says whether the batch it SENT held the
+ *      device; before that exists, the shard worker's plan record of the cell says whether the
+ *      planned read could have included it. While that is open (cell not planned yet, or the
+ *      device is in a planned batch not yet sent) the alert is deferred, with `waitForPlan`, and
+ *      the caller re-runs the intent; the wait is bounded by the caller, after which the device is
+ *      sent (a duplicate push, same collapse key, is better than a missed one).
  *   3. SEC-A-1: claim `${alertId}:pt:${sha256(platform+token)}`. One check-in token per physical
  *      push target per alert, however many device identities the phone made. 'sent' = skip.
  *   4. Rate limit: 5 sends per push target per hour (slots in the same table).
@@ -103,6 +120,7 @@ const emptyResult = (): LateJoinResult => ({
 export async function processLateJoin(
   intent: { deviceId: string; reason?: string },
   deps: LateJoinDeps,
+  opts: LateJoinOptions = {},
 ): Promise<LateJoinResult> {
   const result = emptyResult();
   if (await deps.isDeliveryPaused()) return { ...result, refused: 'paused' };
@@ -145,14 +163,17 @@ export async function processLateJoin(
     const h3Cell = primaryCellOf(deviceCells, areaCells);
     if (h3Cell === undefined) continue; // not in this alert's area (the store matches loosely)
 
-    // An 'outbox' intent means the index learned of this device late (the API's write-through
-    // failed and the drainer redid it), so the fan-out may not have seen it even though its
-    // place predates the alert: no skip. The per-target claim below still stops a duplicate.
-    if (
-      intent.reason !== 'outbox' &&
-      (await wasPlanned(alert, h3Cell, device.id, places, meta, deps.idempotency))
-    ) {
+    const fate = await plannedFate(
+      { alert, h3Cell, deviceId: device.id, places, meta, reason: intent.reason },
+      deps.idempotency,
+      opts.waitForPlan === true,
+    );
+    if (fate === 'planned') {
       result.skipped.planned++;
+      continue;
+    }
+    if (fate === 'wait') {
+      result.deferred++;
       continue;
     }
 
@@ -164,28 +185,112 @@ export async function processLateJoin(
   return result;
 }
 
-/** True when the planned fan-out demonstrably covered this device for this alert (REL-12). */
-async function wasPlanned(
-  alert: Alert,
-  h3Cell: string,
-  deviceId: string,
-  places: ReadonlyArray<{ h3Cell: string; createdAt: string }>,
-  meta: PushTargetMeta | null,
-  idempotency: Required<Pick<IdempotencyStore, 'peek'>>,
-): Promise<boolean> {
-  const sent = Date.parse(alert.sent);
+export interface LateJoinOptions {
+  /**
+   * Defer (result.deferred) an alert whose planned fan-out may still carry the device, instead of
+   * deciding now. The handler sets it while the intent has waited less than PLAN_WAIT_GIVE_UP_MS.
+   * Off: decide now, failing toward a send (the REL-12 timestamp rule where nothing exact is known).
+   */
+  waitForPlan?: boolean;
+}
+
+/**
+ * Whether the planned fan-out carries this device for this alert (G5): 'planned' (skip), 'send'
+ * (late join must), or 'wait' (not knowable yet; only when `mayWait`).
+ *
+ * K is the device's planned batch key: its (cell, bucket), or its dense part when the bucket key
+ * is a dense tombstone (plannedKeyFor). The sender records K's recipients when it marks K sent
+ * (SENT set, exact); the shard worker records, per cell (per part when dense), every recipient it
+ * put in batches once they are decided (PLAN set; written even when empty).
+ *   - K sent with a SENT set: in it = 'planned', else 'send'. Exact whichever plan's K was sent.
+ *   - K not sent (absent or leased), PLAN record present, device not in the PLAN set: no planned
+ *     batch holds the device (its read came before the registration) = 'send', no waiting.
+ *   - K not sent, device in the PLAN set (it registered during the read, or long before): K is
+ *     queued or being sent and only its SENT set will say whether the sent K holds it (a re-plan
+ *     can put two versions of K in the queue) = 'wait'.
+ *   - No PLAN record: the shard worker has not finished this cell, and its read may include the
+ *     device = 'wait'.
+ * Without exact data (an older sender or store, a split batch, a set over its size cap, or the
+ * wait given up) it falls back to REL-12: skip only when K is sent or leased AND the device's
+ * place and push target both predate `alert.sent` (never later than the planner's read) and the
+ * intent is not 'outbox' (the drainer indexed the device late); otherwise send.
+ *
+ * Reads, all strongly consistent GetItems on the idempotency table and never claims (a claim to
+ * probe would make the real sender see 'leased'): plannedKeyFor's 2 (normal key and its split or
+ * dense marker; 3-4 in a dense cell), plus the plan record when K is not sent.
+ */
+async function plannedFate(
+  c: {
+    alert: Alert;
+    h3Cell: string;
+    deviceId: string;
+    places: ReadonlyArray<{ h3Cell: string; createdAt: string }>;
+    meta: PushTargetMeta | null;
+    reason: string | undefined;
+  },
+  idempotency: Required<Pick<IdempotencyStore, 'peek'>> & Pick<IdempotencyStore, 'inspect'>,
+  mayWait: boolean,
+): Promise<'planned' | 'send' | 'wait'> {
+  const { alert, h3Cell, deviceId } = c;
+  const predates = c.reason !== 'outbox' && predatesAlert(c);
+  const store = idempotency.inspect?.bind(idempotency);
+  if (!store) {
+    // An older store: only the REL-12 rule (and only predating devices need the probe).
+    if (!predates) return 'send';
+    const { state } = await plannedKeyFor(alert, h3Cell, deviceId, (k) => idempotency.peek(k));
+    return state !== 'absent' ? 'planned' : 'send';
+  }
+  const seen = new Map<string, KeyInspection>();
+  const inspect = async (key: string): Promise<KeyInspection> => {
+    let got = seen.get(key);
+    if (!got) seen.set(key, (got = await store(key)));
+    return got;
+  };
+  const { key, state } = await plannedKeyFor(
+    alert,
+    h3Cell,
+    deviceId,
+    async (k) => (await inspect(k)).state,
+  );
+  const part =
+    key === bucketKey(alert, h3Cell, bucketFor(deviceId)) ? undefined : densePartFor(deviceId);
+  // True only when a plan record exists, has its set, and the device is not in it.
+  const notInPlan = async (): Promise<boolean> => {
+    const plan = await inspect(planMarkerKey(alert, h3Cell, part));
+    return (
+      plan.state === 'sent' &&
+      plan.members !== undefined &&
+      !hasMember(plan.members, deviceId, PLAN_HASH_BYTES)
+    );
+  };
+
+  if (state === 'sent') {
+    const sentSet = seen.get(key)?.members;
+    if (sentSet) return hasMember(sentSet, deviceId, SENT_HASH_BYTES) ? 'planned' : 'send';
+    // No exact record of the sent batch: REL-12, except that a device no plan put in a batch
+    // still gets its push.
+    return predates && !(await notInPlan()) ? 'planned' : 'send';
+  }
+  if (await notInPlan()) return 'send';
+  // The cell is not planned yet, or the device is in a planned batch that is not sent yet.
+  if (mayWait) return 'wait';
+  return state === 'leased' && predates ? 'planned' : 'send';
+}
+
+/** REL-12: the device's place in this cell and its push target both predate the alert. */
+function predatesAlert(c: {
+  alert: Alert;
+  h3Cell: string;
+  places: ReadonlyArray<{ h3Cell: string; createdAt: string }>;
+  meta: PushTargetMeta | null;
+}): boolean {
+  const sent = Date.parse(c.alert.sent);
   const placeAt = Math.min(
-    ...places.filter((p) => p.h3Cell === h3Cell).map((p) => Date.parse(p.createdAt)),
+    ...c.places.filter((p) => p.h3Cell === c.h3Cell).map((p) => Date.parse(p.createdAt)),
   );
   // Unknown times (no meta, unparseable) never count as planned: fail toward a duplicate.
-  if (!meta || !Number.isFinite(sent) || !Number.isFinite(placeAt)) return false;
-  if (!(placeAt < sent && meta.changedAt.getTime() < sent)) return false;
-
-  // The key the shard worker used for this device: its (cell, bucket), or in a dense cell (whose
-  // bucket key is a tombstone) its dense part. Pure reads: claiming to probe would make the real
-  // sender see 'leased' and delay an urgent batch.
-  const { state } = await plannedKeyFor(alert, h3Cell, deviceId, (k) => idempotency.peek(k));
-  return state !== 'absent'; // 'sent' or 'leased': planned
+  if (!c.meta || !Number.isFinite(sent) || !Number.isFinite(placeAt)) return false;
+  return placeAt < sent && c.meta.changedAt.getTime() < sent;
 }
 
 async function sendOne(
