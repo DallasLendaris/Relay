@@ -7,6 +7,8 @@ import { t4Databases } from './t4-databases/index.js';
 import { t5Chaos } from './t5-chaos/index.js';
 import { t6Ingest } from './t6-ingest/index.js';
 import { t7Soak } from './t7-soak/index.js';
+import { t8 } from './t8-concurrent/index.js';
+import { t9 } from './t9-surge/index.js';
 
 // prettier-ignore
 export const SUITE_TESTS: SuiteTest[] = [
@@ -17,4 +19,6 @@ export const SUITE_TESTS: SuiteTest[] = [
   t5Chaos,
   t6Ingest,
   t7Soak,
+  t8,
+  t9,
 ];
