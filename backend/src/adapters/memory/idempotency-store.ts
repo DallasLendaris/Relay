@@ -10,6 +10,8 @@ interface Entry {
   progress?: ChunkProgress[];
   /** Member set stored by markSent's detail or markPlanned (G5). */
   members?: Uint8Array;
+  /** A plan record's (device, target) set, kept only while one plan wrote the key (G5b). */
+  targets?: Uint8Array;
 }
 
 /**
@@ -66,22 +68,34 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
     });
   }
 
-  async markPlanned(key: string, members: Uint8Array | null, expiresAt: Date): Promise<void> {
-    // Unconditional, like the DynamoDB PutItem: a later plan's record replaces an earlier one.
+  async markPlanned(
+    key: string,
+    members: Uint8Array | null,
+    expiresAt: Date,
+    detail?: { targets?: Uint8Array },
+  ): Promise<void> {
+    // Like the DynamoDB store: a later plan's record replaces an earlier one, and the target set
+    // is kept only when no record of the key existed (any stored item, expired or not, counts).
+    const first = !this.entries.has(key);
+    const targets = first ? detail?.targets : undefined;
     this.entries.set(key, {
       state: 'sent',
       until: expiresAt.getTime(),
       attempt: 0,
       ...(members ? { members: new Uint8Array(members) } : {}),
+      ...(targets ? { targets: new Uint8Array(targets) } : {}),
     });
   }
 
   async inspect(key: string): Promise<KeyInspection> {
     const e = this.live(key);
     if (!e) return { state: 'absent' };
-    return e.state === 'sent' && e.members
-      ? { state: 'sent', members: new Uint8Array(e.members) }
-      : { state: e.state };
+    if (e.state !== 'sent') return { state: e.state };
+    return {
+      state: 'sent',
+      ...(e.members ? { members: new Uint8Array(e.members) } : {}),
+      ...(e.targets ? { targets: new Uint8Array(e.targets) } : {}),
+    };
   }
 
   async release(key: string): Promise<void> {

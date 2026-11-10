@@ -19,7 +19,13 @@ import {
 } from '../contracts.js';
 import { bucketFor, densePartFor } from '../fanout/hash.js';
 import { bucketKey, planMarkerKey, plannedKeyFor } from '../fanout/keys.js';
-import { hasMember, PLAN_HASH_BYTES, SENT_HASH_BYTES } from '../fanout/member-set.js';
+import {
+  hasMember,
+  PLAN_HASH_BYTES,
+  SENT_HASH_BYTES,
+  TARGET_HASH_BYTES,
+  targetMemberOf,
+} from '../fanout/member-set.js';
 import { primaryCellOf } from '../fanout/primary-cell.js';
 import { pushTargetHash, type PushTargetMeta } from './push-target-rules.js';
 
@@ -164,7 +170,7 @@ export async function processLateJoin(
     if (h3Cell === undefined) continue; // not in this alert's area (the store matches loosely)
 
     const fate = await plannedFate(
-      { alert, h3Cell, deviceId: device.id, places, meta, reason: intent.reason },
+      { alert, h3Cell, deviceId: device.id, target, places, meta, reason: intent.reason },
       deps.idempotency,
       opts.waitForPlan === true,
     );
@@ -202,7 +208,11 @@ export interface LateJoinOptions {
  * is a dense tombstone (plannedKeyFor). The sender records K's recipients when it marks K sent
  * (SENT set, exact); the shard worker records, per cell (per part when dense), every recipient it
  * put in batches once they are decided (PLAN set; written even when empty).
- *   - K sent with a SENT set: in it = 'planned', else 'send'. Exact whichever plan's K was sent.
+ *   - K sent with a SENT set: not in it = 'send'. In it = 'planned' only when the batch pushed
+ *     the device's CURRENT target (G5b): the plan record's target set holds (device, target), or,
+ *     without a target set, the target predates the alert (REL-12). Else 'send' (a token rotated
+ *     after the read: the batch pushed the old, possibly dead, token).
+ *   - K not sent, device in the PLAN set but its target set holds it under another target = 'send'.
  *   - K not sent (absent or leased), PLAN record present, device not in the PLAN set: no planned
  *     batch holds the device (its read came before the registration) = 'send', no waiting.
  *   - K not sent, device in the PLAN set (it registered during the read, or long before): K is
@@ -217,13 +227,15 @@ export interface LateJoinOptions {
  *
  * Reads, all strongly consistent GetItems on the idempotency table and never claims (a claim to
  * probe would make the real sender see 'leased'): plannedKeyFor's 2 (normal key and its split or
- * dense marker; 3-4 in a dense cell), plus the plan record when K is not sent.
+ * dense marker; 3-4 in a dense cell), plus the plan record when K is not sent or holds the device.
  */
 async function plannedFate(
   c: {
     alert: Alert;
     h3Cell: string;
     deviceId: string;
+    /** The device's CURRENT push target (Aurora). */
+    target: PushTarget;
     places: ReadonlyArray<{ h3Cell: string; createdAt: string }>;
     meta: PushTargetMeta | null;
     reason: string | undefined;
@@ -254,24 +266,47 @@ async function plannedFate(
   );
   const part =
     key === bucketKey(alert, h3Cell, bucketFor(deviceId)) ? undefined : densePartFor(deviceId);
+  const planKey = planMarkerKey(alert, h3Cell, part);
   // True only when a plan record exists, has its set, and the device is not in it.
   const notInPlan = async (): Promise<boolean> => {
-    const plan = await inspect(planMarkerKey(alert, h3Cell, part));
+    const plan = await inspect(planKey);
     return (
       plan.state === 'sent' &&
       plan.members !== undefined &&
       !hasMember(plan.members, deviceId, PLAN_HASH_BYTES)
     );
   };
+  /**
+   * G5b: whether the plan carried the device with its CURRENT target. 'yes'/'no' from the plan
+   * record's target set (present only when exactly one plan wrote the key, before enqueueing it,
+   * so a sent K is that plan's); 'unknown' without it. A device whose token changed after the read
+   * (an app reinstall: the old token is dead) is 'no', so late join pushes the new token.
+   */
+  const carriedTarget = async (): Promise<'yes' | 'no' | 'unknown'> => {
+    const plan = await inspect(planKey);
+    if (plan.state !== 'sent' || !plan.targets) return 'unknown';
+    return hasMember(plan.targets, targetMemberOf(deviceId, c.target), TARGET_HASH_BYTES)
+      ? 'yes'
+      : 'no';
+  };
 
   if (state === 'sent') {
     const sentSet = seen.get(key)?.members;
-    if (sentSet) return hasMember(sentSet, deviceId, SENT_HASH_BYTES) ? 'planned' : 'send';
+    if (sentSet) {
+      // The sent set names devices, not targets: a device in it is skipped only when the batch
+      // pushed its current target (target set), or, without one, when that target predates the
+      // alert and so every plan's read (REL-12). Otherwise send: at worst a duplicate.
+      if (!hasMember(sentSet, deviceId, SENT_HASH_BYTES)) return 'send';
+      const carried = await carriedTarget();
+      return carried === 'yes' || (carried === 'unknown' && predates) ? 'planned' : 'send';
+    }
     // No exact record of the sent batch: REL-12, except that a device no plan put in a batch
     // still gets its push.
     return predates && !(await notInPlan()) ? 'planned' : 'send';
   }
   if (await notInPlan()) return 'send';
+  // In the plan, but with an older target (G5b): its batch pushes that one. Send now.
+  if ((await carriedTarget()) === 'no') return 'send';
   // The cell is not planned yet, or the device is in a planned batch that is not sent yet.
   if (mayWait) return 'wait';
   return state === 'leased' && predates ? 'planned' : 'send';

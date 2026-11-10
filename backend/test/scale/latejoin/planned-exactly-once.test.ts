@@ -319,6 +319,7 @@ describe('G5: a device registering during an active fan-out gets exactly one pus
     expect(await w.h.idempotency.inspect(planMarkerKey(w.alert, SJ_CELL))).toEqual({
       state: 'sent',
       members: new Uint8Array(0),
+      targets: new Uint8Array(0),
     });
     const d = await w.register();
     await w.settle();

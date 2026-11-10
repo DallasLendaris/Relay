@@ -13,18 +13,19 @@
  *      the rest, so a crashed sender duplicates at most the chunks it had in flight. Progress is
  *      bound to the exact recipient list (recipientFingerprint): a re-plan under the same key
  *      with other recipients ignores it and sends everything (a duplicate, never a miss).
- *   4. classify results. Permanent failures are dead targets, unless the circuit breaker is
- *      open (see breaker.ts), in which case they are retried and nothing is cleared. Retryable
- *      failures are re-queued as a NEW batch (`${base}:r${attempt + 1}`, only those recipients)
+ *   4. classify results. Permanent failures are dead targets, unless a breaker is open (see
+ *      breaker.ts), in which case nothing is cleared and those permanents are re-checked as
+ *      `${batchKey}:v${attempt + 1}` (a re-check batch: its results are never breaker evidence,
+ *      see carriesEvidence). Retryable failures are re-queued as a NEW batch (`${base}:r${attempt + 1}`, only those recipients)
  *      with a delay: exponential with full jitter, never shorter than the largest Retry-After.
  *      There is no attempt cap; a retry is dropped (counted as GaveUp) once it would run after
  *      the alert ends or more than 30 minutes after the batch was first processed.
  *   5. markSent(batchKey), with the batch's recipients as a member set (G5, sentDetail)
- *   6. only now, hand dead targets to the gate (dead-target-gate.ts): it holds them until the
- *      breaker has seen enough results, then queues them for cleanup, or (breaker open)
- *      re-queues them as a retry batch `${batchKey}:h${attempt + 1}` (see retryKey and
- *      heldRetryKey: all derived keys are distinct). Cleanup is asynchronous (dead-target-queue.ts) and never delays sending or extends
- *      a batch past its lease.
+ *   6. only now, hand dead targets to the gate (dead-target-gate.ts): it holds them 30 s, then
+ *      queues them for cleanup, or (platform systemic meanwhile) re-queues them as the re-check
+ *      batch `${batchKey}:h${attempt + 1}` (see retryKey, heldRetryKey and recheckKey: all
+ *      derived keys are distinct). Cleanup is asynchronous
+ *      (dead-target-queue.ts) and never delays sending or extends a batch past its lease.
  *
  * Accepted trade-offs, all of which can mean ONE duplicate push to recipients in chunks that had
  * already been sent but not yet recorded (in flight, or a single-chunk batch). Both pushes share
@@ -400,26 +401,46 @@ function gateFor(deps: SenderDeps): Pick<DeadTargetGate, 'submit'> {
 }
 
 /*
- * Derived batch keys. Every batch can spawn two children, both at attempt + 1:
- *   retry  R(K) = baseBatchKey(K) + `:r<attempt+1>`  (its failed recipients; the existing scheme)
- *   held   H(K) = K + `:h<attempt+1>`               (recipients the dead-target gate held)
+ * Derived batch keys. Every batch can spawn three children, all at attempt + 1:
+ *   retry    R(K) = baseBatchKey(K) + `:r<attempt+1>`  (its failed recipients; the existing scheme)
+ *   held     H(K) = K + `:h<attempt+1>`  (recipients the dead-target gate held, then re-queued)
+ *   re-check V(K) = K + `:v<attempt+1>`  (permanents the sender itself found suspicious)
  * They are distinct by construction:
- *   - R(K) ends in `:r<n>` and H(K) in `:h<n>`, so a retry key never equals a held key;
- *   - H keeps all of K, so H(K1) = H(K2) only if K1 = K2;
+ *   - R(K), H(K) and V(K) end in `:r<n>`, `:h<n>` and `:v<n>`, so no two kinds are ever equal;
+ *   - H and V keep all of K, so H(K1) = H(K2) (or V(K1) = V(K2)) only if K1 = K2;
  *   - R strips only a trailing `:r<n>`, so R(K1) = R(K2) needs K1 and K2 in one lineage L (L, or
  *     L:r<n>) and at the same attempt. Within a lineage the attempt identifies the key: L itself
- *     is a planned key (attempt 0) or ends in `:h<a>` (attempt a), and L:r<n> is at attempt n > a.
- * Nothing ever strips or rewrites an `:h<n>` segment. test/scale/sender/derived-keys.test.ts
- * checks this on random derivation chains.
+ *     is a planned key (attempt 0) or ends in `:h<a>` or `:v<a>` (attempt a), and L:r<n> is at
+ *     attempt n > a.
+ * One processing of K derives each kind at most once. Nothing ever strips or rewrites an
+ * `:h<n>` or `:v<n>` segment. test/scale/sender/derived-keys.test.ts checks this on random
+ * derivation chains.
  */
 
 /** Key of the retry of a batch's failed recipients. */
-export const retryKey = (batch: SendBatch): string =>
+export const retryKey = (batch: Pick<SendBatch, 'batchKey' | 'attempt'>): string =>
   `${baseBatchKey(batch.batchKey)}:r${batch.attempt + 1}`;
 
 /** Key of the re-queue of a batch's held recipients (see the derivation comment above). */
 export const heldRetryKey = (batch: Pick<SendBatch, 'batchKey' | 'attempt'>): string =>
   `${batch.batchKey}:h${batch.attempt + 1}`;
+
+/** Key of the re-check of a batch's suspicious permanents (see the derivation comment above). */
+export const recheckKey = (batch: Pick<SendBatch, 'batchKey' | 'attempt'>): string =>
+  `${batch.batchKey}:v${batch.attempt + 1}`;
+
+/**
+ * A re-check batch: a held re-queue (`:h<n>`), a sender re-check (`:v<n>`), or any retry or
+ * re-check descended from one (`K:h1:r2`, `K:v1:v2`). Its recipients were all answered
+ * permanent once, while a breaker said their platform looked misconfigured, so its results are
+ * selection-biased (about 100% permanent when the tokens really are dead) and are NOT evidence:
+ * they never feed the breakers (breaker.ts). Only the trailing chain of derived segments is
+ * looked at, so a planned key is never mistaken for one: planned keys end in a bucket number, a
+ * dense part, a hex late-join hash or a split path (`:s<0|1...>`), never in `:r<n>`, `:h<n>` or
+ * `:v<n>`.
+ */
+const RECHECK_SUFFIX = /:[hv]\d+(?::[rhv]\d+)*$/;
+export const carriesEvidence = (batchKey: string): boolean => !RECHECK_SUFFIX.test(batchKey);
 
 const REQUEUE_TRIES = 3;
 
@@ -678,6 +699,16 @@ export async function processBatch(
         });
       }
     }
+    // Per platform key, where this batch's evidence starts (HeldGroup.since): taken before
+    // sending, and including the platform's state right now, so a systemic stretch that begins,
+    // or is already under way, while this batch is in flight still keeps its clears held.
+    const breaker = breakerFor(deps);
+    const platforms = breaker.platforms;
+    const since: Record<string, number> = {};
+    for (const rec of batch.recipients) {
+      const key = platformKeyOf(rec.target);
+      since[key] ??= platforms.seq(key);
+    }
     const results = await sendAll(messages, deps, batch.batchKey, control, done, set);
 
     // The lease went away or shutdown began while sending: settle nothing.
@@ -719,49 +750,50 @@ export async function processBatch(
     });
 
     // Circuit breaker: when permanent failures look systemic (wrong bundle id, sandbox/prod
-    // mismatch) do not clear anyone; treat them as retryable. Message-scoped failures are not
-    // evidence about tokens, so they stay out of the rate.
+    // mismatch) do not clear anyone; re-check them instead (`suspect`, below). Message-scoped
+    // failures are not evidence about tokens, so they stay out of the rate. A re-check batch's
+    // results are not evidence at all (carriesEvidence): it records nothing and is judged by the
+    // rolling rate fresh traffic left.
+    const evidence = carriesEvidence(batch.batchKey);
     let dead = permanent;
+    let suspect: SendBatch['recipients'] = [];
     let verdict: BreakerVerdict | undefined;
-    if (settled.length > 0) {
-      verdict = breakerFor(deps).record(settled.length - messageFailed - resumed, permanent.length);
-      if (verdict.open && permanent.length > 0) {
-        logger.error('delivery.permanent_breaker_open', {
-          alertId: alert.id,
-          batchKey: batch.batchKey,
-          reason: verdict.reason,
-          permanent: permanent.length,
-          total: settled.length,
-          batchRate: Number(verdict.batchRate.toFixed(4)),
-          rollingRate: Number(verdict.rollingRate.toFixed(4)),
-          errors: topErrors(settled),
-        });
-        write(emfLine('PermanentBreakerOpen', 1, deps.clock.now().getTime()));
-        failed.push(...permanent);
-        dead = [];
-      }
+    if (evidence && settled.length > 0) {
+      verdict = breaker.record(settled.length - messageFailed - resumed, permanent.length);
     }
-    // Per-platform breaker (breaker.ts PlatformWindows): every token result counts toward its
-    // platform's windows; permanents of a platform that now looks misconfigured are retried, not
-    // treated as dead. This catches a single platform (an APNs key, one FCM project) that the
-    // process-wide rules dilute, and an onset in small batches.
-    const platforms = breakerFor(deps).platforms;
-    const since: Record<string, number> = {};
-    for (const rec of batch.recipients) {
-      const key = platformKeyOf(rec.target);
-      since[key] ??= platforms.seq(key) + 1;
+    const globalOpen = evidence ? verdict?.open === true : breaker.rollingOpen;
+    if (globalOpen && permanent.length > 0) {
+      logger.error('delivery.permanent_breaker_open', {
+        alertId: alert.id,
+        batchKey: batch.batchKey,
+        reason: verdict?.reason ?? 'rolling_rate',
+        permanent: permanent.length,
+        total: settled.length,
+        ...(verdict ? { batchRate: Number(verdict.batchRate.toFixed(4)) } : {}),
+        rollingRate: Number(breaker.rollingRate.toFixed(4)),
+        errors: topErrors(settled),
+      });
+      write(emfLine('PermanentBreakerOpen', 1, deps.clock.now().getTime()));
+      suspect = permanent;
+      dead = [];
     }
-    settled.forEach((r, i) => {
-      const rec = batch.recipients[i];
-      if (
-        !rec ||
-        r === ALREADY_SENT ||
-        (!r.ok && r.kind === 'permanent' && r.scope === 'message')
-      ) {
-        return;
-      }
-      platforms.record(platformKeyOf(rec.target), !r.ok && r.kind === 'permanent');
-    });
+    // Per-platform breaker (breaker.ts PlatformWindows): every fresh token result counts toward
+    // its platform's windows; permanents of a platform that now looks misconfigured are
+    // re-checked, not treated as dead. This catches a single platform (an APNs key, one FCM
+    // project) that the process-wide rules dilute, and an onset in small batches.
+    if (evidence) {
+      settled.forEach((r, i) => {
+        const rec = batch.recipients[i];
+        if (
+          !rec ||
+          r === ALREADY_SENT ||
+          (!r.ok && r.kind === 'permanent' && r.scope === 'message')
+        ) {
+          return;
+        }
+        platforms.record(platformKeyOf(rec.target), !r.ok && r.kind === 'permanent');
+      });
+    }
     if (dead.length > 0) {
       const systemic = dead.filter((d) => platforms.systemic(platformKeyOf(d.target)));
       if (systemic.length > 0) {
@@ -773,7 +805,7 @@ export async function processBatch(
           platforms: keys.map((k) => ({ platform: k, ...platforms.stats(k) })),
         });
         write(emfLine('PlatformBreakerOpen', 1, deps.clock.now().getTime()));
-        failed.push(...systemic);
+        suspect = systemic;
         const moved = new Set(systemic);
         dead = dead.filter((d) => !moved.has(d));
       }
@@ -819,6 +851,41 @@ export async function processBatch(
           { delaySeconds: delay },
         );
         retried = failed.length;
+      }
+    }
+    // Suspicious permanents (a breaker was open) are re-checked as `:c<attempt+1>`, not merged
+    // into the `:r` retry: a re-check is evidence-free (carriesEvidence), so these recipients,
+    // ~100% permanent if really dead, can never make their platform look misconfigured. Their
+    // tokens are kept; the re-check's own permanents go to the gate, judged by fresh traffic. A
+    // failure here throws like the `:r` enqueue (the message is redelivered).
+    if (suspect.length > 0) {
+      const delay = retryDelaySeconds(batch.attempt, 0, deps.random ?? Math.random);
+      const nowMs = deps.clock.now().getTime();
+      if (nowMs + delay * 1000 >= deadline) {
+        gaveUp += suspect.length;
+        logger.error('delivery.gave_up', {
+          alertId: alert.id,
+          batchKey: batch.batchKey,
+          attempt: batch.attempt,
+          count: suspect.length,
+          reason: nowMs >= deadline ? 'budget_spent' : 'retry_would_miss_budget',
+          held: true,
+        });
+      } else {
+        await deps.sendQueue.enqueue(
+          QUEUE_FOR_SEVERITY[batch.relaySeverity] ?? 'standard',
+          [
+            {
+              ...batch,
+              batchKey: recheckKey(batch),
+              recipients: suspect,
+              attempt: batch.attempt + 1,
+              firstAttemptAt: new Date(firstAttemptMs).toISOString(),
+            },
+          ],
+          { delaySeconds: delay },
+        );
+        retried += suspect.length;
       }
     }
 

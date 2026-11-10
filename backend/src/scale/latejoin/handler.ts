@@ -126,7 +126,11 @@ export const buildLateJoinHandler =
             deps.logger.error('latejoin.paused_expired', { messageId: record.messageId });
             continue;
           }
-          const parked: LateJoinIntent = { ...body, enqueuedAt: new Date(first).toISOString() };
+          // The plan wait starts again after the pause (waitingSince dropped): the planned
+          // batches it waited for could not be sent while paused either, so a pause longer than
+          // the wait bound must not make every waiting intent send at once next to them.
+          const { waitingSince: _paused, ...rest } = body;
+          const parked: LateJoinIntent = { ...rest, enqueuedAt: new Date(first).toISOString() };
           await park.queue.enqueue(parked, {
             delaySeconds: Math.min(MAX_DELAY_SECONDS, park.delaySeconds ?? MAX_DELAY_SECONDS),
           });
