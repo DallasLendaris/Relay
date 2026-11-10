@@ -304,8 +304,13 @@ runWorkerMain(async () => {
         return { messages, recipients, batches, multiChunkBatches, chunkBound };
       }
       case 'POST /idem/recordChunk': {
-        const { key, chunk, redo } = json<{ key: string; chunk: number; redo: number[] }>(body);
-        return idem.recordChunk(key, { chunk, redo }).then((ok) => ({ ok }));
+        const { key, set, chunk, redo } = json<{
+          key: string;
+          set: string;
+          chunk: number;
+          redo: number[];
+        }>(body);
+        return idem.recordChunk(key, { set, chunk, redo }).then((ok) => ({ ok }));
       }
       case 'POST /idem/progress': {
         const { key } = json<{ key: string }>(body);

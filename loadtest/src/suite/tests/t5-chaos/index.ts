@@ -7,7 +7,7 @@
  *   b  APNs 429 (Retry-After) storm, then 503 bursts: the real backoff must ride it out
  *   c  5% dead tokens (410 / UNREGISTERED): the breaker must stay closed, only dead tokens cleared
  *   d  misconfiguration (40% BadDeviceToken, fixed after 90 s): the breaker must open, no live token
- *      cleared, held recipients re-queued (`<batchKey>:held:r<n>`) and delivered after the fix
+ *      cleared, held recipients re-queued (`<batchKey>:h<n>`) and delivered after the fix
  *   e  a sender process killed at ~50%: the others finish after lease expiry, duplicates bounded
  *      by the in-flight chunks of the crashed sender (per-chunk progress resume)
  *   f  idempotency store throttling for 10% of claims: claim_throttled, batch re-queued
@@ -766,7 +766,7 @@ function buildDefs(sizes: Sizes): Def[] {
             unit: 'recipients',
           },
           {
-            name: 'held retry batches handled (<batchKey>:held:r<n>)',
+            name: 'held retry batches handled (<batchKey>:h<n>)',
             value: r.sum.heldRetryBatches,
             unit: 'batches',
           },
@@ -776,7 +776,7 @@ function buildDefs(sizes: Sizes): Def[] {
         checks,
         notes: [
           `Gate decisions: ${r.sum.gateDecisions.map((g) => `${g.kind} ${g.count} (${g.reason}, ${g.samples} samples, rolling ${g.rollingRate})`).join('; ') || 'none'}.`,
-          `The dead-target gate holds clears until the breaker has seen ${ROLLING_MIN_SAMPLES} results (or 60 s pass); when the breaker finds a misconfiguration it re-queues the held recipients as retry batches (\`<batchKey>:held:r<n>\`) and clears nobody. The misconfiguration ends ${misconfigEndS} virtual s after the start, so the retries (backoff 2, 4, 8, ... s) succeed and no device is missed.`,
+          `The dead-target gate holds clears until the breaker has seen ${ROLLING_MIN_SAMPLES} results (or 60 s pass); when the breaker finds a misconfiguration it re-queues the held recipients as retry batches (\`<batchKey>:h<n>\`) and clears nobody. The misconfiguration ends ${misconfigEndS} virtual s after the start, so the retries (backoff 2, 4, 8, ... s) succeed and no device is missed.`,
         ],
       };
     },

@@ -91,7 +91,7 @@ export interface SenderTally {
     samples: number;
     rollingRate: number;
   }>;
-  /** Retry batches of held recipients handled (key `<batchKey>:held:r<n>`). */
+  /** Retry batches of held recipients handled (key `<batchKey>:h<n>`). */
   heldRetryBatches: number;
 }
 
@@ -170,6 +170,7 @@ class HttpIdempotencyStore implements IdempotencyStore {
   async recordChunk(key: string, progress: ChunkProgress): Promise<boolean> {
     const r = await call<{ ok: boolean }>(this.broker, 'POST', '/idem/recordChunk', {
       key,
+      set: progress.set,
       chunk: progress.chunk,
       redo: progress.redo,
     });
@@ -397,7 +398,7 @@ runWorkerMain(async () => {
           const o = await processBatch(batch, deps, control);
           tally.batches++;
           if (batch.attempt > 0) tally.retryBatches++;
-          if (batch.batchKey.includes(':held:')) tally.heldRetryBatches++;
+          if (/:h\d+($|:)/.test(batch.batchKey)) tally.heldRetryBatches++;
           tally.byReason[o.reason] = (tally.byReason[o.reason] ?? 0) + 1;
           tally.sent += o.sent;
           tally.permanentFailed += o.permanentFailed;
