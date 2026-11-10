@@ -40,6 +40,14 @@
  *     visible again.
  *   - the sender process dies: the lease runs out and the redelivered message re-claims the key.
  *   - the kill switch flips while we are sending: we release and the message retries later.
+ *
+ * Deploy note (rolling-deploy skew). Re-check classification lives in each task's code
+ * (carriesEvidence). During a rolling deploy, a task still on older code treats keys it does not
+ * know as fresh: before G6b a blind re-check `K:...:u<n>`, before G6c a split re-check
+ * `K:v<n>:s0`. Such a task records those ~100%-permanent results into its breakers and may clear
+ * the re-check's tokens without the G6b evidence rules. Exposure is limited to re-checks in flight
+ * while old tasks still run; to avoid it, deploy these changes outside an active alert (or drain
+ * the old tasks before re-checks are queued). Newer code reads every older key correctly.
  */
 import { createHash } from 'node:crypto';
 import type { Alert } from '@relay/shared';
@@ -67,6 +75,7 @@ import {
   RECHECK_EVIDENCE_MAX_AGE_MS,
   type DeadTargetGateOptions,
   type HeldGroup,
+  type HeldRequeueResult,
 } from './dead-target-gate.js';
 import { DeadTargetQueue } from './dead-target-queue.js';
 import { consoleMetricWriter, emfLine, type MetricWriter } from './metrics.js';
@@ -103,23 +112,62 @@ export const RETRY_BUDGET_MS = 30 * 60 * 1000;
 export const RETRY_BASE_SECONDS = 2;
 export const RETRY_MAX_DELAY_SECONDS = 900;
 /**
- * Unconfirmed re-checks (dead-target-gate.ts "Re-check verdicts": a re-check permanent with no
- * fresh evidence either way) are re-queued at most this many times per lineage, then given up
- * with the token kept.
+ * Unconfirmed ("blind") re-checks (dead-target-gate.ts "Re-check verdicts": a re-check permanent
+ * with no fresh evidence either way) keep their token and are re-queued as `:u<n>` until the
+ * batch's retry deadline (alert end, or RETRY_BUDGET_MS after the first attempt), with a backoff
+ * that doubles: the n-th blind re-check of a lineage waits at least
+ * BLIND_RECHECK_DELAY_SECONDS x 2^(n-1) (120 s, 240 s, 480 s, then the 900 s SQS cap) after the
+ * decision. One that would land past the deadline is pulled in to land
+ * BLIND_RECHECK_DEADLINE_MARGIN_SECONDS before it; once less than BLIND_RECHECK_DELAY_SECONDS of
+ * room is left the recipients are given up with the token kept (delivery.gave_up, reason
+ * 'unconfirmed', metric DeadTargetUnconfirmedKept; never the GaveUp metric, so GaveUpAlarm does
+ * not fire for them).
  *
- * Trade-off. A real misconfiguration that persists after fresh traffic has ended needs retries to
- * deliver once the operator fixes it; a chance false alarm should not keep pushing dead tokens.
- * Without fresh traffic the two look the same (every re-check permanent, and re-check results
- * are not evidence), so they get the same bounded treatment: 2 blind re-checks, the first at
- * least BLIND_RECHECK_DELAY_SECONDS after the decision and the second twice that, which with
- * the 30 s holds covers a fix deployed within about 7 minutes of the last fresh evidence. A
- * misconfiguration fixed later than that, with no fresh traffic left, misses this alert for the
- * recipients still waiting (logged delivery.gave_up, reason 'unconfirmed'); while fresh traffic
- * flows, re-checks are confirmed and keep the whole 30-minute budget. In exchange a chance
- * "systemic" verdict costs each dead token 2 + MAX_BLIND_RECHECKS pushes, not ~12.
+ * Trade-off. A real misconfiguration that persists after fresh traffic has ended (or whose fresh
+ * traffic lands on another task) looks exactly like a chance false alarm: every re-check is
+ * permanent and re-check results are not evidence. Re-checking until the deadline means a fix
+ * deployed any time before the last re-check (about 30 s before the deadline) delivers this
+ * alert. The price is bounded: with the 30-minute budget the blind re-checks land at about 2.5,
+ * 7, 15.5 and 29.5 minutes, so a dead token caught by a chance "systemic" verdict is pushed at
+ * most MAX_PUSHES_PER_DEAD_TOKEN = 6 times in all (the fresh push, the `:v` re-check and 4 blind
+ * ones; derivation at blindRecheckDelaySeconds), and is never cleared without evidence (the next
+ * alert's fresh traffic judges it again).
  */
-export const MAX_BLIND_RECHECKS = 2;
 export const BLIND_RECHECK_DELAY_SECONDS = 120;
+export const BLIND_RECHECK_DEADLINE_MARGIN_SECONDS = 30;
+export const MAX_PUSHES_PER_DEAD_TOKEN = 6;
+
+/**
+ * Delay before the next blind re-check of a lineage that has had `blindSoFar` of them, decided at
+ * `nowMs`; undefined when there is no room left before `deadlineMs` (give up, token kept).
+ *
+ * Bound on pushes (MAX_PUSHES_PER_DEAD_TOKEN), budget 1,800 s from the fresh push at t = 0: an
+ * unclamped blind re-check waits at least 120, 240, 480 and 900 s after the previous decision,
+ * which is at or after the previous push, so the 1st to 4th blind pushes come no earlier than
+ * 120, 360, 840 and 1,740 s. A delay is clamped only to land at deadline - 30 s, after which
+ * under 120 s of room is left, so at most one re-check is clamped and it is the last. A 5th blind
+ * push would need the 4th decided by 1,800 - 30 - 120 = 1,650 s, but the 4th is pushed at 1,740 s
+ * or later (or is the clamped last one). So at most 4 blind pushes, 6 in all, whatever the hold
+ * or jitter. A shorter deadline (the alert ends sooner) only removes pushes.
+ */
+export function blindRecheckDelaySeconds(
+  blindSoFar: number,
+  attempt: number,
+  nowMs: number,
+  deadlineMs: number,
+  random: () => number,
+): number | undefined {
+  const wanted = Math.min(
+    RETRY_MAX_DELAY_SECONDS,
+    Math.max(
+      retryDelaySeconds(attempt, 0, random),
+      BLIND_RECHECK_DELAY_SECONDS * 2 ** Math.min(blindSoFar, 30),
+    ),
+  );
+  const room = Math.floor((deadlineMs - nowMs) / 1000) - BLIND_RECHECK_DEADLINE_MARGIN_SECONDS;
+  const delay = Math.min(wanted, room);
+  return delay >= BLIND_RECHECK_DELAY_SECONDS ? delay : undefined;
+}
 /** Wait before re-reading an alert whose signature failed (an update may have just committed). */
 const REREAD_DELAY_MS = 200;
 /** Default number of sub-chunks in flight per batch. */
@@ -472,10 +520,12 @@ export const blindRechecks = (batchKey: string): number =>
  * its results are selection-biased (about 100% permanent when the tokens really are dead) and are
  * NOT evidence: they never feed the breakers (breaker.ts). Only the trailing chain of derived
  * segments is looked at, so a planned key is never mistaken for one: planned keys end in a bucket
- * number, a dense part, a hex late-join hash or a split path (`:s<0|1...>`), never in `:r<n>`,
- * `:h<n>`, `:v<n>` or `:u<n>`.
+ * number, a dense part or a hex late-join hash, never in `:r<n>`, `:h<n>`, `:v<n>` or `:u<n>`.
+ * The chain includes split paths (`:s<0|1...>`, fanout/pack.ts splitToFit, applied to any batch
+ * too big for one SQS message, re-checks included), so `K:v1:s0` and `K:v1:s0:r2` are re-checks
+ * while a planned `K:s01` and its `K:s01:r1` retry stay fresh.
  */
-const RECHECK_SUFFIX = /:[hvu]\d+(?::[rhvu]\d+)*$/;
+const RECHECK_SUFFIX = /:[hvu]\d+(?::(?:[rhvu]\d+|s[01]+))*$/;
 export const carriesEvidence = (batchKey: string): boolean => !RECHECK_SUFFIX.test(batchKey);
 
 /**
@@ -506,18 +556,29 @@ const REQUEUE_TRIES = 3;
  * Re-queues recipients the gate held when the breaker found the "dead" tokens to be a
  * misconfiguration: one retry batch per source batch, on its severity's queue, attempt + 1,
  * firstAttemptAt kept (same 30-minute budget), the usual retry delay, its suspicion carried.
- * Tokens are not touched. An unconfirmed group (`blind`) goes out as `:u`, at least
- * BLIND_RECHECK_DELAY_SECONDS x (blind re-checks so far + 1) later, and at most
- * MAX_BLIND_RECHECKS times per lineage. Resolves with how many recipients were re-queued.
+ * Tokens are not touched. An unconfirmed group (`blind`) goes out as `:u` on the blind backoff
+ * (blindRecheckDelaySeconds) until its deadline, then is given up with its tokens kept. Resolves
+ * with how many recipients were re-queued, and how many of those given up were unconfirmed.
  */
-async function requeueHeld(groups: HeldGroup[], deps: SenderDeps): Promise<number> {
+async function requeueHeld(groups: HeldGroup[], deps: SenderDeps): Promise<HeldRequeueResult> {
   const random = deps.random ?? Math.random;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   let requeued = 0;
+  let unconfirmed = 0;
   for (const g of groups) {
     const batch = g.source;
-    const blindSoFar = g.blind ? blindRechecks(batch.batchKey) : 0;
-    if (g.blind && blindSoFar >= MAX_BLIND_RECHECKS) {
+    const nowMs = deps.clock.now().getTime();
+    const delay = g.blind
+      ? blindRecheckDelaySeconds(
+          blindRechecks(batch.batchKey),
+          batch.attempt,
+          nowMs,
+          g.deadlineMs,
+          random,
+        )
+      : retryDelaySeconds(batch.attempt, 0, random);
+    if (delay === undefined) {
+      // Still unconfirmed at the deadline: kept, never cleared; not a GaveUp (see above).
       deps.logger.error('delivery.gave_up', {
         alertId: batch.alertId,
         batchKey: batch.batchKey,
@@ -526,18 +587,9 @@ async function requeueHeld(groups: HeldGroup[], deps: SenderDeps): Promise<numbe
         reason: 'unconfirmed',
         held: true,
       });
+      unconfirmed += g.recipients.length;
       continue;
     }
-    const delay = g.blind
-      ? Math.min(
-          RETRY_MAX_DELAY_SECONDS,
-          Math.max(
-            retryDelaySeconds(batch.attempt, 0, random),
-            BLIND_RECHECK_DELAY_SECONDS * (blindSoFar + 1),
-          ),
-        )
-      : retryDelaySeconds(batch.attempt, 0, random);
-    const nowMs = deps.clock.now().getTime();
     if (nowMs + delay * 1000 >= g.deadlineMs) {
       deps.logger.error('delivery.gave_up', {
         alertId: batch.alertId,
@@ -577,7 +629,7 @@ async function requeueHeld(groups: HeldGroup[], deps: SenderDeps): Promise<numbe
       }
     }
   }
-  return requeued;
+  return { requeued, unconfirmed };
 }
 
 /**

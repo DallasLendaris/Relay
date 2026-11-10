@@ -20,6 +20,7 @@ import {
   recordingLogger,
   seedAlert,
 } from './fakes.js';
+import { splitToFit } from '../../../src/scale/fanout/pack.js';
 
 /** Deterministic PRNG (mulberry32). */
 function rng(seed: number): () => number {
@@ -185,6 +186,57 @@ describe('derived batch keys are unique by construction', () => {
     expect(retryKey({ batchKey: 'K:u1', attempt: 1 })).toBe('K:u1:r2');
     expect(blindRecheckKey({ batchKey: 'K:v1:r2', attempt: 2 })).toBe('K:v1:r2:u3');
     expect(blindRechecks('a:warning:late:b123456789012345:v1:u2:h3:u4:r5')).toBe(2);
+  });
+
+  it('G6c (review N4): a split anywhere in the chain keeps the classification of what it split', () => {
+    const random = rng(11);
+    const hex = () =>
+      Array.from({ length: 16 }, () => '0123456789abcdef'[Math.floor(random() * 16)]).join('');
+    const roots = [...PLANNED, 'a1:warning:8928308280fffff:7:s01', `a1:watch:late:${hex()}`];
+    const split = (n: { batchKey: string; attempt: number }, path: string) => ({
+      ...n,
+      batchKey: `${n.batchKey}:s${path}`,
+    });
+    for (const root of roots) {
+      let frontier = [{ batchKey: root, attempt: 0, clean: true }];
+      for (let depth = 1; depth <= 4; depth++) {
+        frontier = frontier.flatMap((n) => [
+          { batchKey: retryKey(n), attempt: n.attempt + 1, clean: n.clean },
+          { batchKey: recheckKey(n), attempt: n.attempt + 1, clean: false },
+          { batchKey: blindRecheckKey(n), attempt: n.attempt + 1, clean: false },
+          { ...split(n, '0'), clean: n.clean },
+          { ...split(n, '10'), clean: n.clean },
+        ]);
+        for (const n of frontier) expect(carriesEvidence(n.batchKey), n.batchKey).toBe(n.clean);
+      }
+    }
+    // The probe's keys.
+    expect(carriesEvidence('a:warning:c:1:v1:s0')).toBe(false); // G6b: true
+    expect(carriesEvidence('a:warning:c:1:v1:u2:s1')).toBe(false);
+    expect(carriesEvidence('a:warning:c:1:h1:s01:r2')).toBe(false); // G6b: true
+    expect(blindRechecks('a:warning:c:1:v1:u2:s1')).toBe(1);
+  });
+
+  it('G6c (review N4): the results of a split re-check (pack.ts splitToFit) never feed the breakers', async () => {
+    const t = makeDeps({
+      push: new FakePush(() => ({ ok: false, kind: 'permanent', error: 'BadDeviceToken' })),
+    });
+    const breaker = new PermanentBreaker();
+    t.deps.breaker = breaker;
+    t.deps.deadTargetGate = { submit: () => {} };
+    const alert = await seedAlert(t.alerts);
+    const big = {
+      ...makeBatch({ batchKey: `${alert.id}:warning:c:1:v1`, attempt: 1 }, 40),
+      suspectedAt: { ios: 1 },
+    };
+    const pieces = splitToFit(big, 4000);
+    expect(pieces.length).toBeGreaterThan(1);
+    for (const p of pieces) {
+      expect(p.batchKey).toMatch(/:v1:s[01]+$/);
+      await processBatch(p, t.deps);
+    }
+    expect(breaker.samples).toBe(0); // G6b: 40 permanents recorded as fresh evidence
+    expect(breaker.platforms.seq('ios')).toBe(0);
   });
 });
 
