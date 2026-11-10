@@ -42,6 +42,18 @@ export interface MockApnsOptions {
   maxConcurrentStreams?: number;
   /** Probability per request of sending a graceful GOAWAY on that connection. */
   goawayProbability?: number;
+  /**
+   * Fault injection (suite test t5). Called for every request that passed validation; a returned
+   * response is sent instead of the random error mix (and the token is not delivered).
+   */
+  inject?: (token: string) => InjectedResponse | undefined;
+}
+
+/** A canned response a fault-injection hook can return (shared with the mock FCM). */
+export interface InjectedResponse {
+  status: number;
+  body: object;
+  headers?: Record<string, string>;
 }
 
 export interface MockApnsStats extends ResponseStats {
@@ -205,28 +217,32 @@ export async function startMockApns(options: MockApnsOptions = {}): Promise<Mock
 
     stats.received++;
     counters.recordAttempt(token);
+    const injected = options.inject?.(token);
     const outcome = pickOutcome(errorMix, outcomeRng);
     await sleep(sampleLatency());
 
-    switch (outcome) {
-      case 'unregistered':
-        stats.unregistered++;
-        counters.recordUnregistered(token);
-        finish(stream, 410, { reason: 'Unregistered', timestamp: Date.now() });
-        break;
-      case 'tooManyRequests':
-        stats.tooManyRequests++;
-        finish(stream, 429, { reason: 'TooManyRequests' });
-        break;
-      case 'serverError':
-        stats.serverError++;
-        finish(stream, 500, { reason: 'InternalServerError' });
-        break;
-      default:
-        stats.ok++;
-        counters.recordDelivered(token);
-        finish(stream, 200, {});
-    }
+    if (injected) {
+      finish(stream, injected.status, injected.body, injected.headers ?? {});
+    } else
+      switch (outcome) {
+        case 'unregistered':
+          stats.unregistered++;
+          counters.recordUnregistered(token);
+          finish(stream, 410, { reason: 'Unregistered', timestamp: Date.now() });
+          break;
+        case 'tooManyRequests':
+          stats.tooManyRequests++;
+          finish(stream, 429, { reason: 'TooManyRequests' });
+          break;
+        case 'serverError':
+          stats.serverError++;
+          finish(stream, 500, { reason: 'InternalServerError' });
+          break;
+        default:
+          stats.ok++;
+          counters.recordDelivered(token);
+          finish(stream, 200, {});
+      }
 
     if (goawayProbability > 0 && !state.goawaySent && goawayRng() < goawayProbability) {
       state.goawaySent = true;

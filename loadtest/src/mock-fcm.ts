@@ -46,6 +46,18 @@ export interface MockFcmOptions {
   now?: () => number;
   /** Lifetime of issued OAuth access tokens. Default 3600 s, like Google. */
   tokenTtlSeconds?: number;
+  /**
+   * Fault injection (suite test t5). Called for every message that passed the quota and token
+   * checks; a returned response is sent instead of the random error mix (token not delivered).
+   */
+  inject?: (token: string) => InjectedResponse | undefined;
+}
+
+/** A canned response a fault-injection hook can return (shared with the mock APNs). */
+export interface InjectedResponse {
+  status: number;
+  body: object;
+  headers?: Record<string, string>;
 }
 
 export interface MockFcmStats extends ResponseStats {
@@ -200,8 +212,10 @@ export async function startMockFcm(options: MockFcmOptions = {}): Promise<MockFc
 
       stats.received++;
       counters.recordAttempt(token);
+      const injected = options.inject?.(token);
       const outcome = pickOutcome(errorMix, outcomeRng);
       await sleep(sampleLatency());
+      if (injected) return send(res, injected.status, injected.body, injected.headers ?? {});
 
       switch (outcome) {
         case 'unregistered':
