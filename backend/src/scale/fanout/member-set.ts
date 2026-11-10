@@ -26,11 +26,18 @@ export const TARGET_HASH_BYTES = 8;
  * The member a (device, push target) pair is stored as in a plan record's target set. A device
  * whose target changed since the plan read it is not in the set under its new target, so late
  * join sends to the new target instead of trusting a batch that pushed the old one.
+ *
+ * The FCM project is part of the target (G5c): an FCM token only works with its own project and
+ * the sender routes by it, so a device that moved projects with the same token string was pushed
+ * through the wrong one. Appended only when present, so targets without one keep their member.
+ * Both sides normalise it the same way (cell-index util targetOf / plainTarget: Android only).
  */
 export const targetMemberOf = (
   deviceId: string,
-  target: { platform: string; token: string },
-): string => `${deviceId}\n${target.platform}\n${target.token}`;
+  target: { platform: string; token: string; project?: string },
+): string =>
+  `${deviceId}\n${target.platform}\n${target.token}` +
+  (target.project ? `\n${target.project}` : '');
 
 /**
  * Most bytes one set may take: DynamoDB items are capped at 400 KB, and the key and the other
