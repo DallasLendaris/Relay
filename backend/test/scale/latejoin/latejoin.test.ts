@@ -2,7 +2,7 @@ import type { SQSEvent } from 'aws-lambda';
 import { cellToChildren, cellToParent } from 'h3-js';
 import { describe, expect, it } from 'vitest';
 import { cellForPoint } from '../../../src/geo/index.js';
-import { bucketFor } from '../../../src/scale/fanout/hash.js';
+import { bucketFor, densePartFor } from '../../../src/scale/fanout/hash.js';
 import {
   RATE_LIMIT_PER_HOUR,
   pushTargetHash,
@@ -379,6 +379,39 @@ describe('REL-12: no duplicate of a planned push', () => {
     await h.idempotency.claim(key, new Date('2026-11-09T12:00:30Z'));
     await h.idempotency.markSent(key, new Date('2026-11-10T12:00:00Z'));
     expect((await processLateJoin({ deviceId }, h.deps)).sent).toBe(1);
+  });
+
+  /** What a dense plan did: tombstoned the device's (cell, bucket) key (marker, then the key). */
+  async function denseTombstone(h: ReturnType<typeof harness>, alertId: string, deviceId: string) {
+    const key = plannedKey(alertId, deviceId);
+    await h.idempotency.markSent(`${key}:dense`, new Date('2026-11-10T12:00:00Z'));
+    await h.idempotency.claim(key, new Date('2026-11-09T12:00:30Z'));
+    await h.idempotency.markSent(key, new Date('2026-11-10T12:00:00Z'));
+    return `${key}.${densePartFor(deviceId)}/16`;
+  }
+
+  it('dense cell: a tombstoned bucket key is not "planned"; the part key decides (unsent: send)', async () => {
+    const h = harness();
+    const alert = makeAlert();
+    await h.alerts.save(alert);
+    const { deviceId } = await deviceRegisteredAt(h, '2026-11-09T09:00:00Z');
+    await denseTombstone(h, alert.id, deviceId); // the parts were never enqueued or never sent
+    const result = await processLateJoin({ deviceId }, h.deps);
+    expect(result.skipped.planned).toBe(0);
+    expect(result.sent).toBe(1);
+  });
+
+  it('dense cell: skips the device once its part was sent', async () => {
+    const h = harness();
+    const alert = makeAlert();
+    await h.alerts.save(alert);
+    const { deviceId } = await deviceRegisteredAt(h, '2026-11-09T09:00:00Z');
+    const part = await denseTombstone(h, alert.id, deviceId);
+    await h.idempotency.claim(part, new Date('2026-11-09T12:00:30Z'));
+    await h.idempotency.markSent(part, new Date('2026-11-10T12:00:00Z'));
+    const result = await processLateJoin({ deviceId }, h.deps);
+    expect(result.skipped.planned).toBe(1);
+    expect(result.sent).toBe(0);
   });
 
   it('a token refresh to the same value does not make the device look new', async () => {
