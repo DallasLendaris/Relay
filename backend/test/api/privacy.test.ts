@@ -386,6 +386,31 @@ describe('POST /places: data minimization', () => {
     expect(JSON.stringify(stored)).not.toContain(String(SJ.lat));
   });
 
+  it('PRIV-5: the response and the store carry the coarse address, never the typed house number', async () => {
+    const leaky: Geocoder = {
+      async geocode() {
+        // A misbehaving geocoder that returns the house number.
+        return {
+          latitude: SJ.lat,
+          longitude: SJ.lng,
+          shortAddress: '1600 Main St, San Jose',
+          state: 'CA',
+        };
+      },
+    };
+    const c = setup({ geocoder: leaky });
+    const d = await register(c);
+    const body = await addPlace(c, d.credential, {
+      label: 'Home',
+      address: '1600 Main St, San Jose',
+    });
+    expect(body.shortAddress).toBe('Main St, San Jose');
+    const list = await c.route(call('GET', '/places', d.credential));
+    const stored = (await c.places.listForDevice(d.deviceId))[0];
+    expect(stored?.shortAddress).toBe('Main St, San Jose');
+    expect(JSON.stringify([body, stored, list])).not.toContain('1600');
+  });
+
   it('still checks California before the exact point is discarded', async () => {
     const c = setup();
     const d = await register(c);

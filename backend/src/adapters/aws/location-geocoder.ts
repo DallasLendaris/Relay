@@ -1,4 +1,5 @@
 import { SearchPlaceIndexForTextCommand, type LocationClient } from '@aws-sdk/client-location';
+import { coarseAddress } from '../../geo/coarse-address.js';
 import type { Geocoder } from '../../ports.js';
 
 /** Bias results toward San José, [lng, lat]. */
@@ -82,12 +83,13 @@ export class LocationGeocoder implements Geocoder {
     const [longitude, latitude] = point; // Location order is [lng, lat]
     if (longitude === undefined || latitude === undefined) return null;
 
-    const street = [place.AddressNumber, place.Street].filter(Boolean).join(' ');
-    const shortAddress = [street, place.Municipality].filter(Boolean).join(', ');
+    // PRIV-5: never the house number, and never Label (it embeds the number). Street name plus
+    // locality; locality alone when there is no street; empty when there is neither.
+    const shortAddress = coarseAddress(place.Street, place.Municipality ?? place.SubRegion);
     const region = place.Region?.trim() ?? '';
     // Accept either a full name ("California") or an already-short code ("CA").
     const state =
       STATE_CODES[region.toLowerCase()] ?? (region.length === 2 ? region.toUpperCase() : '');
-    return { latitude, longitude, shortAddress: shortAddress || (place.Label ?? ''), state };
+    return { latitude, longitude, shortAddress, state };
   }
 }

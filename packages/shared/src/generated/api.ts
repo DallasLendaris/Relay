@@ -272,8 +272,11 @@ export interface components {
             id: string;
             label: string;
             /**
-             * @description Street-level address without the house number, for display. Absent for a place
-             *     saved by coordinates (nothing but the H3 cell is kept for those).
+             * @description Coarse address for display: the street name and locality, for example "Elm St,
+             *     San José" (or the locality alone when the street cannot be separated). It never
+             *     contains a house number: the server does not store one. The full address the person
+             *     typed stays on their device. Absent for a place saved by coordinates (nothing but
+             *     the H3 cell is kept for those).
              */
             shortAddress?: string;
             /** @description H3 cell at resolution 7. */
