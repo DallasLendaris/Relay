@@ -549,7 +549,9 @@ function analyseSurge(
     if (!hasToken(e.tokens, extras[i] as bigint)) strayPlanned++;
   }
 
-  // Latency: late-join push accepted minus the first place saved for that token.
+  // Latency: late-join push accepted minus the first place saved for that token. Moved tokens
+  // (re-registered by a later device) are left out: their first place is the donor's, which can be
+  // minutes older than the reinstall that triggered the push. They are reported separately.
   const lat = {
     all: [] as number[],
     during: [] as number[],
@@ -560,6 +562,7 @@ function analyseSurge(
     const v = late.tokens[i] as bigint;
     const p = lowerBound(e.tokens, v);
     if (!(p < e.tokens.length && e.tokens[p] === v)) continue;
+    if (hasToken(moved, v)) continue;
     const placeAt = e.values[p] as number;
     const ms = Math.max(0, (late.values[i] as number) - placeAt);
     lat.all.push(ms);
