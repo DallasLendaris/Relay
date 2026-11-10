@@ -427,7 +427,9 @@ describe('demo path', () => {
     const spanish = stored?.summaries.find((x) => x.language === 'es')?.text.trim();
     expect(spanish).toBeTruthy();
     expect(es[0]?.body).toBe(`Resumen de Relay (no oficial): ${spanish} Fuente: NWS`);
-    expect(es[0]?.title).toMatch(/^Aviso:/);
+    // Spanish titles use the Spanish event name (C1), never the English one.
+    expect(es[0]?.title).toMatch(/^Aviso/);
+    expect(es[0]?.title).not.toMatch(/Warning|Watch|Advisory/);
     expect(en[0]?.body).not.toBe(spanish);
     expect(en[0]?.title).not.toMatch(/^Aviso:/);
   });
