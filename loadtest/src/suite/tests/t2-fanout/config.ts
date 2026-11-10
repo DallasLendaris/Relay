@@ -107,7 +107,7 @@ export function resolveConfig(ctx: SuiteContext, o: T2Overrides = {}): T2Config 
   ).filter((s): s is ScenarioKey => ['a', 'b', 'c', 'd', 'e'].includes(s));
   const senders = o.senders ?? envNum('T2_SENDERS') ?? (smoke ? 2 : Math.max(2, Math.floor(w / 2)));
   const shardWorkers =
-    o.shardWorkers ?? envNum('T2_SHARD_WORKERS') ?? (smoke ? 2 : Math.max(2, Math.floor(w / 3)));
+    o.shardWorkers ?? envNum('T2_SHARD_WORKERS') ?? (smoke ? 2 : Math.max(2, Math.floor(w / 6)));
   const apnsMocks =
     o.apnsMocks ?? envNum('T2_APNS_MOCKS') ?? (smoke ? 1 : Math.max(1, Math.round(w / 8)));
   const fcmMocks =
@@ -124,8 +124,12 @@ export function resolveConfig(ctx: SuiteContext, o: T2Overrides = {}): T2Config 
   const brokerHeap = smoke ? 256 : 768;
   const budget = Math.min(26_000, ctx.machine.memoryTotalMb * 0.75);
   const fixed = (apnsMocks + fcmMocks) * mockHeap + brokerHeap + brokerCapMb;
-  const each = Math.floor((budget - fixed) / (senders + shardWorkers));
-  const roleHeap = smoke ? 384 : Math.max(512, Math.min(1024, each));
+  // Senders stay small (about 200 MB observed at 1M). Shard workers hold a whole dense shard per
+  // job (PERF-7: a dense res-4 shard can exceed 1 GB), so they get the rest of the budget, up to
+  // 4 GB each; the first full run OOM-killed a 730 MB shard worker on the 1.9M county.
+  const senderHeap = smoke ? 384 : 512;
+  const shardEach = Math.floor((budget - fixed - senders * senderHeap) / shardWorkers);
+  const shardHeap = smoke ? 384 : Math.max(1536, Math.min(4096, shardEach));
 
   const rateMode =
     o.fcmRateMode ??
@@ -151,10 +155,10 @@ export function resolveConfig(ctx: SuiteContext, o: T2Overrides = {}): T2Config 
     apnsMocks,
     fcmMocks,
     senderConcurrency: o.senderConcurrency ?? envNum('T2_SENDER_CONCURRENCY') ?? 50,
-    jobsPerShardWorker: o.jobsPerShardWorker ?? envNum('T2_SHARD_JOBS') ?? 4,
+    jobsPerShardWorker: o.jobsPerShardWorker ?? envNum('T2_SHARD_JOBS') ?? (smoke ? 4 : 2),
     heapMb: {
-      sender: roleHeap,
-      shard: roleHeap,
+      sender: senderHeap,
+      shard: shardHeap,
       broker: brokerHeap,
       mock: mockHeap,
       seed: smoke ? 512 : 2048,
