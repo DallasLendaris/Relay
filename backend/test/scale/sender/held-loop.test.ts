@@ -158,8 +158,8 @@ async function run(o: RunOptions) {
   const record = PlatformWindows.prototype.record;
   const windows = breaker.platforms;
   const wasSystemic = new Map<string, boolean>();
-  windows.record = function (key: string, permanent: boolean) {
-    record.call(this, key, permanent);
+  windows.record = function (key: string, permanent: boolean, nowMs?: number) {
+    record.call(this, key, permanent, nowMs);
     const s = windows.systemic(key);
     if (s && !wasSystemic.get(key)) systemicMoments.push({ key, at: now() - start });
     wasSystemic.set(key, s);
@@ -329,23 +329,29 @@ describe('re-check batches are not breaker evidence', () => {
       await gate.settle(1000);
       await cleanup.flush(1000);
     };
-    return { t, breaker, gate, batch, cleared, settleAll };
+    return { t, sched, breaker, gate, batch, cleared, settleAll };
   }
 
   const ids = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => `${prefix}${i}`);
   const queuedKeys = (s: Awaited<ReturnType<typeof setup>>) =>
     s.t.sendQueue.enqueued.flatMap((e) => e.batches.map((b) => b.batchKey));
 
-  it('a held re-queue of 30 dead tokens records nothing and is cleared after the hold', async () => {
+  it('a held re-queue of 30 dead tokens records nothing, and is cleared on fresh evidence after its suspicion', async () => {
     const s = await setup((tok) => tok.startsWith('x'));
-    // Fresh, healthy iOS traffic, then a held re-queue (`:h1`) and a retry below one (`:h1:r2`).
+    const suspectedAt = { ios: s.t.state.now.getTime() };
+    await s.sched.advance(1);
+    // Fresh, healthy iOS traffic after the suspicion, then a held re-queue (`:h1`) and a retry
+    // below one (`:h1:r2`), both carrying the suspicion.
     await processBatch(s.batch('a:warning:c0:0', ids('ok', 300)), s.t.deps);
     const seq = s.breaker.platforms.seq('ios');
     const samples = s.breaker.samples;
-    await processBatch(s.batch('a:warning:c1:0:h1', ids('x', 20), 1), s.t.deps);
-    await processBatch(s.batch('a:warning:c2:0:h1:r2', ids('xr', 10), 2), s.t.deps);
-    // Before the fix these 30 permanents went into both breakers: iOS looked systemic (20 of
-    // the last 20), so they were re-queued again instead of cleared.
+    await processBatch({ ...s.batch('a:warning:c1:0:h1', ids('x', 20), 1), suspectedAt }, s.t.deps);
+    await processBatch(
+      { ...s.batch('a:warning:c2:0:h1:r2', ids('xr', 10), 2), suspectedAt },
+      s.t.deps,
+    );
+    // Before G6 these 30 permanents went into both breakers: iOS looked systemic (20 of the last
+    // 20), so they were re-queued again instead of cleared.
     expect(s.breaker.platforms.seq('ios')).toBe(seq);
     expect(s.breaker.samples).toBe(samples);
     expect(s.breaker.platforms.systemic('ios')).toBe(false);
@@ -354,14 +360,38 @@ describe('re-check batches are not breaker evidence', () => {
     expect(queuedKeys(s)).toEqual([]);
   });
 
-  it('breaker-open permanents are re-checked as `:v`, not `:r`, and the re-check records nothing', async () => {
+  it('a re-check is never cleared on healthy evidence from before its suspicion (G6b)', async () => {
+    const s = await setup((tok) => tok.startsWith('x'));
+    await processBatch(s.batch('a:warning:c0:0', ids('ok', 300)), s.t.deps);
+    await s.sched.advance(1);
+    // Suspected after the healthy traffic (by another process, say), or carrying no suspicion
+    // at all (a legacy message): the healthy past proves nothing about the push.
+    const suspectedAt = { ios: s.t.state.now.getTime() };
+    await processBatch({ ...s.batch('a:warning:c1:0:v1', ids('x', 20), 1), suspectedAt }, s.t.deps);
+    await processBatch(s.batch('a:warning:c2:0:h1', ids('xh', 5), 1), s.t.deps);
+    await s.settleAll();
+    expect(s.cleared).toEqual([]);
+    expect(queuedKeys(s).sort()).toEqual(['a:warning:c1:0:v1:u2', 'a:warning:c2:0:h1:u2']);
+    const kept = s.t.sendQueue.enqueued.flatMap((e) => e.batches) as Array<
+      SendBatch & { suspectedAt?: Record<string, number> }
+    >;
+    expect(kept.find((b) => b.batchKey.startsWith('a:warning:c1'))?.suspectedAt).toEqual(
+      suspectedAt,
+    );
+  });
+
+  it('breaker-open permanents are re-checked as `:v`, not `:r`, carry the suspicion, and the re-check records nothing', async () => {
     const s = await setup((tok) => tok.startsWith('x'));
     // 20 of 20 dead in one fresh batch: the batch rule opens.
+    const at = s.t.state.now.getTime();
     const out = await processBatch(s.batch('a:warning:c0:0', ids('x', 20)), s.t.deps);
     expect(out).toMatchObject({ permanentFailed: 0, retried: 20 });
     expect(queuedKeys(s)).toEqual(['a:warning:c0:0:v1']);
     const recheck = s.t.sendQueue.enqueued.splice(0)[0]!.batches[0]!;
-    // Healthy fresh traffic heals the windows; the re-check's permanents are then cleared.
+    expect((recheck as { suspectedAt?: unknown }).suspectedAt).toEqual({ ios: at });
+    // Healthy fresh traffic after the suspicion heals the windows; the re-check's permanents are
+    // then cleared.
+    await s.sched.advance(1);
     await processBatch(s.batch('a:warning:c1:0', ids('ok', 400)), s.t.deps);
     expect(s.breaker.platforms.systemic('ios')).toBe(false);
     const seq = s.breaker.platforms.seq('ios');
@@ -371,16 +401,18 @@ describe('re-check batches are not breaker evidence', () => {
     expect(s.cleared.sort()).toEqual(ids('x', 20).sort());
   });
 
-  it('a re-check while fresh traffic still says misconfigured is re-checked again, never cleared', async () => {
+  it('a re-check while fresh traffic still says misconfigured is re-queued within the budget, never cleared', async () => {
     let broken = true;
     const s = await setup(() => broken);
     await processBatch(s.batch('a:warning:c0:0', ids('m', 20)), s.t.deps);
     const recheck = s.t.sendQueue.enqueued.splice(0)[0]!.batches[0]!;
     expect(recheck.batchKey).toBe('a:warning:c0:0:v1');
-    await processBatch(recheck, s.t.deps); // still broken, and the windows still say so
-    expect(queuedKeys(s)).toEqual(['a:warning:c0:0:v1:v2']);
-    broken = false;
+    await processBatch(recheck, s.t.deps); // still broken: its permanents go to the gate
+    expect(queuedKeys(s)).toEqual([]);
+    await processBatch(s.batch('a:warning:c1:0', ids('n', 10)), s.t.deps); // fresh, still broken
     await s.settleAll();
+    expect(queuedKeys(s).sort()).toEqual(['a:warning:c0:0:v1:h2', 'a:warning:c1:0:v1']);
+    broken = false;
     expect(s.cleared).toEqual([]);
   });
 });
