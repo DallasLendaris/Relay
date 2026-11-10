@@ -94,39 +94,39 @@ describe('summariesFor', () => {
   });
 
   it('returns [] for unknown events', () => {
-    expect(
-      summariesFor(makeAlert({ event: 'Winter Storm Watch', eventCode: 'WSA' }), opts),
-    ).toEqual([]);
+    expect(summariesFor(makeAlert({ event: 'Blizzard Warning', eventCode: 'BZW' }), opts)).toEqual(
+      [],
+    );
     expect(summariesFor(makeAlert({ event: 'Earthquake', eventCode: null }), opts)).toEqual([]);
   });
 
   it('formats the end time in local time in both languages', () => {
     const [en, es] = summariesFor(makeAlert(), opts);
-    expect(en?.text).toContain('until 6 PM Tuesday.');
-    expect(es?.text).toContain('hasta las 6 p. m. del martes.');
+    expect(en?.text).toContain('until 6 PM PT Tuesday.');
+    expect(es?.text).toContain('hasta las 6 p. m. PT del martes.');
     expect(en?.text).toContain('Flash Flood Warning');
   });
 
   it('converts UTC to Pacific time', () => {
     // 02:30 UTC Wednesday is 6:30 PM Tuesday in Pacific standard time.
-    expect(formatEnd('2026-01-14T02:30:00Z', 'en', opts.timeZone)).toBe('6:30 PM Tuesday');
+    expect(formatEnd('2026-01-14T02:30:00Z', 'en', opts.timeZone)).toBe('6:30 PM PT Tuesday');
     expect(formatEnd('2026-01-14T02:30:00Z', 'es', opts.timeZone)).toBe(
-      'las 6:30 p. m. del martes',
+      'las 6:30 p. m. PT del martes',
     );
   });
 
   it('handles 1 o clock, noon and morning in Spanish and English', () => {
     expect(formatEnd('2026-01-13T13:00:00-08:00', 'es', opts.timeZone)).toBe(
-      'la 1 p. m. del martes',
+      'la 1 p. m. PT del martes',
     );
-    expect(formatEnd('2026-01-13T12:00:00-08:00', 'en', opts.timeZone)).toBe('12 PM Tuesday');
+    expect(formatEnd('2026-01-13T12:00:00-08:00', 'en', opts.timeZone)).toBe('12 PM PT Tuesday');
     expect(formatEnd('2026-01-13T09:00:00-08:00', 'es', opts.timeZone)).toBe(
-      'las 9 a. m. del martes',
+      'las 9 a. m. PT del martes',
     );
   });
 
   it('uses daylight time in summer', () => {
-    expect(formatEnd('2026-07-14T01:00:00Z', 'en', opts.timeZone)).toBe('6 PM Monday');
+    expect(formatEnd('2026-07-14T01:00:00Z', 'en', opts.timeZone)).toBe('6 PM PT Monday');
   });
 
   it('falls back when the end time is missing or invalid', () => {
@@ -136,7 +136,7 @@ describe('summariesFor', () => {
         `A Flash Flood Warning is in effect for Santa Clara Valley. ${FALLBACK_LINE.en}`,
       );
       expect(es?.text).toBe(
-        `Hay un aviso de inundación repentina para Santa Clara Valley. ${FALLBACK_LINE.es}`,
+        `Hay un aviso de inundaciones repentinas para Santa Clara Valley. ${FALLBACK_LINE.es}`,
       );
     }
   });
@@ -144,8 +144,8 @@ describe('summariesFor', () => {
   it('falls back when the area is missing', () => {
     const alert = makeAlert();
     const [en, es] = summariesFor({ ...alert, area: { ...alert.area, description: '  ' } }, opts);
-    expect(en?.text).toBe(`${FALLBACK_LINE.en} It lasts until 6 PM Tuesday.`);
-    expect(es?.text).toBe(`${FALLBACK_LINE.es} Dura hasta las 6 p. m. del martes.`);
+    expect(en?.text).toBe(`${FALLBACK_LINE.en} It lasts until 6 PM PT Tuesday.`);
+    expect(es?.text).toBe(`${FALLBACK_LINE.es} Dura hasta las 6 p. m. PT del martes.`);
   });
 
   it('shows the fallback line only once when both area and time are missing', () => {
@@ -191,7 +191,7 @@ describe('English readability', () => {
     text
       .replace('{event}', 'Flood Warning')
       .replace('{area}', 'Alameda')
-      .replace('{end}', '6 PM Tuesday');
+      .replace('{end}', '6 PM PT Tuesday');
   const sets = new Set([...Object.values(TEMPLATES_BY_CODE), ...Object.values(TEMPLATES_BY_EVENT)]);
 
   it('the syllable heuristic behaves', () => {
@@ -214,4 +214,22 @@ describe('English readability', () => {
     const longWords = sentences.flatMap((s) => s.split(/\s+/)).filter((w) => syllables(w) > 4);
     expect(longWords).toEqual([]);
   });
+});
+
+describe('SAFE-3: watch and dust templates', () => {
+  const cases: Array<[string, string | null, string]> = [
+    ['High Wind Watch', 'HWA', 'vigilancia de vientos fuertes'],
+    ['High Wind Watch', null, 'vigilancia de vientos fuertes'],
+    ['Winter Storm Watch', 'WSA', 'vigilancia de tormenta invernal'],
+    ['Winter Storm Watch', null, 'vigilancia de tormenta invernal'],
+    ['Blowing Dust Advisory', null, 'advertencia de polvo en el aire'],
+  ];
+  for (const [event, eventCode, es] of cases) {
+    it(`${event} (${eventCode ?? 'name only'}) has English and Spanish`, () => {
+      const out = summariesFor(makeAlert({ event, eventCode }), opts);
+      expect(out.map((s) => s.language)).toEqual(['en', 'es']);
+      expect(out.find((s) => s.language === 'es')?.text).toContain(es);
+      expect(out.find((s) => s.language === 'en')?.text).toContain(`A ${event} is in effect`);
+    });
+  }
 });

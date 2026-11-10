@@ -139,18 +139,39 @@ export function parseJson<T>(value: unknown): T {
 }
 
 /**
- * Split a migration file into statements. Deliberately simple: splits on ";" so
- * migrations must not contain ";" inside strings or $$ function bodies.
+ * Split a migration file into statements on ";". Dollar-quoted bodies ($$ ... $$ or $tag$ ... $tag$,
+ * as in DO blocks) are kept whole, so ";" inside them does not split. Still deliberately simple:
+ * ";" inside ordinary string literals is not supported, and "--" comment lines are dropped first
+ * (so a dollar-quoted body must not contain a line starting with "--").
  */
 export function splitStatements(sql: string): string[] {
-  const withoutComments = sql
+  const text = sql
     .split('\n')
     .filter((line) => !line.trim().startsWith('--'))
     .join('\n');
-  return withoutComments
-    .split(';')
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const out: string[] = [];
+  let start = 0;
+  let tag: string | undefined; // the open dollar-quote delimiter, e.g. "$$" or "$body$"
+  for (let i = 0; i < text.length; i++) {
+    if (tag === undefined) {
+      if (text[i] === '$') {
+        const m = /^\$(?:[A-Za-z_]\w*)?\$/.exec(text.slice(i));
+        // "$1" parameters never match: a tag cannot start with a digit.
+        if (m) {
+          tag = m[0];
+          i += tag.length - 1;
+        }
+      } else if (text[i] === ';') {
+        out.push(text.slice(start, i));
+        start = i + 1;
+      }
+    } else if (text.startsWith(tag, i)) {
+      i += tag.length - 1;
+      tag = undefined;
+    }
+  }
+  out.push(text.slice(start));
+  return out.map((s) => s.trim()).filter(Boolean);
 }
 
 /**

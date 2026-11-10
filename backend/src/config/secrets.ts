@@ -1,5 +1,7 @@
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 
+import { readThrough, type CacheEntry } from './stale.js';
+
 /** Shape of a keyring secret: {"current": "<kid>", "keys": {"<kid>": "<base64 secret>"}}. */
 export interface Keyring {
   current: { id: string; secret: string };
@@ -10,7 +12,9 @@ export interface Keyring {
 /** A key must decode to at least this many bytes. */
 const MIN_KEY_BYTES = 32;
 const TTL_MS = 5 * 60 * 1000;
-const cache = new Map<string, { at: number; value: Keyring }>();
+/** When Secrets Manager errors, the last good keyring is served for up to this long. */
+export const KEYRING_STALE_MS = 60 * 60 * 1000;
+const cache = new Map<string, CacheEntry<Keyring>>();
 
 type SecretsClient = Pick<SecretsManagerClient, 'send'>;
 
@@ -58,13 +62,19 @@ export async function loadKeyring(
   client: SecretsClient = new SecretsManagerClient({}),
   now: () => number = Date.now,
 ): Promise<Keyring> {
-  const hit = cache.get(secretArn);
-  if (hit && now() - hit.at < TTL_MS) return hit.value;
-  const out = await client.send(new GetSecretValueCommand({ SecretId: secretArn }));
-  if (!out.SecretString) throw new Error(`Secret ${secretArn} has no SecretString`);
-  const value = parseKeyring(out.SecretString, secretArn);
-  cache.set(secretArn, { at: now(), value });
-  return value;
+  return readThrough({
+    source: 'keyring',
+    entry: cache.get(secretArn),
+    ttlMs: TTL_MS,
+    staleMs: KEYRING_STALE_MS,
+    now,
+    store: (e) => cache.set(secretArn, e),
+    load: async () => {
+      const out = await client.send(new GetSecretValueCommand({ SecretId: secretArn }));
+      if (!out.SecretString) throw new Error(`Secret ${secretArn} has no SecretString`);
+      return parseKeyring(out.SecretString, secretArn);
+    },
+  });
 }
 
 /** Reads a plain-string secret (for example the Expo access token). Not cached. */

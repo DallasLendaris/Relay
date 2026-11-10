@@ -8,13 +8,26 @@ import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { Queue, QueueEncryption } from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
-import { allow, dbEnv, grantDb, grantSecretRead, type DbRefs } from './grants.js';
+import { DELIVERY_RESERVED_CONCURRENCY } from './capacity.js';
+import {
+  alertVerifyEnv,
+  allow,
+  dbEnv,
+  grantAlertVerify,
+  grantDb,
+  grantSecretRead,
+  type AlertSigningRefs,
+  type DbRefs,
+} from './grants.js';
+
+/** Idempotency table warm throughput on prod (writes/s). */
+export const IDEMPOTENCY_WARM_WRITES_PROD = 20_000;
 
 export interface DeliveryStackProps extends StackProps {
   stage: 'dev' | 'prod';
   db: DbRefs;
   expoSecretArn: string;
-  alertKeysSecretArn: string;
+  alertSigning: AlertSigningRefs;
   killSwitchParamName: string;
   killSwitchParamArn: string;
 }
@@ -59,6 +72,9 @@ export class DeliveryStack extends Stack {
       partitionKey: { name: 'pk', type: AttributeType.STRING },
       billingMode: BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: 'ttl',
+      // A new on-demand table starts at 4,000 writes/s and doubles gradually; warm throughput
+      // provisions the headroom up front for a statewide send (prod only).
+      ...(isProd ? { warmThroughput: { writeUnitsPerSecond: IDEMPOTENCY_WARM_WRITES_PROD } } : {}),
       removalPolicy,
     });
 
@@ -72,16 +88,16 @@ export class DeliveryStack extends Stack {
       timeout: WORKER_TIMEOUT,
       memorySize: 256,
       // Caps parallel sends so we stay inside Expo's rate limits.
-      reservedConcurrentExecutions: 10,
+      reservedConcurrentExecutions: DELIVERY_RESERVED_CONCURRENCY,
       logGroup: new LogGroup(this, 'WorkerLogs', {
         retention: RetentionDays.ONE_MONTH,
         removalPolicy,
       }),
       environment: {
-        ...dbEnv(props.db),
+        ...dbEnv(props.db, 'sender'),
         EXPO_ACCESS_TOKEN_SECRET_ARN: props.expoSecretArn,
         IDEMPOTENCY_TABLE: idempotency.tableName,
-        ALERT_KEYS_SECRET_ARN: props.alertKeysSecretArn,
+        ...alertVerifyEnv(props.alertSigning),
         KILL_SWITCH_PARAM: props.killSwitchParamName,
       },
     });
@@ -90,9 +106,9 @@ export class DeliveryStack extends Stack {
     worker.addEventSource(
       new SqsEventSource(queue, { batchSize: 10, reportBatchItemFailures: true }),
     );
-    grantDb(worker, props.db);
+    grantDb(worker, props.db, 'sender');
     grantSecretRead(worker, props.expoSecretArn);
-    grantSecretRead(worker, props.alertKeysSecretArn);
+    grantAlertVerify(worker, props.alertSigning);
     // Send-time dedupe: claim (PutItem), check (GetItem), markSent (UpdateItem), release on
     // failure (DeleteItem). wiring.test.ts derives this list from the SDK commands in the store.
     allow(

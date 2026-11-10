@@ -3,14 +3,19 @@
  * environment, runs the consumer, and shuts down cleanly on SIGTERM.
  *
  * Env: URGENT_QUEUE_URL, STANDARD_QUEUE_URL, IDEMPOTENCY_TABLE, CELL_INDEX_TABLE, DB_CLUSTER_ARN,
- * DB_SECRET_ARN, DB_NAME, ALERT_KEYS_SECRET_ARN, KILL_SWITCH_PARAM, APNS_KEY_SECRET_ARN,
- * FCM_SERVICE_ACCOUNT_SECRET_ARN. Optional: SENDER_CONCURRENCY (default 50).
+ * DB_SECRET_ARN, DB_NAME, ALERT_VERIFY_KEYS, KILL_SWITCH_PARAM, APNS_KEY_SECRET_ARN,
+ * FCM_SERVICE_ACCOUNT_SECRET_ARN. Optional: SENDER_CONCURRENCY (default 50), PUBLIC_ALERT_BASE_URL
+ * (CDN origin; puts data.alertUrl in every push), FCM_PROJECT_IDS
+ * (comma-separated Firebase project ids; must match the secret's service accounts in order) and
+ * FCM_PROJECT_RATE_PER_SEC (sends per second per Firebase project, default 9000).
+ * The FCM secret is a JSON array of service accounts, one per Firebase project (the first is the
+ * default project), or one service account object for a single project.
  */
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { RDSDataClient } from '@aws-sdk/client-rds-data';
+import { ECSClient } from '@aws-sdk/client-ecs';
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import type { Alert } from '@relay/shared';
 import { DynamoIdempotencyStore } from '../../adapters/aws/dynamo-idempotency-store.js';
 import { PostgresAlertStore } from '../../adapters/postgres/alert-store.js';
 import { PostgresDeviceStore } from '../../adapters/postgres/device-store.js';
@@ -21,20 +26,27 @@ import {
   FcmSender,
   RoutingPushSender,
   validateApnsSecret,
-  validateFcmServiceAccount,
+  validateFcmServiceAccounts,
+  FcmProjectSender,
+  EcsFleetSize,
+  fcmRateFromEnv,
+  fleetSizeFromEnv,
+  parseFcmProjectIds,
 } from '../../adapters/push/index.js';
 import { ExpoPushSender } from '../../adapters/expo/expo-push-sender.js';
 import { DynamoCellIndex } from '../cell-index/dynamo-cell-index.js';
 import { createKillSwitch } from '../../config/kill-switch.js';
-import { clearKeyringCache, loadKeyring, loadSecretString } from '../../config/secrets.js';
+import { loadSecretString } from '../../config/secrets.js';
 import { DataApiExecutor } from '../../db/sql.js';
 import type { Logger } from '../../delivery/types.js';
-import { createAlertVerifier } from '../../signing/index.js';
+import { alertVerifierFromEnv } from '../../signing/kms.js';
 import { CachedAlertStore } from './cached-alerts.js';
 import { SenderConsumer } from './consumer.js';
 import { createDeadTargetClearer } from './dead-target.js';
+import { PermanentBreaker } from './breaker.js';
 import { DeadTargetQueue } from './dead-target-queue.js';
-import { SENDER_LEASE_MS, processBatch, type SenderDeps } from './sender.js';
+import { SENDER_LEASE_MS, createDeadTargetGate, processBatch, type SenderDeps } from './sender.js';
+import { errorFields } from '../../delivery/redact.js';
 import { SqsSendQueue } from './sqs-send-queue.js';
 
 const logger: Logger = {
@@ -51,7 +63,7 @@ const REQUIRED = [
   'DB_CLUSTER_ARN',
   'DB_SECRET_ARN',
   'DB_NAME',
-  'ALERT_KEYS_SECRET_ARN',
+  'ALERT_VERIFY_KEYS',
   'KILL_SWITCH_PARAM',
   'APNS_KEY_SECRET_ARN',
   'FCM_SERVICE_ACCOUNT_SECRET_ARN',
@@ -82,12 +94,53 @@ async function main(): Promise<void> {
   // Refuse to start with the placeholder secrets CDK creates, or with malformed ones, rather
   // than failing (or, worse, "killing" every token) once pushes start. Errors name fields only.
   const apns = validateApnsSecret(JSON.parse(await loadSecretString(env.APNS_KEY_SECRET_ARN)));
-  const fcm = validateFcmServiceAccount(
+  const fcmAccounts = validateFcmServiceAccounts(
     JSON.parse(await loadSecretString(env.FCM_SERVICE_ACCOUNT_SECRET_ARN)),
   );
+  // The configured project list (also given to the API, which assigns devices to projects) must
+  // match the secret exactly: a device's token only works with its own project.
+  const fcmProjectIds = parseFcmProjectIds(process.env['FCM_PROJECT_IDS']);
+  const secretIds = fcmAccounts.map((a) => a.project_id);
+  if (fcmProjectIds.length > 0 && fcmProjectIds.join(',') !== secretIds.join(',')) {
+    throw new Error('FCM_PROJECT_IDS does not match the project_id list in the FCM secret');
+  }
+  // Each task's FCM rate is the fleet budget divided by the running sender tasks (an explicit
+  // FCM_PROJECT_RATE_PER_SEC overrides that). Recomputed every few seconds as the fleet scales.
+  const fleetSize = fleetSizeFromEnv(
+    process.env,
+    () => new ECSClient({}),
+    (err) =>
+      logger.warn('fcm.fleet_size_failed', { error: err instanceof Error ? err.name : 'Error' }),
+  );
+  const fcmRate = fcmRateFromEnv(process.env, fleetSize);
+  await fleetSize.refresh();
+  const fcmSender = new FcmProjectSender({
+    projects: fcmAccounts.map((serviceAccount) => ({
+      projectId: serviceAccount.project_id ?? '',
+      sender: new FcmSender({ serviceAccount, logger }),
+    })),
+    rateProvider: fcmRate.provider,
+    logger,
+  });
+  logger.info('fcm.rate', { mode: fcmRate.mode, ratePerSecond: fcmSender.ratePerSecond });
+  if (fcmRate.mode === 'fleet') {
+    setInterval(() => {
+      void fleetSize.refresh().then(() => {
+        const rate = fcmSender.refreshRate();
+        if (fleetSize instanceof EcsFleetSize && fleetSize.inFallback) {
+          // Fail safe: ECS reads are failing, so the fleet maximum is assumed. Logged for a metric filter.
+          logger.warn('fcm.fleet_size_fallback', {
+            fleetSize: fleetSize.size(),
+            ratePerSecond: rate,
+          });
+        }
+      });
+    }, 5_000).unref();
+  }
 
   const alerts = new CachedAlertStore(new PostgresAlertStore(db));
-  let verify = createAlertVerifier((await loadKeyring(env.ALERT_KEYS_SECRET_ARN)).all);
+  // Public keys fetched once (kms:GetPublicKey); each alert version is verified once (memo).
+  const verifyAlert = await alertVerifierFromEnv(env);
   const idempotency = new DynamoIdempotencyStore(doc, env.IDEMPOTENCY_TABLE);
   const clearDeadTarget = createDeadTargetClearer({
     devices: new PostgresDeviceStore(db),
@@ -96,12 +149,13 @@ async function main(): Promise<void> {
   });
   // Cleanup runs in the background (4 at a time, 10,000 queued) so it never delays a batch.
   const deadTargets = new DeadTargetQueue({ process: clearDeadTarget, logger });
+  // Clears wait for the breaker's evidence (200 results, at most 60 s): see dead-target-gate.ts.
+  const breaker = new PermanentBreaker();
   const isPaused = createKillSwitch(env.KILL_SWITCH_PARAM);
   const deps: SenderDeps = {
     idempotency,
     alerts,
-    // Evaluated per call so a rotated key (refreshKeys) takes effect.
-    verifyAlert: (alert: Alert) => verify(alert),
+    verifyAlert,
     isDeliveryPaused: isPaused,
     push: new RoutingPushSender({
       ios: new ApnsSender({
@@ -111,7 +165,7 @@ async function main(): Promise<void> {
         bundleId: apns.bundleId,
         sandbox: apns.sandbox,
       }),
-      android: new FcmSender({ serviceAccount: fcm }),
+      android: fcmSender,
       // Development builds only (Expo is limited to about 600 pushes per second per project).
       expo: new ExpoNativeAdapter(new ExpoPushSender()),
     }),
@@ -121,14 +175,17 @@ async function main(): Promise<void> {
     }),
     onDeadTarget: clearDeadTarget,
     deadTargets,
+    breaker,
     clock: { now: () => new Date() },
     logger,
+    ...(process.env['PUBLIC_ALERT_BASE_URL']
+      ? { publicAlertBaseUrl: process.env['PUBLIC_ALERT_BASE_URL'] }
+      : {}),
     invalidateAlert: (id) => alerts.invalidate(id),
-    refreshKeys: async () => {
-      clearKeyringCache();
-      verify = createAlertVerifier((await loadKeyring(env.ALERT_KEYS_SECRET_ARN)).all);
-    },
   };
+  // Held clears are re-queued as retries (send queue above) if the breaker opens.
+  const deadTargetGate = createDeadTargetGate(deps);
+  deps.deadTargetGate = deadTargetGate;
 
   const consumer = new SenderConsumer({
     sqs,
@@ -158,14 +215,17 @@ async function main(): Promise<void> {
   await consumer.run();
   // Flush pending dead-target cleanups with whatever is left of the 29 s budget.
   const left = Math.max(500, 29_000 - (Date.now() - (shutdownAt || Date.now())));
-  await deadTargets.flush(left);
+  deadTargetGate.shutdown(); // decide on held clears now, so the flush below includes them
+  const start = Date.now();
+  await deadTargetGate.settle(Math.min(5_000, left)); // re-queues of held recipients go first
+  await deadTargets.flush(Math.max(500, left - (Date.now() - start)));
   logger.info('sender.stopped', {});
 }
 
 main().then(
   () => process.exit(0),
   (err: unknown) => {
-    logger.error('sender.fatal', { error: err instanceof Error ? err.message : String(err) });
+    logger.error('sender.fatal', errorFields(err));
     process.exit(1);
   },
 );

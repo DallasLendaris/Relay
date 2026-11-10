@@ -27,8 +27,22 @@ if (modeCtx !== undefined && modeCtx !== 'queue' && modeCtx !== 'inline') {
   throw new Error(`fanoutMode must be "queue" or "inline", got "${String(modeCtx)}"`);
 }
 
+// CDN origin for the alert documents the sender links in pushes: -c publicAlertBaseUrl=https://...
+// Unset: pushes carry no alertUrl and phones open alerts through the API.
+const publicAlertBaseUrl = app.node.tryGetContext('publicAlertBaseUrl');
+if (
+  publicAlertBaseUrl !== undefined &&
+  !/^https:\/\/[^/\s]+\/?$/.test(String(publicAlertBaseUrl))
+) {
+  throw new Error('publicAlertBaseUrl must be an https origin such as https://alerts.example.org');
+}
+
+// Prod must name the CDN origin (PERF-3) unless -c allowNoPublicAlertUrl=true says it is deliberate.
+const allowNoPublicAlertUrl = app.node.tryGetContext('allowNoPublicAlertUrl');
+
 // Capacity settings from context, e.g. -c auroraMaxAcu=32 -c apiReservedConcurrency=3000.
-// Reserved concurrency stays unset by default so a fresh account (low Lambda quota) deploys.
+// Prod reserves concurrency by default, sized from -c lambdaConcurrencyQuota (default 1000, the
+// AWS default; raise the real quota first, see docs/scale-quotas.md). Dev stays unreserved.
 const numberCtx = (name: string): number | undefined => {
   const raw = app.node.tryGetContext(name);
   if (raw === undefined) return undefined;
@@ -44,6 +58,11 @@ const capacity = Object.fromEntries(
       'aggregatorReservedConcurrency',
       'repairReservedConcurrency',
       'checkinsWarmWritesPerSecond',
+      'checkinTotalsWarmWritesPerSecond',
+      'lambdaConcurrencyQuota',
+      'apiGatewayRpsQuota',
+      'plannerReservedConcurrency',
+      'shardReservedConcurrency',
     ] as const
   ).flatMap((k) => {
     const v = numberCtx(k);
@@ -51,11 +70,35 @@ const capacity = Object.fromEntries(
   }),
 );
 
+// Monitoring: -c alarmEmail=... (required on prod unless -c allowNoAlarmEmail=true),
+// -c enableGuardDuty, -c logRetentionDays, -c monthlyBudgetUsd.
+const boolCtx = (name: string): boolean | undefined => {
+  const raw = app.node.tryGetContext(name);
+  return raw === undefined ? undefined : String(raw) === 'true';
+};
+const alarmEmail = app.node.tryGetContext('alarmEmail');
+const enableGuardDuty = boolCtx('enableGuardDuty');
+const allowNoAlarmEmail = boolCtx('allowNoAlarmEmail');
+const logRetentionDays = numberCtx('logRetentionDays');
+const monthlyBudgetUsd = numberCtx('monthlyBudgetUsd');
+const monitoring = {
+  ...(alarmEmail ? { alarmEmail: String(alarmEmail) } : {}),
+  ...(allowNoAlarmEmail !== undefined ? { allowNoAlarmEmail } : {}),
+  ...(enableGuardDuty !== undefined ? { enableGuardDuty } : {}),
+  ...(logRetentionDays !== undefined ? { logRetentionDays } : {}),
+  ...(monthlyBudgetUsd !== undefined ? { monthlyBudgetUsd } : {}),
+};
+
 buildRelayApp(app, {
   capacity,
+  monitoring,
   stage,
   env,
   edgeEnv,
   ...(throttle ? { throttle } : {}),
+  ...(publicAlertBaseUrl ? { publicAlertBaseUrl: String(publicAlertBaseUrl) } : {}),
+  ...(allowNoPublicAlertUrl !== undefined
+    ? { allowNoPublicAlertUrl: String(allowNoPublicAlertUrl) === 'true' }
+    : {}),
   ...(modeCtx ? { fanoutMode: modeCtx as 'queue' | 'inline' } : {}),
 });

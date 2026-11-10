@@ -16,6 +16,13 @@ describe('runMigrations', () => {
       '0005_alert_cells.sql',
       '0006_push_targets.sql',
       '0007_push_token_lookup_index.sql',
+      '0008_push_token_moves.sql',
+      '0009_cell_index_outbox.sql',
+      '0010_minimize_places_tombstones.sql',
+      '0011_roles.sql',
+      '0012_push_project.sql',
+      '0013_strip_house_numbers.sql',
+      '0014_outbox_claim_lease.sql',
     ]);
     const rows = await exec.query<{ name: string }>(
       'SELECT name FROM schema_migrations ORDER BY name',
@@ -52,5 +59,47 @@ describe('runMigrations', () => {
         [],
       ),
     ).rejects.toThrow();
+  });
+
+  it('0013 strips a leading house number from short_address, and twice is the same as once', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const exec = new PgliteExecutor(new PGlite());
+    await runMigrations(exec, MIGRATIONS_DIR, {
+      skip: (f) => f.startsWith('0001_') || f.startsWith('0013_'),
+    });
+    await exec.query(
+      "INSERT INTO devices (id, credential_hash, language, created_at) VALUES ('11111111-1111-4111-8111-111111111111', 'h', 'en', now())",
+      [],
+    );
+    const rows: Array<[string, string | null]> = [
+      ['1600 Amphitheatre Pkwy, Mountain View', 'Amphitheatre Pkwy, Mountain View'],
+      ['12-B Main St, San Jose', 'Main St, San Jose'],
+      ['221B Baker St, Oakland', 'Baker St, Oakland'],
+      ['12-14 Elm St, Fresno', 'Elm St, Fresno'],
+      ['1st St, San Jose', '1st St, San Jose'],
+      ['5th Ave, San Francisco', '5th Ave, San Francisco'],
+      ['Main St, San Jose', 'Main St, San Jose'],
+      ['4176 Bascom Ave, Santa Clara', 'Bascom Ave, Santa Clara'],
+      ['', null],
+    ];
+    for (const [i, [before]] of rows.entries()) {
+      await exec.query(
+        "INSERT INTO places (id, device_id, label, short_address, cell_center_lat, cell_center_lng, h3_cell, created_at) VALUES ($1, '11111111-1111-4111-8111-111111111111', 'x', $2, 37, -121, 'c', now())",
+        [`00000000-0000-4000-8000-00000000000${i}`, before],
+      );
+    }
+    const sql = await readFile(`${MIGRATIONS_DIR}/0013_strip_house_numbers.sql`, 'utf8');
+    const apply = async () => {
+      for (const stmt of splitStatements(sql)) await exec.query(stmt, []);
+      return (
+        await exec.query<{ short_address: string | null }>(
+          'SELECT short_address FROM places ORDER BY id',
+          [],
+        )
+      ).map((r) => r.short_address);
+    };
+    const expected = rows.map(([, after]) => after);
+    expect(await apply()).toEqual(expected);
+    expect(await apply()).toEqual(expected);
   });
 });

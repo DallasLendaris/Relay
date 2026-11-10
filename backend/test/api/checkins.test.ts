@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { createApi, type ApiDeps, type ApiEvent } from '../../src/api/index.js';
+import type { DeviceErasure, DeviceStore } from '../../src/ports.js';
 import { MemoryCheckInStore } from '../../src/adapters/memory/checkin-store.js';
 import { MemoryDeviceStore } from '../../src/adapters/memory/device-store.js';
 import { MemoryPlaceStore } from '../../src/adapters/memory/place-store.js';
@@ -43,10 +44,21 @@ function counting<T extends object>(store: T): { store: T; calls: string[] } {
   return { store: proxy, calls };
 }
 
+/**
+ * No per-request database call, but the tombstone list (a cached read of erased devices, once per
+ * cache window) is allowed: it is what keeps a deleted device's stateless credential out.
+ */
+function tombstonesOnly(): DeviceStore & DeviceErasure {
+  return new Proxy(forbidden<DeviceStore & DeviceErasure>('devices'), {
+    get: (target, prop, receiver) =>
+      prop === 'listDeletedDevices' ? async () => [] : Reflect.get(target, prop, receiver),
+  });
+}
+
 function stateless(over: Partial<ApiDeps> = {}, checkins = new MemoryCheckInStore()) {
   let now = NOW;
   const deps: ApiDeps = {
-    devices: forbidden('devices'),
+    devices: tombstonesOnly(),
     places: forbidden('places'),
     alerts: forbidden('alerts'),
     geocoder: forbidden('geocoder'),
@@ -267,8 +279,6 @@ describe('check-in credentials and tokens from before the v2 rollout', () => {
       deviceId: s.deviceId,
       label: 'Home',
       shortAddress: 'x',
-      latitude: 37.3,
-      longitude: -121.9,
       h3Cell: CELL,
       createdAt: NOW.toISOString(),
     });

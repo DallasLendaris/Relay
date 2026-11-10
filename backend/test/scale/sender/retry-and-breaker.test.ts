@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { PermanentBreaker, ROLLING_WINDOW } from '../../../src/scale/sender/breaker.js';
+import { DEAD_TARGET_HOLD_MS } from '../../../src/scale/sender/dead-target-gate.js';
 import { DeadTargetQueue } from '../../../src/scale/sender/dead-target-queue.js';
 import {
   RETRY_MAX_DELAY_SECONDS,
+  createDeadTargetGate,
   processBatch,
   retryDelaySeconds,
 } from '../../../src/scale/sender/sender.js';
@@ -13,7 +15,16 @@ import type {
   SendQueue,
   SendQueueName,
 } from '../../../src/scale/contracts.js';
-import { FakePush, makeBatch, makeDeps, recordingLogger, seedAlert, waitFor } from './fakes.js';
+import {
+  FakePush,
+  clearAtOnce,
+  clockScheduler,
+  makeBatch,
+  makeDeps,
+  recordingLogger,
+  seedAlert,
+  waitFor,
+} from './fakes.js';
 
 /** A queue that honors delaySeconds against the test's fake clock, like SQS does. */
 class DelayQueue implements SendQueue {
@@ -241,19 +252,37 @@ describe('circuit breaker in processBatch', () => {
     expect(JSON.stringify(lines)).not.toContain('tok0');
   });
 
-  it('below the thresholds dead targets are still cleared, asynchronously', async () => {
+  /** The production gate on the test clock, so the 30 s hold can be stepped through. */
+  const holding = (t: ReturnType<typeof makeDeps>) => {
+    const sched = clockScheduler(t.state);
+    t.deps.breaker = new PermanentBreaker();
+    t.deps.deadTargets = new DeadTargetQueue({
+      process: t.deps.onDeadTarget,
+      logger: t.deps.logger,
+      writeMetric: () => {},
+    });
+    const gate = createDeadTargetGate(t.deps, { setTimer: sched.setTimer });
+    t.deps.deadTargetGate = gate;
+    return { sched, gate };
+  };
+
+  it('below the thresholds dead targets are still cleared, after the hold', async () => {
     const cleared: string[] = [];
     const t = makeDeps({
       push: new FakePush((m) => (m.data['checkInToken'] === 'ct0' ? dead(m) : { ok: true })),
       onDeadTarget: async (id) => void cleared.push(id),
     });
+    const { sched } = holding(t);
     await seedAlert(t.alerts);
     await processBatch(makeBatch({}, 20), t.deps); // 1 permanent: under the 20 minimum
+    await new Promise((r) => setTimeout(r, 20));
+    expect(cleared).toEqual([]); // every clear waits DEAD_TARGET_HOLD_MS
+    await sched.advance(DEAD_TARGET_HOLD_MS + 1);
     await waitFor(() => cleared.length === 1);
     expect(cleared).toEqual(['dev0']);
   });
 
-  it('opens on the process-wide rolling rate across many small batches', async () => {
+  it('opens on the process-wide rolling rate across many small batches; nothing held is cleared', async () => {
     const { lines, logger } = recordingLogger();
     const cleared: string[] = [];
     const t = makeDeps({
@@ -267,17 +296,32 @@ describe('circuit breaker in processBatch', () => {
       ),
       onDeadTarget: async (id) => void cleared.push(id),
     });
+    const { sched, gate } = holding(t);
     await seedAlert(t.alerts);
     for (let i = 0; i < 60; i++) {
       const b = makeBatch({ batchKey: `k:${i}` }, 5);
       await processBatch(b, t.deps);
     }
-    await new Promise((r) => setTimeout(r, 20));
-    // The window reaches 200 results at batch 40; from then on nothing is cleared.
-    expect(cleared).toHaveLength(39 * 2);
+    // The process-wide window reaches 200 results at batch 40 and opens...
     const opened = lines.filter((l) => l.msg === 'delivery.permanent_breaker_open');
     expect(opened).toHaveLength(21); // batches 40-60
     expect(opened[0]?.fields).toMatchObject({ reason: 'rolling_rate' });
+    // ...but each platform's own breaker (android 1 of 2, iOS 1 of 3) opened long before.
+    expect(lines.some((l) => l.msg === 'delivery.platform_breaker_open')).toBe(true);
+    await sched.advance(DEAD_TARGET_HOLD_MS + 1);
+    await gate.settle(1000);
+    await new Promise((r) => setTimeout(r, 20));
+    // Before G1 the 78 dead targets of batches 1-39 were cleared. Now the few held before the
+    // platform breakers opened are re-queued at the end of the hold, and nothing is cleared.
+    expect(cleared).toEqual([]);
+    const requeued = lines.filter((l) => l.msg === 'sender.dead_targets_requeued');
+    expect(requeued).toHaveLength(1);
+    const held = t.sendQueue.enqueued
+      .flatMap((e) => e.batches)
+      .filter((b) => b.batchKey.endsWith(':h1'))
+      .reduce((n, b) => n + b.recipients.length, 0);
+    expect(held).toBe(requeued[0]?.fields?.['count']);
+    expect(held).toBeGreaterThan(0);
   });
 
   it('a message-scoped permanent failure (payload too large) is never cleared, retried or counted toward the breaker', async () => {
@@ -329,6 +373,7 @@ describe('asynchronous dead-target cleanup', () => {
         order.push('cleanup-done');
       },
     });
+    clearAtOnce(t.deps); // about the cleanup queue, not the hold
     const realSent = t.idempotency.markSent.bind(t.idempotency);
     t.idempotency.markSent = async (k, e) => (order.push('markSent'), realSent(k, e));
     await seedAlert(t.alerts);

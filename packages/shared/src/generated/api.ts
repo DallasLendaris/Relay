@@ -42,6 +42,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/devices/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Permanently erase this device and all of its data.
+         * @description Deletes the device's places, its alert-matching index entries and every check-in it
+         *     made, and records that the device is gone so its credential is rejected afterwards
+         *     (a deleted device can no longer check in). This cannot be undone. Calling it again
+         *     with the same credential after a partial failure finishes the erasure.
+         */
+        delete: operations["deleteDevice"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/places": {
         parameters: {
             query?: never;
@@ -194,6 +217,13 @@ export interface components {
             deviceId: string;
             /** @description Secret bearer credential. Store in secure storage; shown only once. */
             credential: string;
+            /**
+             * @description Android only. The Firebase project this device's app must register its FCM token
+             *     with (initialize a secondary FirebaseApp for it when it is not the default project).
+             *     Send it back as fcmProject with the token in PUT /devices/me/push-token. Absent when
+             *     the server uses a single Firebase project.
+             */
+            fcmProject?: string;
         };
         PushTokenRequest: components["schemas"]["ExpoPushTokenRequest"] | components["schemas"]["NativePushTokenRequest"];
         ExpoPushTokenRequest: {
@@ -210,14 +240,27 @@ export interface components {
              *     expo: ExponentPushToken[...].
              */
             token: string;
+            /**
+             * @description Android only. The Firebase project the FCM token was registered with, as returned
+             *     by POST /devices. Must be one of the server's configured projects, otherwise 400.
+             *     Omit it when the app registered with the default (first) project.
+             */
+            fcmProject?: string;
             /** @enum {string} */
             language: "en" | "es";
         };
         CreatePlaceByAddress: {
+            /**
+             * @description A short, generic name such as Home, Work or School. Do not put an address or a
+             *     person's name in it.
+             */
             label: string;
+            /** @description Free-text address, at most 200 characters, no control characters. */
             address: string;
         };
+        /** @description The coordinates are used once to find the H3 cell and are not stored. */
         CreatePlaceByCoordinates: {
+            /** @description A short, generic name such as Home, Work or School. */
             label: string;
             latitude: number;
             longitude: number;
@@ -228,8 +271,14 @@ export interface components {
             /** Format: uuid */
             id: string;
             label: string;
-            /** @description Street-level address without the house number, for display. */
-            shortAddress: string;
+            /**
+             * @description Coarse address for display: the street name and locality, for example "Elm St,
+             *     San José" (or the locality alone when the street cannot be separated). It never
+             *     contains a house number: the server does not store one. The full address the person
+             *     typed stays on their device. Absent for a place saved by coordinates (nothing but
+             *     the H3 cell is kept for those).
+             */
+            shortAddress?: string;
             /** @description H3 cell at resolution 7. */
             h3Cell: string;
             /** Format: date-time */
@@ -366,6 +415,100 @@ export interface components {
             summaries: components["schemas"]["AlertSummaryText"][];
             /** @description Set once Relay validates the alert signature. */
             signature: string | null;
+            /** @description True for a particularly dangerous situation (NWS damage threat CONSIDERABLE on a Tornado or Flash Flood Warning). The tier stays warning. Omitted when not applicable. */
+            pds?: boolean;
+        };
+        /**
+         * @description Cell-free document for one alert version, served by the CDN at
+         *     `{cdnBase}/alerts/v1/doc/{alertId}/{hash}.json` and immutable (cached for a year; the URL
+         *     changes whenever the alert changes). It has everything the app shows and not the H3 cell
+         *     list. `signature` is the alert's own signature over the full alert; `area.cellsSha256` and
+         *     `area.cellCount` bind this document to those cells. A phone cannot verify the signature
+         *     (it is symmetric); it trusts the document because it came from the Relay CDN over TLS.
+         */
+        PublicAlertDocument: {
+            /** @constant */
+            version: 1;
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            source: "nws" | "usgs" | "ipaws";
+            sourceId: string;
+            event: string;
+            eventCode: string | null;
+            relaySeverity: components["schemas"]["RelaySeverity"];
+            /** @enum {string} */
+            capSeverity: "Extreme" | "Severe" | "Moderate" | "Minor" | "Unknown";
+            /** @enum {string} */
+            urgency: "Immediate" | "Expected" | "Future" | "Past" | "Unknown";
+            /** @enum {string} */
+            certainty: "Observed" | "Likely" | "Possible" | "Unlikely" | "Unknown";
+            /** @enum {string} */
+            status: "Actual" | "Exercise" | "System" | "Test" | "Draft";
+            /** @enum {string} */
+            messageType: "Alert" | "Update" | "Cancel" | "Ack" | "Error";
+            state: components["schemas"]["AlertState"];
+            references: components["schemas"]["AlertReference"][];
+            area: {
+                description: string;
+                cellCount: number;
+                cellsSha256: string;
+            };
+            /** Format: date-time */
+            sent: string;
+            /** Format: date-time */
+            effective: string;
+            /** Format: date-time */
+            onset: string | null;
+            /** Format: date-time */
+            expires: string;
+            /** Format: date-time */
+            ends: string | null;
+            official: components["schemas"]["AlertOfficial"];
+            summaries: components["schemas"]["AlertSummaryText"][];
+            signature: string | null;
+            pds?: boolean;
+        };
+        /**
+         * @description Short-TTL pointer served at `{cdnBase}/alerts/v1/latest/{alertId}.json`
+         *     (`Cache-Control: public, max-age=15, stale-while-revalidate=60`). It names the current
+         *     document of an alert. A document is never changed after it is written, so an update or
+         *     cancellation is seen only through this pointer, at most 75 seconds (15 s max-age plus 60 s
+         *     stale-while-revalidate) after it is published. Phones that opened a document from a push
+         *     should re-read the pointer when they show the alert.
+         */
+        AlertPointer: {
+            /** @constant */
+            version: 1;
+            /** Format: uuid */
+            alertId: string;
+            sourceId: string;
+            state: components["schemas"]["AlertState"];
+            /** Format: date-time */
+            expires: string;
+            /** @description Path, relative to the CDN base URL, of the current PublicAlertDocument. */
+            doc: string;
+        };
+        /**
+         * @description The `data` map of an alert push notification (all values are strings). Not an HTTP
+         *     payload; documented here because the app reads it. Required keys survive payload trimming;
+         *     `alertUrl` may be dropped to fit the 4 KB APNs limit.
+         */
+        PushData: {
+            /** Format: uuid */
+            alertId: string;
+            checkInToken: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /**
+             * Format: uri
+             * @description Absolute CDN URL of this alert's PublicAlertDocument. Open it instead of calling the
+             *     API. A 404 means the publish has not landed yet: retry once after a few seconds, then
+             *     fall back to GET /alerts/{alertId}. Absent when the sender has no CDN base configured.
+             */
+            alertUrl?: string;
+        } & {
+            [key: string]: unknown;
         };
         CheckIn: {
             /** Format: uuid */
@@ -465,6 +608,25 @@ export interface operations {
                 content?: never;
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    deleteDevice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Erased */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             401: components["responses"]["Unauthorized"];
         };
     };

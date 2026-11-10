@@ -1,5 +1,6 @@
 import { getHexagonAreaAvg, latLngToCell, polygonToCells } from 'h3-js';
 import type { MultiPolygon, Polygon, Position } from 'geojson';
+import { InvalidGeometryError, validateGeometry } from './validate-geometry.js';
 import type { ZoneGeometryProvider } from './zones.js';
 
 /** H3 resolution used for matching (will move to @relay/shared). Cells are ~5 km2. */
@@ -62,18 +63,25 @@ export function cellForPoint(lat: number, lng: number): string {
  *
  * Failure rules (an alert must never silently reach nobody):
  * - a zone lookup that fails (network error) throws ZoneLookupError, so the feature is retried;
- * - a zone the provider reports as unknown (404 -> null) is skipped with a warning, because
+ * - a zone the provider reports as unknown (404 -> null) or with unusable geometry is skipped with
+ *   a warning and reported through onUnknownZones, because
  *   retrying can never fix it, but if that leaves 0 cells in total we throw NoCellsError.
  */
 export async function cellsForAlertArea(
   area: AlertArea,
   zones: ZoneGeometryProvider,
-  opts: { warn?(msg: string, fields: Record<string, unknown>): void } = {},
+  opts: {
+    warn?(msg: string, fields: Record<string, unknown>): void;
+    /** Called once, when some UGC zones were unknown or unusable (REL-7). The rest still resolve. */
+    onUnknownZones?(ugcs: string[], total: number): void;
+  } = {},
 ): Promise<string[]> {
   const polygons: Position[][][] = [];
   const unknownUgcs: string[] = [];
   if (area.geometry) {
-    polygons.push(...toPolygons(area.geometry));
+    const check = validateGeometry(area.geometry);
+    if (!check.ok) throw new InvalidGeometryError(check.reason);
+    polygons.push(...toPolygons(check.geometry));
   } else {
     for (const ugc of area.ugcCodes) {
       let geometry: Polygon | MultiPolygon | null;
@@ -82,21 +90,27 @@ export async function cellsForAlertArea(
       } catch (err) {
         throw new ZoneLookupError(ugc, err);
       }
-      if (geometry) {
-        polygons.push(...toPolygons(geometry));
+      const check = geometry ? validateGeometry(geometry) : null;
+      if (geometry && check?.ok) {
+        polygons.push(...toPolygons(check.geometry));
       } else {
         unknownUgcs.push(ugc);
-        opts.warn?.('unknown UGC zone, skipped', { ugc });
+        opts.warn?.('unknown UGC zone, skipped', {
+          ugc,
+          ...(check && !check.ok ? { reason: check.reason } : {}),
+        });
       }
     }
+    if (unknownUgcs.length > 0) opts.onUnknownZones?.(unknownUgcs, area.ugcCodes.length);
   }
 
   const cells = new Set<string>();
   for (const rings of polygons) {
-    const outer = rings[0];
-    if (!outer) continue;
-    // Cheap size estimate first, so a huge polygon never reaches polygonToCells.
-    if (estimateCellCount(outer) > MAX_CELLS_PER_AREA) throw tooManyCells();
+    if (rings.length === 0) continue;
+    // Cheap size estimate first, so a huge polygon never reaches polygonToCells. Holes count too:
+    // polygonToCells and the boundary sampling walk every ring (SEC-B-10).
+    for (const ring of rings)
+      if (estimateCellCount(ring) > MAX_CELLS_PER_AREA) throw tooManyCells();
     for (const cell of cellsForPolygon(rings)) cells.add(cell);
     if (cells.size > MAX_CELLS_PER_AREA) throw tooManyCells();
   }

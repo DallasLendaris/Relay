@@ -118,12 +118,15 @@ describe('cell-index repair outbox', () => {
 });
 
 describe('late joiners', () => {
-  it('the API has both send queue URLs and may send to them', () => {
-    const vars = fnWithEnv(dev.api, 'STANDARD_QUEUE_URL').Properties['Environment'].Variables;
-    expect(vars).toHaveProperty('URGENT_QUEUE_URL');
+  it('the API knows only the late-join queue, not the send queues', () => {
+    const vars = fnWithEnv(dev.api, 'LATEJOIN_QUEUE_URL').Properties['Environment'].Variables;
+    expect(vars).not.toHaveProperty('URGENT_QUEUE_URL');
+    expect(vars).not.toHaveProperty('STANDARD_QUEUE_URL');
     const send = statements(dev.api).filter((s) => [s.Action].flat().includes('sqs:SendMessage'));
     const resources = send.flatMap((s) => [s.Resource].flat());
-    expect(resources.length).toBeGreaterThanOrEqual(3); // repair, urgent, standard
+    // The repair queue, the late-join queue and the aggregator's own DLQ: never a send queue.
+    expect(resources).toHaveLength(3);
+    expect(JSON.stringify(resources)).not.toMatch(/Urgent|Standard/);
   });
 });
 
@@ -143,7 +146,7 @@ describe('capacity', () => {
 
   it('ingest has 1024 MB in both stages', () => {
     for (const t of [dev.ingest, prod.ingest]) {
-      t.hasResourceProperties('AWS::Lambda::Function', { MemorySize: 1024, Timeout: 70 });
+      t.hasResourceProperties('AWS::Lambda::Function', { MemorySize: 1024, Timeout: 58 });
     }
   });
 
@@ -157,19 +160,18 @@ describe('capacity', () => {
     const warmed = (Object.values(prod.api.findResources('AWS::DynamoDB::Table')) as any[]).filter(
       (x) => x.Properties.WarmThroughput,
     );
-    expect(warmed).toHaveLength(1); // the totals table is written in small batches
+    expect(warmed).toHaveLength(2); // the check-ins table and the totals table (capacity.test.ts)
     const custom = synthAll('prod', { capacity: { checkinsWarmWritesPerSecond: 10000 } });
     expect(checkins(custom.api).Properties.WarmThroughput).toEqual({ WriteUnitsPerSecond: 10000 });
   });
 
-  it('reserved concurrency is unset by default (a fresh account deploys) and settable', () => {
-    for (const t of [dev.api, prod.api]) {
-      expect(
-        fns(t).filter((f) => f.Properties['ReservedConcurrentExecutions'] !== undefined),
-      ).toEqual([]);
-    }
+  it('reserved concurrency is unset on dev, planned on prod (capacity.test.ts), and settable', () => {
+    expect(
+      fns(dev.api).filter((f) => f.Properties['ReservedConcurrentExecutions'] !== undefined),
+    ).toEqual([]);
     const t = synthAll('prod', {
       capacity: {
+        lambdaConcurrencyQuota: 15000,
         apiReservedConcurrency: 3000,
         aggregatorReservedConcurrency: 20,
         repairReservedConcurrency: 5,

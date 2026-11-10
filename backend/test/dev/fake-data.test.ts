@@ -1,3 +1,4 @@
+import { cellToLatLng } from 'h3-js';
 import { describe, expect, it } from 'vitest';
 import { AlertSchema, CheckInSchema } from '@relay/shared';
 import { cellsForAlertArea } from '../../src/geo/index.js';
@@ -123,10 +124,15 @@ describe('fakePlaces', () => {
     const places = fakePlaces({ seed: 42, count: 1000 });
     expect(places).toHaveLength(1000);
     for (const place of places) {
-      expect(place.latitude).toBeGreaterThanOrEqual(minLat);
-      expect(place.latitude).toBeLessThanOrEqual(maxLat);
-      expect(place.longitude).toBeGreaterThanOrEqual(minLng);
-      expect(place.longitude).toBeLessThanOrEqual(maxLng);
+      // Places no longer carry coordinates: check the cell center, give or take one cell (~1.4 km).
+      const [lat, lng] = cellToLatLng(place.h3Cell);
+      const slack = 0.02;
+      expect(lat).toBeGreaterThanOrEqual(minLat - slack);
+      expect(lat).toBeLessThanOrEqual(maxLat + slack);
+      expect(lng).toBeGreaterThanOrEqual(minLng - slack);
+      expect(lng).toBeLessThanOrEqual(maxLng + slack);
+      expect(place).not.toHaveProperty('latitude');
+      expect(place).not.toHaveProperty('longitude');
     }
   });
 });

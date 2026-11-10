@@ -277,6 +277,9 @@ describe('ApiStack', () => {
   const t = all.api;
 
   checkEnvContract('api', envOf(t, 'PLACE_INDEX_NAME'), envNamesRead('api/handler.ts'), {
+    // Optional: unset means the default (30 days); counsel decides the real period.
+    // FCM_PROJECT_IDS: set only when the fcmProjectIds context names more than the default project.
+    optional: ['CHECKIN_RETENTION_DAYS', 'FCM_PROJECT_IDS'],
     contract: [
       'DB_CLUSTER_ARN',
       'DB_SECRET_ARN',
@@ -333,7 +336,12 @@ describe('ApiStack', () => {
 
   it('grants exactly the cell-index, check-in and keyring actions the API needs', () => {
     const on = (needle: string) => grantedOnResource(t, needle);
-    expect(on('CheckinsTable')).toEqual(['dynamodb:GetItem', 'dynamodb:PutItem']);
+    expect(on('CheckinsTable')).toEqual([
+      'dynamodb:BatchWriteItem',
+      'dynamodb:GetItem',
+      'dynamodb:PutItem',
+      'dynamodb:Query',
+    ]);
     // The cell index is a prop (FanoutStack), so its ARN appears as a cross-stack import.
     expect(on('CellIndexTable')).toEqual(
       [
@@ -367,6 +375,7 @@ describe('ApiStack', () => {
       [
         'POST /devices',
         'PUT /devices/me/push-token',
+        'DELETE /devices/me',
         'POST /places',
         'GET /places',
         'DELETE /places/{placeId}',
@@ -411,12 +420,11 @@ describe('ConfigStack', () => {
   });
 
   it('has keyring-shaped key secrets and an Expo secret', () => {
-    t.resourceCountIs('AWS::SecretsManager::Secret', 5); // plus the origin-verify secret
+    t.resourceCountIs('AWS::SecretsManager::Secret', 4); // plus the origin-verify secret
     t.hasResourceProperties('AWS::SecretsManager::Secret', {
       Name: 'relay/dev/token-keys',
       SecretString: Match.stringLikeRegexp('"current":"k1".*"keys"'),
     });
-    t.hasResourceProperties('AWS::SecretsManager::Secret', { Name: 'relay/dev/alert-keys' });
     t.hasResourceProperties('AWS::SecretsManager::Secret', {
       Name: 'relay/dev/device-credential-keys',
       SecretString: Match.stringLikeRegexp('"current":"k1".*"keys"'),
@@ -476,6 +484,12 @@ describe('resource names', () => {
             const value = r.Properties?.[key];
             if (typeof value !== 'string') continue;
             expect(value, `${stack}/${id}.${key}`).toContain(stage);
+            // The one deliberate exception: the paused queue has a fixed, stage-named identity
+            // (relay-<stage>-shard-paused) so operators and runbooks can find it.
+            if (key === 'QueueName' && value === `relay-${stage}-shard-paused`) continue;
+            // Likewise the late-join intent queue: the outbox drainer (an earlier stack) addresses it
+            // by this name, which avoids a cross-stack cycle.
+            if (key === 'QueueName' && value === `relay-${stage}-latejoin`) continue;
             expect(GENERATED_ONLY, `${stack}/${id} must not set ${key}`).not.toContain(r.Type);
           }
         }
@@ -505,17 +519,21 @@ describe('all stacks', () => {
 });
 
 describe('stack dependency order', () => {
-  // config and data are roots; delivery and fanout need them; api, sender and ingest need fanout
-  // (and delivery); the edge stack comes last. Equal ranks never depend on each other.
+  // config and data are roots; monitoring needs config; delivery needs them; fanout needs delivery's
+  // idempotency table (dense-cell tombstones); the late-join stack (it needs fanout's send queues)
+  // owns the intent queue the API sends to, so it comes before the API; sender and ingest need
+  // fanout (and delivery); the edge stack comes last. Equal ranks never depend on each other.
   const RANK: Record<string, number> = {
     config: 0,
     data: 0,
-    delivery: 1,
-    fanout: 1,
-    api: 2,
-    sender: 2,
-    ingest: 2,
-    edge: 3,
+    monitoring: 1, // reads the kill-switch name from config; everything with alarms notifies it
+    delivery: 2,
+    fanout: 3,
+    latejoin: 4,
+    sender: 4,
+    ingest: 4,
+    api: 5,
+    edge: 6,
   };
 
   for (const stage of ['dev', 'prod'] as const) {
@@ -612,6 +630,33 @@ describe('IAM grants cover every call the adapters make', () => {
       ]),
     );
     expect(allActions(t)).toContain('geo:SearchPlaceIndexForText');
+  });
+
+  it('check-ins table: TTL on "ttl", byDevice index (keys only) for erasure, scoped grants', () => {
+    for (const stage of [synthAll('dev').api, synthAll('prod').api]) {
+      const checkins = (Object.values(stage.findResources('AWS::DynamoDB::Table')) as any[]).find(
+        (x) => x.Properties.StreamSpecification,
+      );
+      expect(checkins.Properties.TimeToLiveSpecification).toEqual({
+        AttributeName: 'ttl',
+        Enabled: true,
+      });
+      expect(checkins.Properties.GlobalSecondaryIndexes).toEqual([
+        {
+          IndexName: 'byDevice',
+          KeySchema: [{ AttributeName: 'deviceId', KeyType: 'HASH' }],
+          Projection: { ProjectionType: 'KEYS_ONLY' },
+        },
+      ]);
+      // The Query grant is on the index only; BatchWriteItem is on the table.
+      const onIndex = statements(stage).filter((st) =>
+        JSON.stringify(resourcesOf(st)).includes('/index/byDevice'),
+      );
+      expect(onIndex.flatMap(actionsOf)).toEqual(['dynamodb:Query']);
+      expect(grantedOnResource(stage, 'CheckinsTable')).toEqual(
+        expect.arrayContaining(['dynamodb:BatchWriteItem', 'dynamodb:Query']),
+      );
+    }
   });
 
   it('aggregator: Put and Update on the totals table', () => {
@@ -758,11 +803,28 @@ describe('fan-out and sender env contracts', () => {
   checkEnvContract(
     'sender container',
     senderEnv(all.sender),
-    envNamesRead('scale/sender/main.ts'),
+    [...envNamesRead('scale/sender/main.ts'), ...envNamesRead('adapters/push/fleet-size.ts')],
     {
-      optional: ['SENDER_CONCURRENCY'],
+      optional: [
+        'SENDER_CONCURRENCY',
+        'PUBLIC_ALERT_BASE_URL',
+        'FCM_PROJECT_IDS',
+        'FCM_PROJECT_RATE_PER_SEC',
+      ],
     },
   );
+});
+
+describe('sender CDN base URL', () => {
+  it('PUBLIC_ALERT_BASE_URL is set from publicAlertBaseUrl and absent otherwise', () => {
+    expect(senderEnv(synthAll('dev').sender)).not.toContain('PUBLIC_ALERT_BASE_URL');
+    const t = synthAll('dev', { publicAlertBaseUrl: 'https://alerts.example.org' }).sender;
+    const defs = Object.values(t.findResources('AWS::ECS::TaskDefinition')) as any[];
+    const env = defs[0].Properties.ContainerDefinitions[0].Environment as any[];
+    expect(env.find((e) => e.Name === 'PUBLIC_ALERT_BASE_URL')?.Value).toBe(
+      'https://alerts.example.org',
+    );
+  });
 });
 
 describe('IngestStack fan-out mode and zone pack bucket', () => {

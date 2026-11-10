@@ -141,8 +141,6 @@ describe('MemoryPlaceStore.listMatchesForCells', () => {
       deviceId: `d-${id}`,
       label: 'x',
       shortAddress: 'x',
-      latitude: 1,
-      longitude: 1,
       h3Cell,
       createdAt: '2026-11-09T00:00:00.000Z',
     });

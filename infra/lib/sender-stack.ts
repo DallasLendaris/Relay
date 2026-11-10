@@ -1,5 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import {
+  Arn,
+  ArnFormat,
   CfnOutput,
   Duration,
   RemovalPolicy,
@@ -8,7 +10,13 @@ import {
   StackProps,
   Tags,
 } from 'aws-cdk-lib';
-import { Alarm, ComparisonOperator, MathExpression, Metric } from 'aws-cdk-lib/aws-cloudwatch';
+import {
+  Alarm,
+  ComparisonOperator,
+  MathExpression,
+  Metric,
+  TreatMissingData,
+} from 'aws-cdk-lib/aws-cloudwatch';
 import {
   GatewayVpcEndpointAwsService,
   Peer,
@@ -20,6 +28,7 @@ import {
 import { DockerImageAsset, Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import {
   AwsLogDriver,
+  AlarmBehavior,
   Cluster,
   ContainerImage,
   ContainerInsights,
@@ -40,7 +49,15 @@ import {
   senderMaxTasks,
   senderServiceName,
 } from './fanout-stack.js';
-import { dbEnv, type DbRefs } from './grants.js';
+import { fcmProjectIds } from './fcm-projects.js';
+import {
+  alertVerifyEnv,
+  alertVerifyStatement,
+  dbEnv,
+  grantDbToRole,
+  type AlertSigningRefs,
+  type DbRefs,
+} from './grants.js';
 
 /** One SQS queue, passed between stacks as plain strings (like every other prop). */
 export interface QueueRefs {
@@ -60,9 +77,14 @@ export interface SenderStackProps extends StackProps {
   idempotencyTableArn: string;
   cellIndexTableName: string;
   cellIndexTableArn: string;
-  alertKeysSecretArn: string;
+  alertSigning: AlertSigningRefs;
   killSwitchParamName: string;
   killSwitchParamArn: string;
+  /**
+   * CDN origin for alert documents (e.g. https://alerts.example.org), from `-c publicAlertBaseUrl`.
+   * Becomes PUBLIC_ALERT_BASE_URL; unset means pushes carry no alertUrl and phones use the API.
+   */
+  publicAlertBaseUrl?: string;
 }
 
 /** Fargate stop timeout: the consumer drains for 25 s and main.ts hard-exits at 29 s. */
@@ -73,6 +95,23 @@ export const SENDER_MAX_TASKS = SENDER_MAX_TASKS_PROD;
 export const SENDER_MIN_TASKS_PROD = 10;
 /** Context: override the prod minimum task count (default 10). */
 export const SENDER_MIN_TASKS_CONTEXT = 'senderMinTasks';
+/**
+ * Context: per-Firebase-project send budget for the whole sender fleet, per second (default 9,000,
+ * under the ~10,000/s quota). Each task sends budget / running tasks (FCM_PROJECT_FLEET_RATE_PER_SEC).
+ */
+export const FCM_PROJECT_FLEET_RATE_CONTEXT = 'fcmProjectFleetRatePerSec';
+export const FCM_PROJECT_FLEET_RATE_DEFAULT = 9_000;
+
+function fcmProjectFleetRate(scope: Construct): number {
+  const raw = scope.node.tryGetContext(FCM_PROJECT_FLEET_RATE_CONTEXT);
+  if (raw === undefined) return FCM_PROJECT_FLEET_RATE_DEFAULT;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`context ${FCM_PROJECT_FLEET_RATE_CONTEXT} must be a positive number`);
+  }
+  return n;
+}
+
 /** Scale in only after this many consecutive idle minutes. */
 export const SENDER_IDLE_MINUTES_BEFORE_SCALE_IN = 15;
 /** Context flag: when "true" the image comes from a public base image instead of building the Dockerfile. */
@@ -105,13 +144,17 @@ function senderMinTasks(scope: Construct, maxTasks: number): number {
  * The sender service: long-running Fargate tasks that drain the urgent and standard send queues
  * and push to APNs and FCM. Scaled on queue depth and age.
  *
- * Gating: the APNs and FCM secrets are created with placeholder values, and a sender that boots
- * with them crash-loops (and the circuit breaker would roll the deploy back). So desiredCount is 0
- * and no auto scaling exists until the context flag senderEnabled=true. Order for a first deploy:
- *   1. deploy without the flag (secrets and everything else are created, fleet at 0)
+ * Gating (see isSenderEnabled): prod runs the fleet by default, so a deploy can never scale it to 0
+ * by accident. The APNs and FCM secrets are created with placeholder values, and a sender that
+ * boots with them crash-loops, so the very first prod deploy (and any dev deploy before the
+ * secrets are real) turns the fleet off explicitly:
+ *   1. deploy with `-c senderEnabled=false -c iUnderstandSenderStops=true` (prod) or no flag (dev)
  *   2. put the real APNs and FCM values into the two secrets
- *   3. deploy again with -c senderEnabled=true (the fleet starts at its minimum)
+ *   3. deploy again with no flag on prod, or `-c senderEnabled=true` on dev
  * The planner reads the same flag, so it never pre-scales a fleet that is off.
+ *
+ * A bad image rolls back: the ECS circuit breaker catches tasks that never start, and a deployment
+ * alarm (running tasks below desired for 3 minutes) catches tasks that start and then die.
  */
 export class SenderStack extends Stack {
   readonly clusterName: string;
@@ -165,12 +208,19 @@ export class SenderStack extends Stack {
       ),
       removalPolicy,
     });
+    // Android pushes are spread over N Firebase projects (PERF-1). With none configured the
+    // secret holds one service account object (one project); with N ids it holds a JSON array of
+    // N service accounts, one per project id. The sender checks that the two agree at startup.
+    const projectIds = fcmProjectIds(this);
+    const fcmPlaceholder =
+      projectIds.length === 0
+        ? { type: 'service_account', project_id: 'REPLACE_ME' }
+        : projectIds.map((id) => ({ type: 'service_account', project_id: id }));
     const fcmSecret = new Secret(this, 'FcmServiceAccount', {
       secretName: `relay/${props.stage}/fcm-service-account`,
-      description: 'Firebase service account JSON for FCM HTTP v1',
-      secretStringValue: SecretValue.unsafePlainText(
-        JSON.stringify({ type: 'service_account', project_id: 'REPLACE_ME' }),
-      ),
+      description:
+        'Firebase service account JSON for FCM HTTP v1: one object, or an array with one per Firebase project',
+      secretStringValue: SecretValue.unsafePlainText(JSON.stringify(fcmPlaceholder)),
       removalPolicy,
     });
 
@@ -204,18 +254,30 @@ export class SenderStack extends Stack {
 
     taskDef.addContainer('sender', {
       image,
+      // SEC-C-14: the process writes no files (no temp dir, no disk cache; logs go to stdout), so
+      // the root filesystem is read-only. If a future dependency needs scratch space, add a task
+      // volume mounted at /tmp instead of lifting this. The non-root user comes from the image (USER node).
+      readonlyRootFilesystem: true,
       stopTimeout: Duration.seconds(SENDER_STOP_TIMEOUT_SECONDS),
       logging: new AwsLogDriver({ streamPrefix: 'sender', logGroup }),
       environment: {
-        ...dbEnv(props.db),
+        ...dbEnv(props.db, 'sender'),
         URGENT_QUEUE_URL: props.urgentQueue.url,
         STANDARD_QUEUE_URL: props.standardQueue.url,
         IDEMPOTENCY_TABLE: props.idempotencyTableName,
         CELL_INDEX_TABLE: props.cellIndexTableName,
-        ALERT_KEYS_SECRET_ARN: props.alertKeysSecretArn,
+        ...alertVerifyEnv(props.alertSigning),
         KILL_SWITCH_PARAM: props.killSwitchParamName,
         APNS_KEY_SECRET_ARN: apnsSecret.secretArn,
         FCM_SERVICE_ACCOUNT_SECRET_ARN: fcmSecret.secretArn,
+        // The sender counts its own fleet (ecs:DescribeServices) to split the FCM budget.
+        ECS_CLUSTER: senderClusterName(props.stage),
+        ECS_SERVICE: senderServiceName(props.stage),
+        // Fleet size to assume while ECS cannot be read: the fleet maximum (fail safe).
+        FCM_FLEET_SIZE_FALLBACK: String(senderMaxTasks(props.stage)),
+        FCM_PROJECT_FLEET_RATE_PER_SEC: String(fcmProjectFleetRate(this)),
+        ...(props.publicAlertBaseUrl ? { PUBLIC_ALERT_BASE_URL: props.publicAlertBaseUrl } : {}),
+        ...(projectIds.length > 0 ? { FCM_PROJECT_IDS: projectIds.join(',') } : {}),
       },
     });
 
@@ -243,22 +305,64 @@ export class SenderStack extends Stack {
     );
     // Dead targets are cleared in the cell index.
     allow(['dynamodb:UpdateItem', 'dynamodb:DeleteItem'], [props.cellIndexTableArn]);
-    allow(
-      [
-        'rds-data:ExecuteStatement',
-        'rds-data:BeginTransaction',
-        'rds-data:CommitTransaction',
-        'rds-data:RollbackTransaction',
-      ],
-      [props.db.clusterArn],
-    );
-    allow(
-      ['secretsmanager:GetSecretValue'],
-      [props.db.secretArn, apnsSecret.secretArn, fcmSecret.secretArn, props.alertKeysSecretArn],
-    );
+    grantDbToRole(taskDef.taskRole, props.db, 'sender');
+    allow(['secretsmanager:GetSecretValue'], [apnsSecret.secretArn, fcmSecret.secretArn]);
+    // Verify only: the sender fetches the alert public key once and never holds kms:Sign.
+    taskDef.taskRole.addToPrincipalPolicy(alertVerifyStatement(props.alertSigning));
     allow(['ssm:GetParameter'], [props.killSwitchParamArn]);
+    // Read the running task count of its own service (FCM fleet rate); a built ARN, no cycle.
+    allow(
+      ['ecs:DescribeServices'],
+      [
+        Arn.format(
+          {
+            service: 'ecs',
+            resource: 'service',
+            resourceName: `${senderClusterName(props.stage)}/${senderServiceName(props.stage)}`,
+            arnFormat: ArnFormat.SLASH_RESOURCE_NAME,
+          },
+          this,
+        ),
+      ],
+    );
 
-    const enabled = isSenderEnabled(this);
+    const enabled = isSenderEnabled(this, props.stage);
+
+    // Running tasks below desired for 3 minutes (Container Insights). Names are the fixed physical
+    // names, not the service object, because the service takes this alarm as a deployment alarm.
+    // It doubles as the deployment-rollback signal below. FILL: a task-less service may stop
+    // publishing RunningTaskCount, which must count as 0.
+    const taskMetric = (metricName: string) =>
+      new Metric({
+        namespace: 'ECS/ContainerInsights',
+        metricName,
+        dimensionsMap: {
+          ClusterName: senderClusterName(props.stage),
+          ServiceName: senderServiceName(props.stage),
+        },
+        statistic: 'Minimum',
+        period: Duration.minutes(1),
+      });
+    const runningBelowDesiredAlarm = enabled
+      ? new Alarm(this, 'RunningTasksBelowDesiredAlarm', {
+          alarmDescription:
+            'Sender running tasks have been below desired for 3 minutes: the fleet is down or crash-looping',
+          metric: new MathExpression({
+            expression: 'FILL(desired, 0) - FILL(running, 0)',
+            usingMetrics: {
+              desired: taskMetric('DesiredTaskCount'),
+              running: taskMetric('RunningTaskCount'),
+            },
+            period: Duration.minutes(1),
+          }),
+          threshold: 0,
+          evaluationPeriods: 3,
+          datapointsToAlarm: 3,
+          comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
+          treatMissingData: TreatMissingData.NOT_BREACHING,
+        })
+      : undefined;
+
     const service = new FargateService(this, 'Service', {
       cluster,
       serviceName: senderServiceName(props.stage),
@@ -269,8 +373,17 @@ export class SenderStack extends Stack {
       minHealthyPercent: 100,
       maxHealthyPercent: 200,
       circuitBreaker: { rollback: true },
-      // Off (0) until senderEnabled=true; then left to auto scaling so a deploy never resets the
-      // fleet size.
+      // A deploy whose tasks start and then die trips the alarm and rolls back to the last good image.
+      ...(runningBelowDesiredAlarm
+        ? {
+            deploymentAlarms: {
+              alarmNames: [runningBelowDesiredAlarm.alarmName],
+              behavior: AlarmBehavior.ROLLBACK_ON_ALARM,
+            },
+          }
+        : {}),
+      // Off (0) only when the fleet is disabled; otherwise left to auto scaling so a deploy never
+      // resets the fleet size.
       ...(enabled ? {} : { desiredCount: 0 }),
     });
 
@@ -364,6 +477,52 @@ export class SenderStack extends Stack {
       evaluationPeriods: 2,
       comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
     });
+
+    // ---- Sender self-reported metrics (EMF, namespace Relay/Sender) ----
+    // PermanentBreakerOpen and DeadTargetDropped have no dimensions; GaveUp is per Queue.
+    const senderMetric = (metricName: string, dimensionsMap?: Record<string, string>) =>
+      new Metric({
+        namespace: 'Relay/Sender',
+        metricName,
+        statistic: 'Sum',
+        period: Duration.minutes(1),
+        ...(dimensionsMap ? { dimensionsMap } : {}),
+      });
+    const atLeastOne = (
+      alarmId: string,
+      alarmDescription: string,
+      metric: Metric | MathExpression,
+    ) =>
+      new Alarm(this, alarmId, {
+        alarmDescription,
+        metric,
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator: ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: TreatMissingData.NOT_BREACHING,
+      });
+    atLeastOne(
+      'PermanentBreakerOpenAlarm',
+      'Sender permanent-failure breaker opened: pushes are failing for good (bad APNs/FCM credentials?)',
+      senderMetric('PermanentBreakerOpen'),
+    );
+    atLeastOne(
+      'GaveUpAlarm',
+      'Sender gave up on recipients (retry window expired): some people were not notified',
+      new MathExpression({
+        expression: 'FILL(u, 0) + FILL(s, 0)',
+        usingMetrics: {
+          u: senderMetric('GaveUp', { Queue: 'urgent' }),
+          s: senderMetric('GaveUp', { Queue: 'standard' }),
+        },
+        period: Duration.minutes(1),
+      }),
+    );
+    atLeastOne(
+      'DeadTargetDroppedAlarm',
+      'Sender dropped dead-token cleanups (queue full): stale tokens are piling up',
+      senderMetric('DeadTargetDropped'),
+    );
 
     this.clusterName = cluster.clusterName;
     this.serviceName = service.serviceName;

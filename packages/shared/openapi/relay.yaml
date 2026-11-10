@@ -64,6 +64,24 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /devices/me:
+    delete:
+      tags: [devices]
+      operationId: deleteDevice
+      summary: Permanently erase this device and all of its data.
+      description: |
+        Deletes the device's places, its alert-matching index entries and every check-in it
+        made, and records that the device is gone so its credential is rejected afterwards
+        (a deleted device can no longer check in). This cannot be undone. Calling it again
+        with the same credential after a partial failure finishes the erasure.
+      security:
+        - deviceAuth: []
+      responses:
+        '204':
+          description: Erased
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /places:
     post:
       tags: [places]
@@ -332,6 +350,13 @@ components:
         credential:
           type: string
           description: Secret bearer credential. Store in secure storage; shown only once.
+        fcmProject:
+          type: string
+          description: |
+            Android only. The Firebase project this device's app must register its FCM token
+            with (initialize a secondary FirebaseApp for it when it is not the default project).
+            Send it back as fcmProject with the token in PUT /devices/me/push-token. Absent when
+            the server uses a single Firebase project.
 
     PushTokenRequest:
       oneOf:
@@ -344,6 +369,7 @@ components:
       properties:
         expoPushToken:
           type: string
+          maxLength: 200
         language:
           type: string
           enum: [en, es]
@@ -357,10 +383,18 @@ components:
           enum: [ios, android, expo]
         token:
           type: string
+          minLength: 64
+          maxLength: 4096
           description: |
             ios: APNs device token, 64 to 200 hex characters.
             android: FCM registration token, 100 to 4096 characters of A-Z a-z 0-9 _ : -.
             expo: ExponentPushToken[...].
+        fcmProject:
+          type: string
+          description: |
+            Android only. The Firebase project the FCM token was registered with, as returned
+            by POST /devices. Must be one of the server's configured projects, otherwise 400.
+            Omit it when the app registered with the default (first) project.
         language:
           type: string
           enum: [en, es]
@@ -371,15 +405,28 @@ components:
       properties:
         label:
           type: string
+          minLength: 1
+          maxLength: 60
+          description: |
+            A short, generic name such as Home, Work or School. Do not put an address or a
+            person's name in it.
         address:
           type: string
+          minLength: 1
+          maxLength: 200
+          description: Free-text address, at most 200 characters, no control characters.
 
     CreatePlaceByCoordinates:
       type: object
       required: [label, latitude, longitude]
+      description: |
+        The coordinates are used once to find the H3 cell and are not stored.
       properties:
         label:
           type: string
+          minLength: 1
+          maxLength: 60
+          description: A short, generic name such as Home, Work or School.
         latitude:
           type: number
         longitude:
@@ -393,16 +440,22 @@ components:
 
     Place:
       type: object
-      required: [id, label, shortAddress, h3Cell, createdAt]
+      required: [id, label, h3Cell, createdAt]
       properties:
         id:
           type: string
           format: uuid
         label:
           type: string
+          maxLength: 60
         shortAddress:
           type: string
-          description: Street-level address without the house number, for display.
+          description: |
+            Coarse address for display: the street name and locality, for example "Elm St,
+            San José" (or the locality alone when the street cannot be separated). It never
+            contains a house number: the server does not store one. The full address the person
+            typed stays on their device. Absent for a place saved by coordinates (nothing but
+            the H3 cell is kept for those).
         h3Cell:
           type: string
           description: H3 cell at resolution 7.
@@ -460,8 +513,10 @@ components:
           $ref: '#/components/schemas/CheckInStatus'
         token:
           type: string
+          maxLength: 1024
         idempotencyKey:
           type: string
+          maxLength: 200
 
     CreateCheckInResponse:
       type: object
@@ -708,6 +763,178 @@ components:
         signature:
           type: [string, 'null']
           description: Set once Relay validates the alert signature.
+        pds:
+          type: boolean
+          description: >-
+            True for a particularly dangerous situation (NWS damage threat CONSIDERABLE on a
+            Tornado or Flash Flood Warning). The tier stays warning. Omitted when not applicable.
+
+    PublicAlertDocument:
+      type: object
+      description: |
+        Cell-free document for one alert version, served by the CDN at
+        `{cdnBase}/alerts/v1/doc/{alertId}/{hash}.json` and immutable (cached for a year; the URL
+        changes whenever the alert changes). It has everything the app shows and not the H3 cell
+        list. `signature` is the alert's own signature over the full alert; `area.cellsSha256` and
+        `area.cellCount` bind this document to those cells. A phone cannot verify the signature
+        (it is symmetric); it trusts the document because it came from the Relay CDN over TLS.
+      additionalProperties: false
+      required:
+        - version
+        - id
+        - source
+        - sourceId
+        - event
+        - eventCode
+        - relaySeverity
+        - capSeverity
+        - urgency
+        - certainty
+        - status
+        - messageType
+        - state
+        - references
+        - area
+        - sent
+        - effective
+        - onset
+        - expires
+        - ends
+        - official
+        - summaries
+        - signature
+      properties:
+        version:
+          type: integer
+          const: 1
+        id:
+          type: string
+          format: uuid
+        source:
+          type: string
+          enum: [nws, usgs, ipaws]
+        sourceId:
+          type: string
+        event:
+          type: string
+        eventCode:
+          type: [string, 'null']
+        relaySeverity:
+          $ref: '#/components/schemas/RelaySeverity'
+        capSeverity:
+          type: string
+          enum: [Extreme, Severe, Moderate, Minor, Unknown]
+        urgency:
+          type: string
+          enum: [Immediate, Expected, Future, Past, Unknown]
+        certainty:
+          type: string
+          enum: [Observed, Likely, Possible, Unlikely, Unknown]
+        status:
+          type: string
+          enum: [Actual, Exercise, System, Test, Draft]
+        messageType:
+          type: string
+          enum: [Alert, Update, Cancel, Ack, Error]
+        state:
+          $ref: '#/components/schemas/AlertState'
+        references:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlertReference'
+        area:
+          type: object
+          additionalProperties: false
+          required: [description, cellCount, cellsSha256]
+          properties:
+            description:
+              type: string
+            cellCount:
+              type: integer
+              minimum: 0
+            cellsSha256:
+              type: string
+              pattern: '^[0-9a-f]{64}$'
+        sent:
+          type: string
+          format: date-time
+        effective:
+          type: string
+          format: date-time
+        onset:
+          type: [string, 'null']
+          format: date-time
+        expires:
+          type: string
+          format: date-time
+        ends:
+          type: [string, 'null']
+          format: date-time
+        official:
+          $ref: '#/components/schemas/AlertOfficial'
+        summaries:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlertSummaryText'
+        signature:
+          type: [string, 'null']
+        pds:
+          type: boolean
+
+    AlertPointer:
+      type: object
+      description: |
+        Short-TTL pointer served at `{cdnBase}/alerts/v1/latest/{alertId}.json`
+        (`Cache-Control: public, max-age=15, stale-while-revalidate=60`). It names the current
+        document of an alert. A document is never changed after it is written, so an update or
+        cancellation is seen only through this pointer, at most 75 seconds (15 s max-age plus 60 s
+        stale-while-revalidate) after it is published. Phones that opened a document from a push
+        should re-read the pointer when they show the alert.
+      additionalProperties: false
+      required: [version, alertId, sourceId, state, expires, doc]
+      properties:
+        version:
+          type: integer
+          const: 1
+        alertId:
+          type: string
+          format: uuid
+        sourceId:
+          type: string
+        state:
+          $ref: '#/components/schemas/AlertState'
+        expires:
+          type: string
+          format: date-time
+        doc:
+          type: string
+          pattern: '^/alerts/v1/doc/'
+          description: Path, relative to the CDN base URL, of the current PublicAlertDocument.
+
+    PushData:
+      type: object
+      description: |
+        The `data` map of an alert push notification (all values are strings). Not an HTTP
+        payload; documented here because the app reads it. Required keys survive payload trimming;
+        `alertUrl` may be dropped to fit the 4 KB APNs limit.
+      additionalProperties: true
+      required: [alertId, checkInToken, expiresAt]
+      properties:
+        alertId:
+          type: string
+          format: uuid
+        checkInToken:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        alertUrl:
+          type: string
+          format: uri
+          description: |
+            Absolute CDN URL of this alert's PublicAlertDocument. Open it instead of calling the
+            API. A 404 means the publish has not landed yet: retry once after a few seconds, then
+            fall back to GET /alerts/{alertId}. Absent when the sender has no CDN base configured.
 
     CheckIn:
       type: object
@@ -726,7 +953,9 @@ components:
           format: date-time
         token:
           type: string
+          maxLength: 1024
         idempotencyKey:
           type: string
+          maxLength: 200
         h3Cell:
           type: string

@@ -7,6 +7,7 @@ import {
   MAX_CELLS_PER_AREA,
   cellForPoint,
   cellsForAlertArea,
+  InvalidGeometryError,
   NoCellsError,
   TooManyCellsError,
   ZoneLookupError,
@@ -170,13 +171,13 @@ describe('cellsForAlertArea', () => {
     expect((err as ZoneLookupError).ugc).toBe('CAZ002');
   });
 
-  it('throws NoCellsError when the alert geometry yields no polygon', async () => {
+  it('throws InvalidGeometryError (permanent) when the alert geometry has no polygon', async () => {
     await expect(
       cellsForAlertArea(
         { geometry: { type: 'MultiPolygon', coordinates: [] }, ugcCodes: [] },
         none,
       ),
-    ).rejects.toBeInstanceOf(NoCellsError);
+    ).rejects.toBeInstanceOf(InvalidGeometryError);
   });
 
   it('includes a point inside the area and excludes a point well outside', async () => {

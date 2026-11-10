@@ -1,4 +1,5 @@
 /** A tiny router for API Gateway HTTP API (payload v2) events. No framework. */
+import { LIMITS } from '@relay/shared';
 
 export interface ApiEvent {
   rawPath: string;
@@ -129,6 +130,14 @@ function match(pattern: string[], path: string[]): Record<string, string> | null
 
 function parseBody(event: ApiEvent): unknown {
   if (!event.body) return undefined;
+  // Check the size before decoding or parsing anything. Base64 is 4 chars per 3 bytes; a string's
+  // UTF-8 size is at least its length, so the length check is a cheap lower bound for text.
+  const approxBytes = event.isBase64Encoded
+    ? Math.floor((event.body.length * 3) / 4)
+    : Buffer.byteLength(event.body, 'utf8');
+  if (approxBytes > LIMITS.maxRequestBodyBytes) {
+    throw new HttpError(413, 'payload_too_large', 'Request body is too large');
+  }
   const text = event.isBase64Encoded
     ? Buffer.from(event.body, 'base64').toString('utf8')
     : event.body;

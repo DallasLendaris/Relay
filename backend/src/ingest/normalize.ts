@@ -1,8 +1,11 @@
-import { AlertSchema, relaySeverityFor } from '@relay/shared';
+import { AlertSchema, isPds, relaySeverityFor } from '@relay/shared';
 import type { Alert } from '@relay/shared';
+import { validateGeometry } from '../geo/validate-geometry.js';
 
+/** `permanent` marks a rejection that retrying can never fix (logged at error level by the poller). */
 export type NormalizeResult =
-  { ok: true; alert: Alert } | { ok: false; reason: string; sourceId: string | null };
+  | { ok: true; alert: Alert }
+  | { ok: false; reason: string; sourceId: string | null; permanent?: true };
 
 const URL_PREFIX = 'https://api.weather.gov/alerts/';
 
@@ -26,6 +29,25 @@ function date(v: unknown): string | null {
   if (s === null || !AlertSchema.shape.sent.safeParse(s).success) return null;
   return Number.isNaN(Date.parse(s)) ? null : s;
 }
+
+/**
+ * NWS impact-based warnings carry their damage threat in `parameters`, an object of string arrays:
+ * tornadoDamageThreat on a Tornado Warning, flashFloodDamageThreat on a Flash Flood Warning.
+ * CATASTROPHIC is an emergency; CONSIDERABLE is a "particularly dangerous situation".
+ */
+function damageThreatFor(event: string, parameters: unknown): string | null {
+  if (!isObj(parameters)) return null;
+  const lower = event.toLowerCase();
+  const key = lower.includes('tornado')
+    ? 'tornadoDamageThreat'
+    : lower.includes('flash flood')
+      ? 'flashFloodDamageThreat'
+      : null;
+  return key ? (strList(parameters[key])[0] ?? null) : null;
+}
+
+/** Test and exercise products that NWS sometimes publishes with status Actual. */
+const PRACTICE_EVENT = /\b(practice|demo|demonstration)\b/i;
 
 const STATE = { Alert: 'active', Update: 'updated', Cancel: 'cancelled' } as const;
 
@@ -60,6 +82,7 @@ export function normalizeFeature(
 
     const event = str(p['event']);
     if (event === null) return fail('missing event');
+    if (PRACTICE_EVENT.test(event)) return fail('not_actual: practice or demo event name');
 
     const severity = AlertSchema.shape.capSeverity.safeParse(p['severity']);
     if (!severity.success) return fail(`invalid severity ${String(p['severity'])}`);
@@ -98,8 +121,33 @@ export function normalizeFeature(
     const geocode = isObj(p['geocode']) ? p['geocode'] : {};
     const eventCodes = isObj(p['eventCode']) ? p['eventCode'] : {};
     const geometry = feature['geometry'];
-    const keepGeometry =
-      isObj(geometry) && (geometry['type'] === 'Polygon' || geometry['type'] === 'MultiPolygon');
+    const ugcCodes = strList(geocode['UGC']);
+    let keepGeometry = false;
+    if (
+      isObj(geometry) &&
+      (geometry['type'] === 'Polygon' || geometry['type'] === 'MultiPolygon')
+    ) {
+      const check = validateGeometry(geometry);
+      if (check.ok) {
+        keepGeometry = true;
+      } else if (ugcCodes.length > 0) {
+        // Broken polygon but the zones are listed: match by zone instead of failing the alert.
+        opts.warn?.('invalid geometry dropped, using UGC zones', {
+          sourceId,
+          reason: check.reason,
+        });
+      } else {
+        return {
+          ok: false,
+          sourceId,
+          permanent: true,
+          reason: `permanent: invalid_geometry: ${check.reason}`,
+        };
+      }
+    }
+
+    const damageThreat = damageThreatFor(event, p['parameters']);
+    const pds = isPds(event, damageThreat);
 
     const candidate = {
       id: opts.newId(),
@@ -107,7 +155,10 @@ export function normalizeFeature(
       sourceId,
       event,
       eventCode: strList(eventCodes['SAME'])[0] ?? null,
-      relaySeverity: relaySeverityFor(event, severity.data),
+      relaySeverity: relaySeverityFor(event, severity.data, {
+        damageThreat,
+        urgency: urgency.data,
+      }),
       capSeverity: severity.data,
       urgency: urgency.data,
       certainty: certainty.data,
@@ -118,7 +169,7 @@ export function normalizeFeature(
       area: {
         description: str(p['areaDesc']) ?? '',
         geometry: keepGeometry ? geometry : null,
-        ugcCodes: strList(geocode['UGC']),
+        ugcCodes,
         sameCodes: strList(geocode['SAME']),
         h3Cells: [], // filled later by the matching step
       },
@@ -136,6 +187,7 @@ export function normalizeFeature(
       },
       summaries: [],
       signature: null,
+      ...(pds ? { pds: true } : {}),
     };
     // Final safety net: nothing leaves this function unless it fits the shared schema.
     const parsed = AlertSchema.safeParse(candidate);

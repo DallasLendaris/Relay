@@ -1,11 +1,12 @@
 /**
- * Ingest Lambda. EventBridge fires it every minute; it polls NWS several times
- * (about every 12 s) before returning. buildHandler takes the engine pieces
+ * Ingest Lambda. EventBridge fires it every minute; it polls NWS twice (every 30 s, the NWS
+ * recommended minimum, never faster) before returning. buildHandler takes the engine pieces
  * (see pipeline.ts); `handler` at the bottom wires the real AWS dependencies.
  */
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { RDSDataClient } from '@aws-sdk/client-rds-data';
 import { S3Client } from '@aws-sdk/client-s3';
+import { KMSClient } from '@aws-sdk/client-kms';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
@@ -17,15 +18,17 @@ import { PostgresDeviceStore } from '../adapters/postgres/device-store.js';
 import { PostgresPlaceStore } from '../adapters/postgres/place-store.js';
 import { createKillSwitch } from '../config/kill-switch.js';
 import { loadKeyring } from '../config/secrets.js';
+import type { AlertSigner } from '../signing/alertSignature.js';
+import { alertSignerFromEnv, loadAlertPublicKeys, parseVerifyKeys } from '../signing/kms.js';
 import { DataApiExecutor } from '../db/sql.js';
-import { createNwsClient } from './nws-client.js';
+import { MIN_POLL_INTERVAL_MS, createNwsClient, sharedGate } from './nws-client.js';
 import { createIngestPipeline, type PipelineDeps } from './pipeline.js';
 import { pollLoop, type PollCounts, type PollDeps } from './poll.js';
 
 /** The parts of PollDeps that the caller supplies. */
 export type EngineDeps = Pick<
   PollDeps,
-  'normalize' | 'parseFeed' | 'apply' | 'cellsFor' | 'onApplied'
+  'normalize' | 'parseFeed' | 'apply' | 'cellsFor' | 'onApplied' | 'reconcile' | 'flush'
 >;
 
 export interface HandlerEnv {
@@ -63,6 +66,38 @@ export function positiveNumber(
   return fallback;
 }
 
+/** Default seconds between polls: NWS asks for no more than one request per 30 s per URL. */
+export const DEFAULT_POLL_INTERVAL_SECONDS = 30;
+/** Default polls per (per-minute) invocation: at 0 s and 30 s. A third would overlap the next run. */
+export const DEFAULT_POLLS_PER_INVOCATION = 2;
+
+/** The configured poll interval in ms, never below the NWS minimum (a lower value is raised, with a warning). */
+export function resolvePollIntervalMs(raw: string | undefined): number {
+  const ms =
+    positiveNumber(raw, DEFAULT_POLL_INTERVAL_SECONDS, 'POLL_INTERVAL_SECONDS', false) * 1000;
+  if (ms >= MIN_POLL_INTERVAL_MS) return ms;
+  console.warn(
+    JSON.stringify({
+      level: 'warn',
+      msg: 'POLL_INTERVAL_SECONDS is below the NWS minimum; raised to 30',
+      raw,
+      minSeconds: MIN_POLL_INTERVAL_MS / 1000,
+    }),
+  );
+  return MIN_POLL_INTERVAL_MS;
+}
+
+/** NWS requires a User-Agent that says who to contact. Warns (does not throw) when none is visible. */
+export function warnIfNoContact(userAgent: string): void {
+  if (/@|https?:\/\//i.test(userAgent)) return;
+  console.warn(
+    JSON.stringify({
+      level: 'warn',
+      msg: 'NWS_USER_AGENT has no contact (email or URL); NWS requires one',
+    }),
+  );
+}
+
 const METRICS = [
   'Accepted',
   'Rejected',
@@ -70,6 +105,9 @@ const METRICS = [
   'Errors',
   'FetchFailed',
   'Quarantined',
+  'UnknownZones',
+  'PublishFailed',
+  'PollsOk',
 ] as const;
 
 /**
@@ -97,15 +135,24 @@ export function buildEmf(polls: PollCounts[], now: Date = new Date()): Record<st
     Errors: sum((c) => c.errors),
     FetchFailed: sum((c) => c.fetchFailed),
     Quarantined: sum((c) => c.quarantined),
+    UnknownZones: sum((c) => c.unknownZones),
+    PublishFailed: sum((c) => c.publishFailed),
+    // Polls that reached NWS and got an answer (200 or 304). Not a fetch error, not skipped for
+    // pacing. The "feed stale" alarm fires when this is 0 for 10 minutes.
+    PollsOk: sum((c) => (c.fetchFailed === 0 && c.throttled === 0 ? 1 : 0)),
   };
 }
 
 export function buildHandler(engine: EngineDeps, overrides: HandlerOverrides = {}) {
   return async (_event: unknown, context: LambdaContext): Promise<{ polls: PollCounts[] }> => {
     const env: HandlerEnv = overrides.env ?? process.env;
-    const intervalMs =
-      positiveNumber(env.POLL_INTERVAL_SECONDS, 12, 'POLL_INTERVAL_SECONDS', false) * 1000;
-    const polls = positiveNumber(env.POLLS_PER_INVOCATION, 5, 'POLLS_PER_INVOCATION', true);
+    const intervalMs = resolvePollIntervalMs(env.POLL_INTERVAL_SECONDS);
+    const polls = positiveNumber(
+      env.POLLS_PER_INVOCATION,
+      DEFAULT_POLLS_PER_INVOCATION,
+      'POLLS_PER_INVOCATION',
+      true,
+    );
 
     let base = overrides.base;
     if (!base) {
@@ -113,9 +160,17 @@ export function buildHandler(engine: EngineDeps, overrides: HandlerOverrides = {
       if (!RAW_BUCKET || !STATE_TABLE || !NWS_USER_AGENT) {
         throw new Error('RAW_BUCKET, STATE_TABLE and NWS_USER_AGENT must be set');
       }
+      warnIfNoContact(NWS_USER_AGENT);
       base = {
-        // The client lives for this invocation, so If-None-Match carries across its polls.
-        client: createNwsClient({ fetch, userAgent: NWS_USER_AGENT }),
+        // The client lives for this invocation, so If-None-Match carries across its polls. The
+        // shared gate keeps the 30 s spacing (and any Retry-After backoff) across invocations
+        // that run in the same warm container.
+        client: createNwsClient({
+          fetch,
+          userAgent: NWS_USER_AGENT,
+          minIntervalMs: MIN_POLL_INTERVAL_MS,
+          gate: sharedGate,
+        }),
         archive: new S3RawArchive(new S3Client({}), RAW_BUCKET),
         seen: new DynamoSeenStore(DynamoDBDocumentClient.from(new DynamoDBClient({})), STATE_TABLE),
       };
@@ -144,7 +199,9 @@ const REQUIRED_ENV = [
   'DB_NAME',
   'DELIVERY_QUEUE_URL',
   'TOKEN_KEYS_SECRET_ARN',
-  'ALERT_KEYS_SECRET_ARN',
+  'ALERT_SIGNING_KMS_KEY',
+  'ALERT_SIGNING_KID',
+  'ALERT_VERIFY_KEYS',
   'KILL_SWITCH_PARAM',
   'NWS_USER_AGENT',
 ] as const;
@@ -181,6 +238,8 @@ interface Runtime {
   env: Record<(typeof REQUIRED_ENV)[number], string>;
   stores: Pick<PipelineDeps, 'alertStore' | 'places' | 'devices' | 'queue' | 'isDeliveryPaused'>;
   secrets: SecretsManagerClient;
+  kms: KMSClient;
+  signer: AlertSigner;
 }
 
 function buildRuntime(source: Record<string, string | undefined>): Runtime {
@@ -195,9 +254,12 @@ function buildRuntime(source: Record<string, string | undefined>): Runtime {
     env.DB_SECRET_ARN,
     env.DB_NAME,
   );
+  const kms = new KMSClient({});
   return {
     env,
     secrets: new SecretsManagerClient({}),
+    kms,
+    signer: alertSignerFromEnv(env, kms),
     stores: {
       alertStore: new PostgresAlertStore(db),
       places: new PostgresPlaceStore(db),
@@ -215,15 +277,19 @@ export const handler = async (
   context: LambdaContext,
 ): Promise<{ polls: PollCounts[] }> => {
   runtime ??= buildRuntime(process.env);
-  const { env, stores, secrets } = runtime;
-  // loadKeyring caches for 5 minutes, so a rotated secret is picked up while warm.
-  const [alertKeys, tokenKeys] = await Promise.all([
-    loadKeyring(env.ALERT_KEYS_SECRET_ARN, secrets),
+  const { env, stores, secrets, kms, signer } = runtime;
+  // Heartbeat: one (cached, never throwing) kill-switch read per invocation, so its metrics
+  // (paused / invalid / failed closed) are reported every minute even when no alert arrives.
+  await stores.isDeliveryPaused();
+  // loadKeyring caches for 5 minutes, so a rotated secret is picked up while warm. Alert public
+  // keys are fetched from KMS once per container; signing calls KMS once per saved alert.
+  const [publicKeys, tokenKeys] = await Promise.all([
+    loadAlertPublicKeys(parseVerifyKeys(env.ALERT_VERIFY_KEYS), kms),
     loadKeyring(env.TOKEN_KEYS_SECRET_ARN, secrets),
   ]);
   const engine = createIngestPipeline({
     ...stores,
-    alertKeys,
+    alertSigning: { signer, publicKeys },
     tokenKeys,
     fetch,
     userAgent: env.NWS_USER_AGENT,

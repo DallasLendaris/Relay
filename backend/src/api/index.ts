@@ -1,42 +1,51 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import type { Alert, CheckIn, components } from '@relay/shared';
+import {
+  ApnsTokenSchema,
+  ExpoTokenSchema,
+  FcmTokenSchema,
+  LIMITS,
+  PlaceAddressSchema,
+  PlaceLabelSchema,
+  hasControlChars,
+  type Alert,
+  type CheckIn,
+  type components,
+} from '@relay/shared';
 import { cellForPoint } from '../geo/index.js';
-import {
-  QUEUE_FOR_SEVERITY,
-  type CellIndex,
-  type PushTarget,
-  type SendBatch,
-  type SendQueue,
-  type SendQueueName,
-} from '../scale/contracts.js';
+import { coarsenShortAddress } from '../geo/coarse-address.js';
+import type { CellIndex, PushTarget } from '../scale/contracts.js';
+import type { CellIndexOutbox } from '../scale/cell-index/outbox.js';
+import type { LateJoinIntent, LateJoinQueue } from '../scale/latejoin/intent.js';
+import { PushTokenInUseError } from '../scale/latejoin/push-target-rules.js';
 import type { IndexRepairMessage, IndexRepairQueue } from '../scale/cell-index/repair-queue.js';
-import {
-  deviceCellsOf,
-  syncDeviceCells,
-  type DeviceTruth,
-} from '../scale/cell-index/sync-device-cells.js';
-import { primaryCellOf } from '../scale/fanout/primary-cell.js';
+import { syncDeviceCells, type DeviceTruth } from '../scale/cell-index/sync-device-cells.js';
 import { targetOf } from '../scale/cell-index/util.js';
-import { alertEndTime } from '../delivery/eligibility.js';
+import { assignFcmProject } from '../adapters/push/fcm-projects.js';
 import {
-  createCheckInToken,
   createDeviceCredential,
   verifyCheckInToken,
   verifyDeviceCredential,
   type TokenKey,
 } from '../tokens/index.js';
-import type { StoredCheckIn } from '../scale/checkins/types.js';
+import {
+  checkInTtlSeconds,
+  DEFAULT_CHECKIN_RETENTION_DAYS,
+  type StoredCheckIn,
+} from '../scale/checkins/types.js';
 import { effectiveState } from '../ingest/lifecycle.js';
 import type {
   AlertStore,
   CheckInStore,
   Clock,
   Device,
+  DeviceErasure,
   DeviceStore,
   Geocoder,
   Place,
+  PlaceErasure,
   PlaceStore,
 } from '../ports.js';
+import { MAX_LABEL_LENGTH } from '../ports.js';
 import { isInCalifornia } from './california.js';
 import { HttpError, Router, json, noContent, type ApiEvent, type ApiResult } from './router.js';
 import type { Request } from './router.js';
@@ -48,14 +57,43 @@ export interface CheckInLookup {
   get(alertId: string, deviceId: string): Promise<StoredCheckIn | null>;
 }
 
+export interface CheckInEraser {
+  /** Permanently deletes every check-in row of one device. Idempotent. Returns the count. */
+  deleteForDevice(deviceId: string): Promise<number>;
+}
+
 export interface ApiDeps {
-  devices: DeviceStore;
-  places: PlaceStore;
+  /**
+   * The Firebase projects Android devices are spread over (FCM_PROJECT_IDS, in order; only ever
+   * append). POST /devices returns each device's assigned project, and PUT /devices/me/push-token
+   * accepts only these as `fcmProject`. Empty or absent: a single project, no assignment.
+   */
+  fcmProjectIds?: string[];
+  devices: DeviceStore & DeviceErasure;
+  places: PlaceStore & PlaceErasure;
   alerts: AlertStore;
   geocoder: Geocoder;
   /** The port plus a lookup by device (adapter classes have it; the port does not). */
-  checkins: CheckInStore & CheckInLookup;
-  /** Check-in token keys by key id (kid -> secret). */
+  checkins: CheckInStore & CheckInLookup & CheckInEraser;
+  /**
+   * How long after an alert ends its check-in rows are kept (their TTL). Default 30 days;
+   * COUNSEL decides the real period (CHECKIN_RETENTION_DAYS in handler.ts).
+   */
+  checkInRetentionDays?: number;
+  /**
+   * How long the set of erased devices is cached between reads (default 60 s). See
+   * `isDeleted` in createApi for the trade-off.
+   */
+  tombstoneCacheMs?: number;
+  /**
+   * Check-in token keys by key id (kid -> secret), for VERIFYING check-ins only.
+   *
+   * Known limitation: the API reads the token keyring, which also holds the current signing key,
+   * because the check-in route has to verify tokens statelessly (no database read). A compromised
+   * API could therefore still mint check-in tokens. What it can no longer do is deliver anything:
+   * it has no permission on the send queues, so a minted token never reaches a phone. Closing the
+   * rest needs asymmetric token signing (verify key only on the API); tracked as a follow-up.
+   */
   tokenKeys: Map<string, string>;
   /** DynamoDB cell index, written through from here. Aurora stays the record. */
   cellIndex: CellIndex;
@@ -65,11 +103,19 @@ export interface ApiDeps {
    */
   repairQueue?: IndexRepairQueue;
   /**
-   * Late joiners: a device that registers a place or a push target while an alert is already
-   * active missed the fan-out (re-planning skips batches already sent), so the API sends it the
-   * active alerts itself, as single-recipient batches. Needs the send queues and a token key.
+   * Transactional outbox for cell-index writes. When set, every place insert/delete and push-target
+   * change writes an outbox row in the same Aurora transaction; the row is deleted here after the
+   * write-through succeeds, and the scheduled drainer redoes any that are left.
    */
-  lateJoin?: { sendQueue: SendQueue; tokenKey: TokenKey };
+  outbox?: Pick<CellIndexOutbox, 'remove'>;
+  /**
+   * Late joiners: a device that registers a place or a push target while an alert is already
+   * active missed the fan-out (re-planning skips batches already sent). The API only asks: it
+   * enqueues a small LateJoinIntent on a queue that ONLY the late-join Lambda reads. That Lambda
+   * re-derives the device, places and alerts from Aurora and does the sending, so the API never
+   * builds a SendBatch, never mints a check-in token and has no permission on the send queues.
+   */
+  lateJoin?: { queue: LateJoinQueue };
   /**
    * Device credential keys by key id, for stateless credentials (see tokens/deviceCredential.ts).
    * Without it, only old two-part credentials verify.
@@ -83,14 +129,11 @@ export interface ApiDeps {
 }
 
 export const MAX_PLACES_PER_DEVICE = 5;
-const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
+const MAX_IDEMPOTENCY_KEY_LENGTH = LIMITS.idempotencyKeyMax;
 
 type PlaceBody = components['schemas']['Place'];
 type AlertSummary = components['schemas']['AlertSummary'];
 
-const PUSH_TOKEN = /^Expo(nent)?PushToken\[[^\]\s]+\]$/;
-const APNS_TOKEN = /^[0-9a-fA-F]{64,200}$/;
-const FCM_TOKEN = /^[A-Za-z0-9_:-]{100,4096}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const sha256Hex = (s: string): string => createHash('sha256').update(s).digest('hex');
@@ -108,6 +151,10 @@ function nonEmptyString(v: unknown, name: string): string {
   if (typeof v !== 'string' || v.trim() === '') {
     throw new HttpError(400, 'invalid_request', `${name} must be a non-empty string`);
   }
+  // NUL and other control characters never belong in client text; Postgres rejects NUL (a 500).
+  if (hasControlChars(v.trim())) {
+    throw new HttpError(400, 'invalid_request', `${name} must not contain control characters`);
+  }
   return v.trim();
 }
 
@@ -116,14 +163,17 @@ function toPlaceBody(p: Place): PlaceBody {
   return {
     id: p.id,
     label: p.label,
-    shortAddress: p.shortAddress,
+    ...(p.shortAddress !== undefined ? { shortAddress: p.shortAddress } : {}),
     h3Cell: p.h3Cell,
     createdAt: p.createdAt,
   };
 }
 
 /** Reads the old {expoPushToken} or the new {platform, token} body. Throws 400 when invalid. */
-function parsePushTarget(body: Record<string, unknown>): PushTarget {
+function parsePushTarget(
+  body: Record<string, unknown>,
+  fcmProjectIds: readonly string[],
+): PushTarget {
   const legacy = body['expoPushToken'] !== undefined;
   const native = body['platform'] !== undefined || body['token'] !== undefined;
   if (legacy === native) {
@@ -136,26 +186,39 @@ function parsePushTarget(body: Record<string, unknown>): PushTarget {
   const bad = (message: string) => new HttpError(400, 'invalid_push_token', message);
   if (legacy) {
     const token = body['expoPushToken'];
-    if (typeof token !== 'string' || !PUSH_TOKEN.test(token)) {
+    if (typeof token !== 'string' || !ExpoTokenSchema.safeParse(token).success) {
       throw bad('expoPushToken must look like ExponentPushToken[...]');
     }
     return { platform: 'expo', token };
   }
   const platform = body['platform'];
   const token = body['token'];
+  // The Firebase project the app registered this FCM token with (see adapters/push/fcm-projects.ts).
+  const project = body['fcmProject'];
+  if (project !== undefined) {
+    if (platform !== 'android') {
+      throw new HttpError(400, 'invalid_request', 'fcmProject is only for platform "android"');
+    }
+    if (typeof project !== 'string' || !fcmProjectIds.includes(project)) {
+      throw new HttpError(400, 'invalid_fcm_project', 'fcmProject is not a configured project');
+    }
+  }
   if (platform !== 'ios' && platform !== 'android' && platform !== 'expo') {
     throw new HttpError(400, 'invalid_request', 'platform must be "ios", "android" or "expo"');
   }
   if (typeof token !== 'string') throw bad('token must be a string');
   if (platform === 'ios') {
-    if (!APNS_TOKEN.test(token)) throw bad('ios token must be 64 to 200 hex characters');
+    if (!ApnsTokenSchema.safeParse(token).success)
+      throw bad('ios token must be 64 to 200 hex characters');
     return { platform, token: token.toLowerCase() }; // hex is case-insensitive; one spelling
   }
   if (platform === 'android') {
-    if (!FCM_TOKEN.test(token)) throw bad('android token must be 100 to 4096 token characters');
-    return { platform, token };
+    if (!FcmTokenSchema.safeParse(token).success)
+      throw bad('android token must be 100 to 4096 token characters');
+    return { platform, token, ...(project !== undefined ? { project } : {}) };
   }
-  if (!PUSH_TOKEN.test(token)) throw bad('expo token must look like ExponentPushToken[...]');
+  if (!ExpoTokenSchema.safeParse(token).success)
+    throw bad('expo token must look like ExponentPushToken[...]');
   return { platform, token };
 }
 
@@ -187,9 +250,18 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     op: string,
     fn: () => Promise<void>,
     repairs: IndexRepairMessage[],
+    /** Outbox rows written with the Aurora change: deleted on success, kept for the drainer on failure. */
+    outboxIds: string[] = [],
   ): Promise<void> {
     try {
       await fn();
+      if (deps.outbox && outboxIds.length > 0) {
+        try {
+          await deps.outbox.remove(outboxIds);
+        } catch {
+          // The write-through is done; the drainer redoes it harmlessly and deletes the row.
+        }
+      }
     } catch (err) {
       // Never log tokens or coordinates: only the operation and the error's class.
       console.warn(
@@ -206,61 +278,14 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
   }
 
   /**
-   * Sends the alerts already active over `cells` to one device that just registered a place or a
-   * push target. The batch key is per device and alert, so repeating this (a second place, a token
-   * refresh) is deduplicated by the sender's claim. Best effort: a failure never fails the API
-   * call. A device registered a moment before the planner reads its cell can get both this and
-   * the planned batch; both carry the alert id as collapse key, so the phone shows one.
+   * Asks the late-join Lambda to check this device for active alerts. Best effort: a failure
+   * never fails the API call (the device just waits for the next alert or a retry). Only called
+   * for a device that has a push target; the Lambda re-checks everything anyway.
    */
-  async function sendLateJoinAlerts(
-    deviceId: string,
-    target: PushTarget | null,
-    language: 'en' | 'es',
-    cells: string[],
-    /** ALL the device's cells (sorted). Defaults to `cells` (fail open: sends). */
-    deviceCells: string[] = cells,
-  ): Promise<void> {
-    const late = deps.lateJoin;
-    if (!late || !target || cells.length === 0) return;
+  async function requestLateJoin(intent: LateJoinIntent): Promise<void> {
+    if (!deps.lateJoin) return;
     try {
-      const now = deps.clock.now();
-      const active = await deps.alerts.listActiveForCells(cells, now);
-      const batches: Record<SendQueueName, SendBatch[]> = { urgent: [], standard: [] };
-      for (const alert of active) {
-        const queue = QUEUE_FOR_SEVERITY[alert.relaySeverity];
-        if (!queue) continue; // statements are in-app only
-        if (alert.state !== 'active' && alert.state !== 'updated') continue;
-        const expiresAt = alertEndTime(alert);
-        if (expiresAt.getTime() <= now.getTime()) continue;
-        const areaCells = new Set(alert.area.h3Cells);
-        if (!cells.some((c) => areaCells.has(c))) continue;
-        // Same primary-cell rule as the shard worker: the device is sent from the smallest of its
-        // cells in the alert area. A new place in any other cell adds no push: the planned
-        // fan-out already reaches the device through its primary cell.
-        const h3Cell = primaryCellOf(deviceCells, areaCells);
-        if (h3Cell === undefined || !cells.includes(h3Cell)) continue;
-        batches[queue].push({
-          alertId: alert.id,
-          sourceId: alert.sourceId,
-          relaySeverity: alert.relaySeverity,
-          batchKey: `${alert.id}:${alert.relaySeverity}:late:${deviceId}`,
-          recipients: [
-            {
-              deviceId,
-              target,
-              language,
-              checkInToken: createCheckInToken(
-                { alertId: alert.id, deviceId, h3Cell, expiresAt },
-                late.tokenKey,
-              ),
-            },
-          ],
-          attempt: 0,
-        });
-      }
-      for (const queue of ['urgent', 'standard'] as const) {
-        if (batches[queue].length > 0) await late.sendQueue.enqueue(queue, batches[queue]);
-      }
+      await deps.lateJoin.queue.enqueue(intent);
     } catch (err) {
       console.warn(
         JSON.stringify({
@@ -324,10 +349,76 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     const credential = header ? /^Bearer (\S+)$/.exec(header)?.[1] : undefined;
     if (credential?.split('.').length === 3) {
       const deviceId = verifyDeviceCredential(credential, deps.deviceCredentialKeys ?? new Map());
-      if (deviceId) return deviceId;
+      if (deviceId && !(await isDeleted(deviceId))) return deviceId;
       throw new HttpError(401, 'unauthorized', 'Missing or invalid credentials');
     }
     return (await authenticate(req)).id;
+  }
+
+  /**
+   * Has this device been erased? Only the check-in route asks, and only for a stateless
+   * credential (which would otherwise verify forever with no database read).
+   *
+   * Trade-off: the whole tombstone set (a few UUIDs per erasure request) is read at most once per
+   * `tombstoneCacheMs` per container, never once per check-in, so the million-phone burst adds a
+   * handful of reads instead of a million. In exchange an erased device's credential can still
+   * check in for up to that long in a container that has not refreshed yet (default 60 s); that
+   * costs one check-in row, which its TTL removes. If a refresh fails, the last known set is
+   * used (fail open: an outage of the tombstone table must not stop people from answering
+   * "I'm okay"); with no set yet, nothing is denied and the failure is logged.
+   */
+  const tombstoneTtlMs = deps.tombstoneCacheMs ?? 60_000;
+  let tombstones: Set<string> | undefined;
+  let tombstonesLoadedAt = 0;
+  let tombstoneRefresh: Promise<void> | undefined;
+  async function isDeleted(deviceId: string): Promise<boolean> {
+    const nowMs = deps.clock.now().getTime();
+    if (!tombstones || nowMs - tombstonesLoadedAt >= tombstoneTtlMs) {
+      tombstoneRefresh ??= (async () => {
+        try {
+          tombstones = new Set(await deps.devices.listDeletedDevices());
+          tombstonesLoadedAt = nowMs;
+        } catch (err) {
+          // Do not retry on every request while it is down: back off for one cache period.
+          tombstonesLoadedAt = nowMs;
+          console.warn(
+            JSON.stringify({
+              level: 'warn',
+              msg: 'tombstones.refresh_failed',
+              error: err instanceof Error ? err.name : 'UnknownError',
+              code: 'tombstone_refresh_failed',
+            }),
+          );
+        } finally {
+          tombstoneRefresh = undefined;
+        }
+      })();
+      await tombstoneRefresh;
+    }
+    return tombstones?.has(deviceId) ?? false;
+  }
+
+  /**
+   * Authentication for DELETE /devices/me. Normally the device exists and this is `authenticate`.
+   * If an earlier erasure deleted the device row but could not finish (check-ins), the retry
+   * arrives with a stateless credential whose device is already tombstoned: that is accepted so
+   * the erasure can be finished. Anything else is the usual 401.
+   */
+  async function authenticateForErase(req: Request): Promise<{ deviceId: string; known: boolean }> {
+    try {
+      return { deviceId: (await authenticate(req)).id, known: true };
+    } catch (err) {
+      const header = req.headers['authorization'];
+      const credential = header ? /^Bearer (\S+)$/.exec(header)?.[1] : undefined;
+      if (err instanceof HttpError && credential?.split('.').length === 3) {
+        const id = verifyDeviceCredential(credential, deps.deviceCredentialKeys ?? new Map());
+        // Read the tombstones directly (not the cache): this is a rare, deliberate request.
+        if (id && (await deps.devices.listDeletedDevices()).includes(id)) {
+          return { deviceId: id, known: false };
+        }
+      }
+      throw err;
+    }
   }
 
   // ---------- Devices ----------
@@ -347,7 +438,10 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       language: 'en',
       createdAt: deps.clock.now().toISOString(),
     });
-    return json(201, { deviceId: id, credential });
+    // The Firebase project this device's app must register its FCM token with (Android). Omitted
+    // when the server runs a single project.
+    const fcmProject = assignFcmProject(id, deps.fcmProjectIds ?? []);
+    return json(201, { deviceId: id, credential, ...(fcmProject ? { fcmProject } : {}) });
   });
 
   router.add('PUT', '/devices/me/push-token', async (req) => {
@@ -357,14 +451,37 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     if (language !== 'en' && language !== 'es') {
       throw new HttpError(400, 'invalid_request', 'language must be "en" or "es"');
     }
-    const target = parsePushTarget(body);
-    // Moves the target here if another (reinstalled) device still holds it.
-    const { displaced } = await deps.devices.assignPushTarget(device.id, target, language);
+    const target = parsePushTarget(body, deps.fcmProjectIds ?? []);
+    // Moves the target here if another (reinstalled) device still holds it, within the move rules
+    // (scale/latejoin/push-target-rules.ts): otherwise one phone could mint unlimited identities.
+    let displaced: string[];
+    let outboxIds: Record<string, string> = {};
+    try {
+      ({ displaced, outboxIds = {} } = await deps.devices.assignPushTarget(
+        device.id,
+        target,
+        language,
+        deps.outbox ? { outbox: true } : undefined,
+      ));
+    } catch (err) {
+      if (err instanceof PushTokenInUseError) {
+        throw new HttpError(
+          409,
+          'push_token_in_use',
+          'This push token is attached to another active device. Try again later.',
+        );
+      }
+      throw err;
+    }
+    const outboxFor = (id: string): string[] => (outboxIds[id] ? [outboxIds[id]] : []);
     // Keep the cell index in step. A failure here never fails the request (Aurora is the
     // record); the failed update is queued for the repair Lambda.
-    await writeThrough('update_device', () => syncDevice(device.id, target, language), [
-      allPlaces(device.id),
-    ]);
+    await writeThrough(
+      'update_device',
+      () => syncDevice(device.id, target, language),
+      [allPlaces(device.id)],
+      outboxFor(device.id),
+    );
     for (const otherId of displaced) {
       await writeThrough(
         'update_device',
@@ -373,17 +490,52 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
           if (other) await syncDevice(otherId, null, other.language);
         },
         [allPlaces(otherId)],
+        outboxFor(otherId),
       );
     }
-    // A device that just got a target missed any alert that is already active: send it now.
-    if (deps.lateJoin) {
+    // A device that just got a target may have missed an active alert: ask the late-join Lambda.
+    await requestLateJoin({ deviceId: device.id, reason: 'push_target' });
+    return noContent();
+  });
+
+  /**
+   * Permanent erasure of this device (Gov. Code 11015.5(c): discard personal information on
+   * request). Order matters: the cell-index entries go FIRST, so no entry ever points at a
+   * device that is gone (an index failure fails the request with the device untouched, and the
+   * client retries). Then the places and the device row (with the tombstone, atomically), then
+   * the check-in rows. A check-in failure after the device row is gone is retried inline; if it
+   * persists the request fails with 500 and the retry (same credential) finishes the job, see
+   * authenticateForErase. The rows' TTL is the last backstop.
+   */
+  router.add('DELETE', '/devices/me', async (req) => {
+    const { deviceId, known } = await authenticateForErase(req);
+    if (known) {
+      const places = await deps.places.listForDevice(deviceId);
+      for (const place of places) {
+        await deps.cellIndex.remove(place.h3Cell, deviceId, place.id);
+      }
+      await deps.places.removeAllForDevice(deviceId);
+      await deps.devices.deleteDevice(deviceId, deps.clock.now());
+      tombstones?.add(deviceId); // this container refuses it at once
+    }
+    const attempts = 3;
+    for (let attempt = 1; ; attempt++) {
       try {
-        const cells = [
-          ...new Set((await deps.places.listForDevice(device.id)).map((p) => p.h3Cell)),
-        ].sort();
-        await sendLateJoinAlerts(device.id, target, language, cells, cells);
-      } catch {
-        /* best effort */
+        await deps.checkins.deleteForDevice(deviceId);
+        break;
+      } catch (err) {
+        if (attempt >= attempts) {
+          console.error(
+            JSON.stringify({
+              level: 'error',
+              msg: 'device_delete.checkins_incomplete',
+              error: err instanceof Error ? err.name : 'UnknownError',
+              code: 'checkins_incomplete',
+            }),
+          );
+          throw new Error('check-in erasure incomplete');
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
       }
     }
     return noContent();
@@ -395,6 +547,13 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     const device = await authenticate(req);
     const body = requireObject(req.body);
     const label = nonEmptyString(body['label'], 'label');
+    if (!PlaceLabelSchema.safeParse(label).success) {
+      throw new HttpError(
+        400,
+        'invalid_request',
+        `label must be at most ${MAX_LABEL_LENGTH} characters`,
+      );
+    }
     const hasAddress = body['address'] !== undefined;
     const hasCoords = body['latitude'] !== undefined || body['longitude'] !== undefined;
     if (hasAddress === hasCoords) {
@@ -413,16 +572,28 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       );
     }
 
-    let latitude: number;
-    let longitude: number;
-    let shortAddress: string;
+    // The exact point only lives in this function: it is used to find the cell (and to check
+    // California BEFORE it is thrown away) and is never stored, logged or returned.
+    let h3Cell: string;
+    let shortAddress: string | undefined;
     if (hasAddress) {
-      const found = await deps.geocoder.geocode(nonEmptyString(body['address'], 'address'));
+      const address = nonEmptyString(body['address'], 'address');
+      // Bounded before the geocoder: Amazon Location bills per request and per long query.
+      if (!PlaceAddressSchema.safeParse(address).success) {
+        throw new HttpError(
+          400,
+          'invalid_request',
+          `address must be at most ${LIMITS.addressMax} characters`,
+        );
+      }
+      const found = await deps.geocoder.geocode(address);
       if (!found) throw new HttpError(400, 'address_not_found', 'Could not find that address');
       if (found.state !== 'CA') {
         throw new HttpError(422, 'outside_california', 'Relay supports California addresses only');
       }
-      ({ latitude, longitude, shortAddress } = found);
+      h3Cell = cellForPoint(found.latitude, found.longitude);
+      // The adapter already returns the coarse form; strip again so no geocoder can leak a number.
+      shortAddress = coarsenShortAddress(found.shortAddress);
     } else {
       const lat = body['latitude'];
       const lng = body['longitude'];
@@ -439,27 +610,30 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       if (!isInCalifornia(lat, lng)) {
         throw new HttpError(422, 'outside_california', 'Relay supports California locations only');
       }
-      latitude = lat;
-      longitude = lng;
-      shortAddress = 'Dropped pin'; // no street address when saved by coordinates
+      h3Cell = cellForPoint(lat, lng);
+      // No street text for a pin: nothing but the cell is kept.
     }
 
     const place: Place = {
       id: deps.newId(),
       deviceId: device.id,
       label,
-      shortAddress,
-      latitude,
-      longitude,
-      h3Cell: cellForPoint(latitude, longitude),
+      ...(shortAddress ? { shortAddress } : {}),
+      h3Cell,
       createdAt: deps.clock.now().toISOString(),
     };
-    await deps.places.add(place);
+    const addOutboxId = deps.outbox ? deps.newId() : undefined;
+    await deps.places.add(
+      place,
+      addOutboxId
+        ? { outbox: { id: addOutboxId, op: 'put', h3Cell: place.h3Cell, placeId: place.id } }
+        : undefined,
+    );
     // Write the new entry FIRST, then rewrite deviceCells on the device's other entries
     // (syncDeviceCells). It reads the device's CURRENT target and places from Aurora after the
     // place is saved (the row loaded for authentication is from the start of the request) and
     // re-reads afterwards, so a push token registered in between is caught and rewritten.
-    const seen: { truth?: DeviceTruth } = {};
+    const seen: { truth?: DeviceTruth; erased?: boolean } = {};
     const repairPut: IndexRepairMessage = {
       op: 'put',
       h3Cell: place.h3Cell,
@@ -473,7 +647,13 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
           deviceId: device.id,
           added: { placeId: place.id },
           load: async () => {
-            const current = (await deps.devices.get(device.id)) ?? device;
+            const current = await deps.devices.get(device.id);
+            // Erased while we were writing (DELETE /devices/me raced this request): the sync then
+            // removes what it wrote, so no entry outlives the device.
+            if (!current) {
+              seen.erased = true;
+              return null;
+            }
             const places = await deps.places.listForDevice(device.id);
             seen.truth = {
               target: targetOf(current),
@@ -484,15 +664,16 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
           },
         }),
       [repairPut],
+      addOutboxId ? [addOutboxId] : [],
     );
+    if (seen.erased) {
+      // The device no longer exists: nothing to send, and the credential is dead.
+      throw new HttpError(401, 'unauthorized', 'Missing or invalid credentials');
+    }
     const truth = seen.truth;
-    await sendLateJoinAlerts(
-      device.id,
-      truth ? truth.target : targetOf(device),
-      truth ? truth.language : device.language,
-      [place.h3Cell],
-      truth ? deviceCellsOf(truth.places) : [place.h3Cell],
-    );
+    if (truth ? truth.target : targetOf(device)) {
+      await requestLateJoin({ deviceId: device.id, placeId: place.id, reason: 'place_added' });
+    }
     return json(201, toPlaceBody(place));
   });
 
@@ -509,7 +690,17 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
     const place = UUID.test(placeId)
       ? (await deps.places.listForDevice(device.id)).find((p) => p.id === placeId)
       : undefined;
-    if (!place || !(await deps.places.remove(device.id, placeId))) {
+    const removeOutboxId = deps.outbox ? deps.newId() : undefined;
+    if (
+      !place ||
+      !(await deps.places.remove(
+        device.id,
+        placeId,
+        removeOutboxId
+          ? { outbox: { id: removeOutboxId, op: 'remove', h3Cell: place.h3Cell, placeId } }
+          : undefined,
+      ))
+    ) {
       throw new HttpError(404, 'not_found', 'Place not found');
     }
     // Rewrite the remaining entries without this cell FIRST, then delete the removed entry.
@@ -530,6 +721,7 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
           },
         }),
       [{ op: 'remove', h3Cell: place.h3Cell, deviceId: device.id, placeId: place.id }],
+      removeOutboxId ? [removeOutboxId] : [],
     );
     return noContent();
   });
@@ -581,6 +773,9 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       throw new HttpError(400, 'unsupported_status', 'status "need_help" is not supported yet');
     }
     const token = nonEmptyString(body['token'], 'token');
+    if (token.length > LIMITS.checkInTokenMax) {
+      throw new HttpError(400, 'invalid_request', 'token is too long');
+    }
     const idempotencyKey = nonEmptyString(body['idempotencyKey'], 'idempotencyKey');
     if (idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
       throw new HttpError(400, 'invalid_request', 'idempotencyKey is too long');
@@ -625,7 +820,15 @@ export function createApi(deps: ApiDeps): (event: ApiEvent) => Promise<ApiResult
       idempotencyKey,
       h3Cell,
     };
-    if (await deps.checkins.save(checkIn)) return json(200, { checkedInAt: checkIn.checkedInAt });
+    // The row is deleted (DynamoDB TTL) after the alert's end plus the retention period.
+    const retainUntil = new Date(
+      checkInTtlSeconds(
+        verified.expiresAt,
+        deps.checkInRetentionDays ?? DEFAULT_CHECKIN_RETENTION_DAYS,
+      ) * 1000,
+    );
+    if (await deps.checkins.save(checkIn, retainUntil))
+      return json(200, { checkedInAt: checkIn.checkedInAt });
 
     // This device already checked in for this alert (a retry, or a new idempotencyKey).
     // Only the first check-in counts; answer with its original time.

@@ -1,6 +1,6 @@
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { mockClient } from 'aws-sdk-client-mock';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearKeyringCache, loadKeyring, loadSecretString } from '../../src/config/secrets.js';
 
 const sm = mockClient(SecretsManagerClient);
@@ -83,5 +83,71 @@ describe('loadSecretString', () => {
   it('returns the raw string', async () => {
     sm.on(GetSecretValueCommand).resolves({ SecretString: 'tok' });
     expect(await loadSecretString(ARN, new SecretsManagerClient({}))).toBe('tok');
+  });
+});
+
+describe('loadKeyring: stale on error (SEC-A-6)', () => {
+  const denied = () => Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+  let warnings: string[];
+  beforeEach(() => {
+    warnings = [];
+    vi.spyOn(console, 'warn').mockImplementation((l) => void warnings.push(String(l)));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('serves the last good keyring when Secrets Manager errors after the cache expired', async () => {
+    const client = new SecretsManagerClient({});
+    sm.on(GetSecretValueCommand).resolves({ SecretString: good });
+    let t = 0;
+    const first = await loadKeyring(ARN, client, () => t);
+    sm.on(GetSecretValueCommand).rejects(denied());
+    t = 6 * 60_000;
+    const second = await loadKeyring(ARN, client, () => t);
+    expect(second).toBe(first);
+    expect(warnings.some((w) => w.includes('config.stale_value_served'))).toBe(true);
+    t = 59 * 60_000;
+    expect(await loadKeyring(ARN, client, () => t)).toBe(first);
+  });
+
+  it('does not call Secrets Manager on every request during an outage', async () => {
+    const client = new SecretsManagerClient({});
+    sm.on(GetSecretValueCommand).resolves({ SecretString: good });
+    let t = 0;
+    await loadKeyring(ARN, client, () => t);
+    sm.on(GetSecretValueCommand).rejects(denied());
+    t = 6 * 60_000;
+    for (let i = 0; i < 10; i++) await loadKeyring(ARN, client, () => t);
+    expect(sm.commandCalls(GetSecretValueCommand)).toHaveLength(2);
+  });
+
+  it('retries after the backoff and recovers (a rotated keyring is picked up)', async () => {
+    const client = new SecretsManagerClient({});
+    sm.on(GetSecretValueCommand).resolves({ SecretString: good });
+    let t = 0;
+    await loadKeyring(ARN, client, () => t);
+    sm.on(GetSecretValueCommand).rejects(denied());
+    t = 6 * 60_000;
+    await loadKeyring(ARN, client, () => t);
+    sm.on(GetSecretValueCommand).resolves({
+      SecretString: JSON.stringify({ current: 'k3', keys: { k3: KEY_NEW } }),
+    });
+    t += 20_000;
+    expect((await loadKeyring(ARN, client, () => t)).current.id).toBe('k3');
+  });
+
+  it('throws once the last good keyring is over an hour old', async () => {
+    const client = new SecretsManagerClient({});
+    sm.on(GetSecretValueCommand).resolves({ SecretString: good });
+    let t = 0;
+    await loadKeyring(ARN, client, () => t);
+    sm.on(GetSecretValueCommand).rejects(denied());
+    t = 61 * 60_000;
+    await expect(loadKeyring(ARN, client, () => t)).rejects.toThrow('Rate exceeded');
+  });
+
+  it('throws when nothing was ever loaded', async () => {
+    sm.on(GetSecretValueCommand).rejects(denied());
+    await expect(loadKeyring(ARN, new SecretsManagerClient({}))).rejects.toThrow('Rate exceeded');
   });
 });

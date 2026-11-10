@@ -9,28 +9,35 @@ import { LocationGeocoder } from '../adapters/aws/location-geocoder.js';
 import { PostgresAlertStore } from '../adapters/postgres/alert-store.js';
 import { PostgresDeviceStore } from '../adapters/postgres/device-store.js';
 import { PostgresPlaceStore } from '../adapters/postgres/place-store.js';
-import type { SendQueue } from '../scale/contracts.js';
+import { parseFcmProjectIds } from '../adapters/push/fcm-projects.js';
 import { DynamoCellIndex } from '../scale/cell-index/dynamo-cell-index.js';
 import { SqsIndexRepairQueue } from '../scale/cell-index/repair-queue.js';
-import { SqsSendQueue } from '../scale/sender/sqs-send-queue.js';
-import type { TokenKey } from '../tokens/index.js';
+import { SqsLateJoinQueue, type LateJoinQueue } from '../scale/latejoin/intent.js';
 import { loadKeyring } from '../config/secrets.js';
 import { DataApiExecutor } from '../db/sql.js';
 import { createApi, type ApiDeps, type ApiEvent, type ApiResult } from './index.js';
+import { PostgresCellIndexOutbox } from '../scale/cell-index/outbox.js';
 import { secretsManagerOriginGuard, type OriginGuard } from './origin-guard.js';
 import { routeOf } from './router.js';
 
 /** The stores the API needs that come from AWS (Aurora, Amazon Location). */
 export type StoreDeps = Pick<
   ApiDeps,
-  'devices' | 'places' | 'alerts' | 'geocoder' | 'checkins' | 'cellIndex' | 'repairQueue'
+  | 'devices'
+  | 'places'
+  | 'alerts'
+  | 'geocoder'
+  | 'checkins'
+  | 'cellIndex'
+  | 'repairQueue'
+  | 'outbox'
+  | 'checkInRetentionDays'
+  | 'fcmProjectIds'
 > & {
   /** When set, requests without CloudFront's secret header are refused (REQUIRE_ORIGIN_HEADER). */
   originGuard?: OriginGuard;
-  /** Send queues for late joiners; with `loadTokenSigningKey` it enables the late-join send. */
-  sendQueue?: SendQueue;
-  /** The current token key, used to sign the check-in tokens of late-join pushes. */
-  loadTokenSigningKey?: () => Promise<TokenKey>;
+  /** Late-join intents (LATEJOIN_QUEUE_URL). The API has no send-queue access of its own. */
+  lateJoinQueue?: LateJoinQueue;
   /** Called per request; the keyring loader caches, so key rotation is picked up within minutes. */
   loadTokenKeys: () => Promise<Map<string, string>>;
   /** Device credential keyring (verify keys plus the current key used to issue credentials). */
@@ -62,14 +69,8 @@ export function createHandler(buildStores: StoreFactory): (event: ApiEvent) => P
     let result: ApiResult;
     try {
       stores ??= await buildStores();
-      const {
-        loadTokenKeys,
-        loadDeviceCredentialKeys,
-        loadTokenSigningKey,
-        originGuard,
-        sendQueue,
-        ...rest
-      } = stores;
+      const { loadTokenKeys, loadDeviceCredentialKeys, originGuard, lateJoinQueue, ...rest } =
+        stores;
       // CloudFront adds a secret header; a request without it skipped the WAF. Fail closed:
       // if the secret cannot be loaded, the request errors (500) instead of being let through.
       if (originGuard && !(await originGuard.allows(event.headers ?? {}))) {
@@ -81,14 +82,13 @@ export function createHandler(buildStores: StoreFactory): (event: ApiEvent) => P
         return log(event, started, result);
       }
       // The keyring loaders cache, so this is no Secrets Manager call per request.
-      const [tokenKeys, credentialKeys, tokenKey] = await Promise.all([
+      const [tokenKeys, credentialKeys] = await Promise.all([
         loadTokenKeys(),
         loadDeviceCredentialKeys?.(),
-        sendQueue ? loadTokenSigningKey?.() : undefined,
       ]);
       const route = createApi({
         ...rest,
-        ...(sendQueue && tokenKey ? { lateJoin: { sendQueue, tokenKey } } : {}),
+        ...(lateJoinQueue ? { lateJoin: { queue: lateJoinQueue } } : {}),
         tokenKeys,
         ...(credentialKeys
           ? {
@@ -174,8 +174,13 @@ export const awsStores: StoreFactory = () => {
   }
   // Optional scale wiring. Missing values turn the feature off (dev), never fail the request.
   const repairQueueUrl = env['INDEX_REPAIR_QUEUE_URL'];
-  const urgentUrl = env['URGENT_QUEUE_URL'];
-  const standardUrl = env['STANDARD_QUEUE_URL'];
+  // Check-in retention after the alert ends (counsel decides; default 30 days).
+  const retentionRaw = Number(env['CHECKIN_RETENTION_DAYS']);
+  const retentionDays =
+    env['CHECKIN_RETENTION_DAYS'] && Number.isFinite(retentionRaw) && retentionRaw > 0
+      ? retentionRaw
+      : undefined;
+  const lateJoinUrl = env['LATEJOIN_QUEUE_URL'];
   const requireOrigin = env['REQUIRE_ORIGIN_HEADER'] === 'true';
   const originSecretArn = env['ORIGIN_VERIFY_SECRET_ARN'];
   if (requireOrigin && !originSecretArn) {
@@ -188,20 +193,19 @@ export const awsStores: StoreFactory = () => {
       ? { originGuard: secretsManagerOriginGuard(originSecretArn) }
       : {}),
     ...(repairQueueUrl ? { repairQueue: new SqsIndexRepairQueue(sqs, repairQueueUrl) } : {}),
-    ...(urgentUrl && standardUrl
-      ? {
-          sendQueue: new SqsSendQueue(sqs, { urgent: urgentUrl, standard: standardUrl }),
-          loadTokenSigningKey: async () => (await loadKeyring(keysArn)).current,
-        }
-      : {}),
+    ...(lateJoinUrl ? { lateJoinQueue: new SqsLateJoinQueue(sqs, lateJoinUrl) } : {}),
     devices: new PostgresDeviceStore(db),
     places: new PostgresPlaceStore(db),
+    outbox: new PostgresCellIndexOutbox(db),
     alerts: new PostgresAlertStore(db),
     geocoder: new LocationGeocoder(new LocationClient({}), index),
     checkins: new DynamoCheckInStore(
       DynamoDBDocumentClient.from(new DynamoDBClient({})),
       checkinsTable,
+      retentionDays,
     ),
+    ...(retentionDays !== undefined ? { checkInRetentionDays: retentionDays } : {}),
+    fcmProjectIds: parseFcmProjectIds(env['FCM_PROJECT_IDS']),
     cellIndex: new DynamoCellIndex(
       DynamoDBDocumentClient.from(new DynamoDBClient({})),
       cellIndexTable,

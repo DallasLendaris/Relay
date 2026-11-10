@@ -4,7 +4,15 @@ import { PUSH_POLICY } from '../../../src/delivery/policy.js';
 import { SENDER_CHUNK_SIZE, type NativePushMessage } from '../../../src/scale/contracts.js';
 import { SENDER_LEASE_MS, baseBatchKey, processBatch } from '../../../src/scale/sender/sender.js';
 import { tampered } from '../../delivery/fakes.js';
-import { FakePush, makeBatch, makeDeps, recordingLogger, seedAlert, waitFor } from './fakes.js';
+import {
+  FakePush,
+  clearAtOnce,
+  makeBatch,
+  makeDeps,
+  recordingLogger,
+  seedAlert,
+  waitFor,
+} from './fakes.js';
 
 describe('processBatch: claim states', () => {
   it('acks without sending when the batch is already sent', async () => {
@@ -40,6 +48,28 @@ describe('processBatch: claim states', () => {
     await processBatch(makeBatch(), t.deps);
     expect(seen).toEqual([SENDER_LEASE_MS]);
     expect(SENDER_LEASE_MS).toBe(45_000);
+  });
+});
+
+describe('processBatch: FCM project routing data', () => {
+  it('hands each recipient target, with its Firebase project, to the push sender', async () => {
+    const t = makeDeps();
+    await seedAlert(t.alerts);
+    const batch = makeBatch({}, 3);
+    const [first, second] = batch.recipients;
+    if (!first || !second) throw new Error('recipients');
+    second.target = { platform: 'android', token: 'tok1', project: 'relay-b' };
+    await processBatch(batch, t.deps);
+    const sent = t.push.calls.flat();
+    expect(sent.find((m) => m.target.token === 'tok1')?.target).toEqual({
+      platform: 'android',
+      token: 'tok1',
+      project: 'relay-b',
+    });
+    expect(sent.find((m) => m.target.token === 'tok0')?.target).toEqual({
+      platform: 'ios',
+      token: 'tok0',
+    });
   });
 });
 
@@ -143,11 +173,11 @@ describe('processBatch: building pushes', () => {
       expect(m.data['alertId']).toBe(alert.id);
       expect(m.data['expiresAt']).toBe('2026-11-10T14:00:00.000Z');
     }
-    expect(msgs[0]?.title).toBe('Warning: Flash Flood Warning');
-    expect(msgs[0]?.body).toBe('Flash Flood Warning until 6 PM');
+    expect(msgs[0]?.title).toBe('Flash Flood Warning');
+    expect(msgs[0]?.body).toBe('NWS: Flash Flood Warning until 6 PM');
     expect(msgs[0]?.data['checkInToken']).toBe('ct0');
-    expect(msgs[1]?.title).toBe('Aviso: Flash Flood Warning');
-    expect(msgs[1]?.body).toBe('Inundación repentina');
+    expect(msgs[1]?.title).toBe('Aviso de inundaciones repentinas');
+    expect(msgs[1]?.body).toBe('Resumen de Relay (no oficial): Inundación repentina Fuente: NWS');
   });
 
   it('quiet policy for watch: normal priority, no sound', async () => {
@@ -190,6 +220,7 @@ describe('processBatch: failures', () => {
         deadSeen.push({ deviceId, target });
       },
     });
+    clearAtOnce(t.deps); // about the order of cleanup, not the hold
     const realSent = t.idempotency.markSent.bind(t.idempotency);
     t.idempotency.markSent = async (k, e) => (order.push('markSent'), realSent(k, e));
     t.sendQueue.onEnqueue = () => void order.push('enqueue');

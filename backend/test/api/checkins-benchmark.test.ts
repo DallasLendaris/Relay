@@ -21,7 +21,11 @@ describe('check-in throughput (in-memory stores)', () => {
     const cells = Array.from({ length: 200 }, (_, i) => `cell-${i}`);
     const checkins = new MemoryCheckInStore();
     const deps: ApiDeps = {
-      devices: forbidden('devices'),
+      // Only the cached tombstone list is read (once per cache window), never per check-in.
+      devices: new Proxy(forbidden<ApiDeps['devices']>('devices'), {
+        get: (t, prop, r) =>
+          prop === 'listDeletedDevices' ? async () => [] : Reflect.get(t, prop, r),
+      }),
       places: forbidden('places'),
       alerts: forbidden('alerts'),
       geocoder: forbidden('geocoder'),

@@ -17,6 +17,8 @@ import { CfnPlaceIndex } from 'aws-cdk-lib/aws-location';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { Queue, QueueEncryption } from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
+import { APIGW_BURST, DEFAULT_APIGW_RPS_QUOTA } from './capacity.js';
+import { fcmProjectIds } from './fcm-projects.js';
 import { allow, dbEnv, grantDb, grantSecretRead, type DbRefs } from './grants.js';
 
 export interface ApiStackProps extends StackProps {
@@ -29,9 +31,12 @@ export interface ApiStackProps extends StackProps {
   cellIndexTableArn: string;
   /** Secret CloudFront sends as x-relay-origin-verify (ConfigStack). */
   originVerifySecretArn: string;
-  /** Send queues (FanoutStack): late-joining devices are sent active alerts straight from the API. */
-  urgentQueue: { arn: string; url: string };
-  standardQueue: { arn: string; url: string };
+  /**
+   * Late-join intent queue (LateJoinStack). The API may only SEND to it; the late-join Lambda is
+   * its only consumer and does the real sending. The API has no permission on the urgent and
+   * standard send queues at all.
+   */
+  lateJoinQueue: { arn: string; url: string };
   /**
    * Refuse requests without the origin header (REQUIRE_ORIGIN_HEADER). Default: prod true, dev
    * false (dev is reached directly by developers and the app's dev builds).
@@ -39,9 +44,17 @@ export interface ApiStackProps extends StackProps {
   requireOriginHeader?: boolean;
   /** Check-ins table warm throughput (writes/s). Default: prod 40,000, dev none. */
   checkinsWarmWritesPerSecond?: number;
-  /** Lambda reserved concurrency. Unset (the default everywhere) means unreserved. */
+  /** Check-in totals table warm throughput (writes/s). Default: prod 40,000, dev none. */
+  checkinTotalsWarmWritesPerSecond?: number;
+  /**
+   * Lambda reserved concurrency. buildRelayApp sets all three on prod (see capacity.ts, SEC-C-2);
+   * unset means unreserved, which is what dev and direct ApiStack users get.
+   */
   reservedConcurrency?: { api?: number; aggregator?: number; repair?: number };
-  /** Stage throttle on $default. Defaults: dev 50 rps / burst 100, prod 20,000 rps / burst 10,000. */
+  /**
+   * Stage throttle on $default. Defaults: dev 50 rps / burst 100; prod the HTTP API account quota
+   * (10,000 rps, burst 5,000). A stage limit above the account quota never applied anyway.
+   */
   throttle?: { rateLimit: number; burstLimit: number };
 }
 
@@ -50,9 +63,22 @@ export const REPAIR_TIMEOUT_SECONDS = 60;
 /** The check-in burst: 1,000,000 devices in about 5 minutes peaks at 20,000 to 50,000 writes/s. */
 export const DEFAULT_CHECKINS_WARM_WRITES = 40_000;
 
+/**
+ * Check-in totals table warm throughput on prod (PERF-4a / PERF-9). The aggregator writes one
+ * marker per stream record inside a DynamoDB transaction, and a transactional write costs 2 WRU,
+ * so a record costs about 2 WRU (the counter update is shared by up to 50 records). A 50,000
+ * check-ins/s peak would be 100,000 WRU/s if the stream kept pace; it does not have to, because
+ * Streams buffer for 24 h and the aggregator retries throttled records. So warm to the 40,000
+ * default per-table quota (20,000 records/s) and, once the quota is raised to 120,000 as
+ * docs/scale-quotas.md asks, pass `-c checkinTotalsWarmWritesPerSecond=100000`.
+ * PERF-9 follow-up (not done): dropping the transaction for a conditional marker Put plus a
+ * counter ADD halves the cost to about 1 WRU per record but needs a new idempotency design.
+ */
+export const DEFAULT_CHECKIN_TOTALS_WARM_WRITES = 40_000;
+
 export const DEFAULT_THROTTLE = {
   dev: { rateLimit: 50, burstLimit: 100 },
-  prod: { rateLimit: 20_000, burstLimit: 10_000 },
+  prod: { rateLimit: DEFAULT_APIGW_RPS_QUOTA, burstLimit: APIGW_BURST },
 } as const;
 
 /**
@@ -62,6 +88,7 @@ export const DEFAULT_THROTTLE = {
 export const API_ROUTES: ReadonlyArray<{ method: HttpMethod; path: string }> = [
   { method: HttpMethod.POST, path: '/devices' },
   { method: HttpMethod.PUT, path: '/devices/me/push-token' },
+  { method: HttpMethod.DELETE, path: '/devices/me' },
   { method: HttpMethod.POST, path: '/places' },
   { method: HttpMethod.GET, path: '/places' },
   { method: HttpMethod.DELETE, path: '/places/{placeId}' },
@@ -79,6 +106,7 @@ export class ApiStack extends Stack {
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
     const isProd = props.stage === 'prod';
+    const fcmProjects = fcmProjectIds(this);
 
     // Address search for saved places. SingleUse means results are not stored.
     const placeIndexName = `relay-${props.stage}-places`;
@@ -90,6 +118,8 @@ export class ApiStack extends Stack {
 
     const warmWrites =
       props.checkinsWarmWritesPerSecond ?? (isProd ? DEFAULT_CHECKINS_WARM_WRITES : 0);
+    const totalsWarmWrites =
+      props.checkinTotalsWarmWritesPerSecond ?? (isProd ? DEFAULT_CHECKIN_TOTALS_WARM_WRITES : 0);
     const requireOrigin = props.requireOriginHeader ?? isProd;
     const reserved = props.reservedConcurrency ?? {};
     const concurrency = (n: number | undefined) =>
@@ -97,7 +127,7 @@ export class ApiStack extends Stack {
 
     // Cell-index repair outbox: when the API cannot write a device's place into the cell index
     // it queues a message here, and a Lambda redoes the write from Aurora's truth. A message
-    // that keeps failing lands in the DLQ, which pages (a missing index entry is a missed alert).
+    // that keeps failing lands in the DLQ, which alarms to the alerts topic (a missing index entry is a missed alert).
     const repairDlq = new Queue(this, 'IndexRepairDlq', {
       encryption: QueueEncryption.SQS_MANAGED,
       retentionPeriod: Duration.days(14),
@@ -122,10 +152,20 @@ export class ApiStack extends Stack {
       ...tableDefaults,
       partitionKey: { name: 'pk', type: AttributeType.STRING },
       stream: StreamViewType.NEW_IMAGE,
+      // Check-ins are not kept forever: every row carries `ttl` (the alert's end plus the
+      // retention period, 30 days until counsel decides) and DynamoDB deletes it after that.
+      timeToLiveAttribute: 'ttl',
       // A new on-demand table only serves what its previous peak allowed (4,000 writes/s to
       // start, doubling gradually), so a statewide check-in burst would be throttled. Warm
       // throughput provisions the capacity up front (CloudFormation: WarmThroughput).
       ...(warmWrites > 0 ? { warmThroughput: { writeUnitsPerSecond: warmWrites } } : {}),
+    });
+    // Lists one device's check-ins, so DELETE /devices/me can erase them without a table scan.
+    // Keys only: the erasure needs nothing but the primary key to delete the row.
+    checkins.addGlobalSecondaryIndex({
+      indexName: 'byDevice',
+      partitionKey: { name: 'deviceId', type: AttributeType.STRING },
+      projectionType: ProjectionType.KEYS_ONLY,
     });
     // Running count per alert and H3 cell (written only by the aggregator). This is what
     // agencies see, never the rows above. The byAlert index lists an alert's cells; ttl expires
@@ -134,6 +174,9 @@ export class ApiStack extends Stack {
       ...tableDefaults,
       partitionKey: { name: 'pk', type: AttributeType.STRING },
       timeToLiveAttribute: 'ttl',
+      ...(totalsWarmWrites > 0
+        ? { warmThroughput: { writeUnitsPerSecond: totalsWarmWrites } }
+        : {}),
     });
     checkinTotals.addGlobalSecondaryIndex({
       indexName: 'byAlert',
@@ -155,26 +198,24 @@ export class ApiStack extends Stack {
         removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
       }),
       environment: {
-        ...dbEnv(props.db),
+        ...dbEnv(props.db, 'api'),
         PLACE_INDEX_NAME: placeIndexName,
         CHECKINS_TABLE: checkins.tableName,
         TOKEN_KEYS_SECRET_ARN: props.tokenKeysSecretArn,
         DEVICE_CREDENTIAL_KEYS_SECRET_ARN: props.deviceCredentialKeysSecretArn,
         CELL_INDEX_TABLE: props.cellIndexTableName,
         INDEX_REPAIR_QUEUE_URL: repairQueue.queueUrl,
-        URGENT_QUEUE_URL: props.urgentQueue.url,
-        STANDARD_QUEUE_URL: props.standardQueue.url,
+        LATEJOIN_QUEUE_URL: props.lateJoinQueue.url,
         ORIGIN_VERIFY_SECRET_ARN: props.originVerifySecretArn,
         REQUIRE_ORIGIN_HEADER: requireOrigin ? 'true' : 'false',
+        ...(fcmProjects.length > 0 ? { FCM_PROJECT_IDS: fcmProjects.join(',') } : {}),
       },
       ...concurrency(reserved.api),
     });
     grantSecretRead(apiFn, props.originVerifySecretArn);
-    allow(
-      apiFn,
-      ['sqs:SendMessage'],
-      [repairQueue.queueArn, props.urgentQueue.arn, props.standardQueue.arn],
-    );
+    // The API can enqueue repairs and late-join INTENTS only. It has no permission on the urgent
+    // and standard send queues (SEC-C-1): a compromised API cannot push an alert to any device.
+    allow(apiFn, ['sqs:SendMessage'], [repairQueue.queueArn, props.lateJoinQueue.arn]);
 
     // Repair Lambda: re-reads Aurora and rewrites the cell-index entries the API failed to write.
     const repairFn = new NodejsFunction(this, 'IndexRepairFunction', {
@@ -192,10 +233,10 @@ export class ApiStack extends Stack {
         retention: RetentionDays.ONE_MONTH,
         removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
       }),
-      environment: { ...dbEnv(props.db), CELL_INDEX_TABLE: props.cellIndexTableName },
+      environment: { ...dbEnv(props.db, 'ops'), CELL_INDEX_TABLE: props.cellIndexTableName },
       ...concurrency(reserved.repair),
     });
-    grantDb(repairFn, props.db);
+    grantDb(repairFn, props.db, 'ops');
     allow(
       repairFn,
       ['dynamodb:BatchWriteItem', 'dynamodb:PutItem', 'dynamodb:DeleteItem', 'dynamodb:UpdateItem'],
@@ -217,12 +258,19 @@ export class ApiStack extends Stack {
       treatMissingData: TreatMissingData.NOT_BREACHING,
     });
 
-    grantDb(apiFn, props.db);
+    grantDb(apiFn, props.db, 'api');
     allow(apiFn, ['geo:SearchPlaceIndexForText'], [placeIndex.attrArn]);
+    // Read access to the token keyring is kept for VERIFYING check-in tokens (the route is
+    // stateless). Known limitation: the same secret holds the current signing key, so a
+    // compromised API could still mint a token; without send-queue access it can no longer
+    // deliver one to any phone. Asymmetric token signing would close the rest.
     grantSecretRead(apiFn, props.tokenKeysSecretArn);
     grantSecretRead(apiFn, props.deviceCredentialKeysSecretArn);
     // Check-in rows: written with PutItem, read back with GetItem.
     allow(apiFn, ['dynamodb:PutItem', 'dynamodb:GetItem'], [checkins.tableArn]);
+    // Erasing a device: list its rows through the byDevice index, then batch-delete them.
+    allow(apiFn, ['dynamodb:Query'], [`${checkins.tableArn}/index/byDevice`]);
+    allow(apiFn, ['dynamodb:BatchWriteItem'], [checkins.tableArn]);
     // Cell index: replace/clear a device's places (BatchWriteItem, DeleteItem), re-point tokens
     // (UpdateItem), read them back (Query, GetItem) and upsert (PutItem).
     allow(

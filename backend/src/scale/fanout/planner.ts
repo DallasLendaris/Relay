@@ -1,4 +1,5 @@
 import { cellToParent } from 'h3-js';
+import { errorFields } from '../../delivery/redact.js';
 import { SHARD_RESOLUTION, type AlertReady, type ShardJob } from '../contracts.js';
 import { checkEligibility, type EligibilityDeps, type FanoutRefusal } from './common.js';
 import type { FleetScaler } from './fleet-scaler.js';
@@ -75,14 +76,17 @@ export async function planShards(ready: AlertReady, deps: PlannerDeps): Promise<
   if (!outcome.ok) return { refused: outcome.refused, shards: 0, cells: 0 };
   const { alert, queue } = outcome;
 
-  const jobs = buildShardJobs(alert);
+  // The eligibility check above just read the kill switch (running, or we would have stopped).
+  // Hand that reading to every shard so they do not all read SSM (PERF-4c).
+  const killSwitch = { paused: false, readAtMs: deps.clock.now().getTime() };
+  const jobs = buildShardJobs(alert).map((job) => ({ ...job, killSwitch }));
   // Start the sender fleet ramping before the shards run: SQS-metric scaling alone needs 3-5
   // minutes. Urgent alerts only, and never allowed to block or fail the fan-out.
   if (queue === 'urgent' && deps.fleetScaler) {
     try {
       await deps.fleetScaler.preScale(jobs.length);
     } catch (err) {
-      deps.logger.warn('fanout.prescale_failed', { alertId: alert.id, error: String(err) });
+      deps.logger.warn('fanout.prescale_failed', { alertId: alert.id, ...errorFields(err) });
     }
   }
   await deps.shardDispatcher.dispatch(jobs);

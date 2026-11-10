@@ -20,12 +20,13 @@ import { QUEUE_FOR_SEVERITY } from '../scale/contracts.js';
 import { SqsPlanQueue, type PlanQueue } from '../scale/fanout/queues.js';
 import { AlertPublisher, type PublishOptions } from '../scale/publish/alert-publisher.js';
 import { S3PublicObjectWriter } from '../scale/publish/s3-object-writer.js';
-import { createAlertVerifier } from '../signing/index.js';
+import { createAlertVerifier } from '../signing/alertSignature.js';
+import type { AlertSigning } from '../signing/memory.js';
 import { parseFeed } from './feed.js';
 import type { EngineDeps } from './handler.js';
 import { applyMessage } from './lifecycle.js';
 import { normalizeFeature } from './normalize.js';
-import { DeliveryPausedError } from './poll.js';
+import { DeliveryPausedError, type ActiveAlertLister, type Reconciler } from './poll.js';
 
 export interface PipelineDeps {
   /** The real alert store (Postgres in AWS). It is wrapped so every save is signed. */
@@ -33,7 +34,8 @@ export interface PipelineDeps {
   places: PlaceStore;
   devices: DeviceStore;
   queue: DeliveryQueue;
-  alertKeys: Keyring;
+  /** Signs saved alerts (KMS in AWS) and the public keys that verify them before delivery. */
+  alertSigning: AlertSigning;
   tokenKeys: Keyring;
   isDeliveryPaused(): Promise<boolean>;
   /** Used for zone-geometry lookups. */
@@ -75,7 +77,7 @@ const jsonLogger: Logger = {
 export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
   const clock = deps.clock ?? { now: () => new Date() };
   const logger = deps.logger ?? jsonLogger;
-  const verifyAlert = createAlertVerifier(deps.alertKeys.all);
+  const verifyAlert = createAlertVerifier(deps.alertSigning.publicKeys);
   const env = deps.env ?? process.env;
   const queueMode = env.FANOUT_MODE === 'queue';
   let planQueue = deps.planQueue;
@@ -104,6 +106,10 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
       )
     : nwsZones;
 
+  // Publishes started in the background by onApplied; poll.ts awaits them through `flush`.
+  const backgroundPublishes = new Set<Promise<void>>();
+  let publishFailures = 0;
+
   // With PUBLIC_ALERTS_BUCKET set, every signed save is also published for the CDN. The bucket
   // may live in another region than the Lambda (CloudFront origins are often us-east-1).
   const publisher = env.PUBLIC_ALERTS_BUCKET
@@ -111,11 +117,18 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
         writer: new S3PublicObjectWriter(s3For(env.PUBLIC_ALERTS_REGION), env.PUBLIC_ALERTS_BUCKET),
         alerts: deps.alertStore,
         cellResolution: H3_RESOLUTION,
-        logger,
+        // The publisher never throws; it reports failures as publish.* error logs. Count those.
+        logger: {
+          ...logger,
+          error: (m, f) => {
+            if (m.startsWith('publish.')) publishFailures += 1;
+            logger.error(m, f);
+          },
+        },
         clock,
       })
     : undefined;
-  const store = new SigningAlertStore(deps.alertStore, deps.alertKeys.current);
+  const store = new SigningAlertStore(deps.alertStore, deps.alertSigning.signer);
 
   /** Publishes the alert JSON, then the shard indexes (bounded). Never throws. */
   async function publishPublic(saved: Alert): Promise<void> {
@@ -127,11 +140,23 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
         ...deps.publishOptions,
       });
     } catch (err) {
+      publishFailures += 1;
       logger.error('publish.failed', {
         alertId: saved.id,
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  /**
+   * Starts the public publish without making the caller wait for it. It runs while other alerts
+   * are processed; `flush` (called once at the end of each poll) waits for it so the Lambda does
+   * not freeze mid-upload. A failure is logged and counted, never thrown.
+   */
+  function publishInBackground(saved: Alert): void {
+    if (!publisher) return;
+    const task = publishPublic(saved).finally(() => backgroundPublishes.delete(task));
+    backgroundPublishes.add(task);
   }
 
   /**
@@ -162,17 +187,67 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
     logger.info('alert ready published', { alertId: saved.id, severity: saved.relaySeverity });
   }
 
+  // Feed reconciliation needs a store that can list every active NWS alert; the Postgres and
+  // in-memory stores can. Without that method it is simply off.
+  const lister = deps.alertStore as Partial<ActiveAlertLister>;
+  const reconcile: Reconciler | undefined = lister.listActiveBySource
+    ? {
+        now: () => clock.now(),
+        listActive: (now) => store.listActiveBySource('nws', now),
+        ...(lister.listCancelledBySource
+          ? {
+              listEnded: (now: Date) => store.listCancelledBySource('nws', now),
+              async restore(alert: Alert, state: 'active' | 'updated') {
+                logger.warn('alert.restored_after_reconciliation', {
+                  alertId: alert.id,
+                  sourceId: alert.sourceId,
+                });
+                // Saving re-signs it and regenerates its summaries (a cancelled alert has none).
+                await store.save({ ...alert, state });
+                const saved = await store.get(alert.id);
+                if (!saved) throw new Error(`restored alert ${alert.id} not found`);
+                // The CDN index and the alert JSON show it again; late-join reads the store.
+                publishInBackground(saved);
+                return saved;
+              },
+            }
+          : {}),
+        async cancel(alert, reason) {
+          logger.warn('alert.ended_by_reconciliation', {
+            alertId: alert.id,
+            sourceId: alert.sourceId,
+            reason,
+          });
+          await store.save({ ...alert, state: 'cancelled' });
+          // Reload so the public copy is exactly what was stored: signed, no summaries.
+          const saved = await store.get(alert.id);
+          if (saved) await publishPublic(saved);
+        },
+      }
+    : undefined;
+
   return {
+    ...(reconcile ? { reconcile } : {}),
     normalize: (feature) =>
       normalizeFeature(feature, { newId: randomUUID, warn: (m, f) => logger.warn(m, f) }),
     parseFeed,
-    cellsFor: (area) => cellsForAlertArea(area, zones, { warn: (m, f) => logger.warn(m, f) }),
+    cellsFor: (area, ctx) =>
+      cellsForAlertArea(area, zones, {
+        warn: (m, f) => logger.warn(m, f),
+        ...(ctx?.onUnknownZones ? { onUnknownZones: ctx.onUnknownZones } : {}),
+      }),
+    async flush() {
+      await Promise.all([...backgroundPublishes]);
+      const publishFailed = publishFailures;
+      publishFailures = 0;
+      return { publishFailed };
+    },
     apply: (alert) => applyMessage(alert, { store, clock }),
     async onApplied(result) {
       if (result.action === 'cancelled') {
         // Nothing to plan, but the alert must drop out of the public index.
         const saved = await store.get(result.alert.id);
-        if (saved) await publishPublic(saved);
+        if (saved) publishInBackground(saved);
         return;
       }
       if (result.action !== 'created' && result.action !== 'updated') return;
@@ -214,8 +289,10 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
         logger.error('delivery planning failed', { alertId: result.alert.id, error: String(err) });
         throw err;
       } finally {
-        // After AlertReady (or the inline plan): public data is never on the critical path.
-        if (saved) await publishPublic(saved);
+        // Runs after AlertReady was published (or the inline plan ran, or it failed or paused),
+        // and is only started here, not awaited: the CDN copy never delays fan-out, the seen
+        // mark or other alerts, and a failure is logged and counted by flush, never thrown.
+        if (saved) publishInBackground(saved);
       }
     },
   };

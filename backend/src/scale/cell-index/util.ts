@@ -19,10 +19,18 @@ export async function mapLimit<T>(
 
 /** The device's working push target, or null. Falls back to the legacy Expo token. */
 export function targetOf(
-  device: Pick<Device, 'pushPlatform' | 'pushToken' | 'expoPushToken'>,
+  device: Pick<Device, 'pushPlatform' | 'pushToken' | 'expoPushToken'> &
+    Partial<Pick<Device, 'pushProject'>>,
 ): PushTarget | null {
   if (device.pushPlatform && device.pushToken) {
-    return { platform: device.pushPlatform, token: device.pushToken };
+    return {
+      platform: device.pushPlatform,
+      token: device.pushToken,
+      // Only Android tokens belong to a Firebase project.
+      ...(device.pushPlatform === 'android' && device.pushProject
+        ? { project: device.pushProject }
+        : {}),
+    };
   }
   if (device.pushPlatform === undefined && device.expoPushToken) {
     return { platform: 'expo', token: device.expoPushToken };
@@ -43,4 +51,13 @@ export function decodeCursor(cursor: string): unknown {
   } catch {
     throw new Error('invalid cell index cursor');
   }
+}
+
+/** The stored shape of a target: only the known fields, so nothing else leaks into the index. */
+export function plainTarget(t: PushTarget): PushTarget {
+  return {
+    platform: t.platform,
+    token: t.token,
+    ...(t.platform === 'android' && t.project ? { project: t.project } : {}),
+  };
 }

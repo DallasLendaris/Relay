@@ -3,7 +3,7 @@ import type { SQSBatchResponse, SQSEvent } from 'aws-lambda';
 import type { AlertStore, Clock, DeliveryJob, IdempotencyStore, PushSender } from '../ports.js';
 import { claimExpiry, deliveryKey, refusalFor } from './eligibility.js';
 import { PUSH_POLICY } from './policy.js';
-import { redactPushTokens } from './redact.js';
+import { errorFields, redactPushTokens } from './redact.js';
 import { sendJobs } from './send-jobs.js';
 import type { Logger } from './types.js';
 
@@ -147,14 +147,15 @@ export async function deliveryWorker(event: SQSEvent, deps: WorkerDeps): Promise
       const claim = await deps.idempotency.claim(key, leaseUntil);
       if (claim === 'claimed') toSend.push({ messageId, job, key, alert });
       else if (claim === 'sent') {
-        deps.logger.info('duplicate skipped', { alertId: alert.id, deviceId: job.deviceId });
+        deps.logger.info('duplicate skipped', { alertId: alert.id });
       } else {
         // Another attempt is in flight. Never ack: if it dies, the retry after its lease sends.
         deps.logger.info('claim leased by another attempt', { alertId: alert.id });
         failures.push(messageId);
       }
     } catch (err) {
-      deps.logger.error('claim failed', { key, error: String(err) });
+      // The key embeds the device id, so it is not logged.
+      deps.logger.error('claim failed', { alertId: alert.id, ...errorFields(err) });
       failures.push(messageId);
     }
   }

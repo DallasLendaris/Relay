@@ -5,7 +5,7 @@ import {
   type SQSClient,
 } from '@aws-sdk/client-sqs';
 import type { AlertReady, SendBatch, SendQueue, SendQueueName, ShardJob } from '../contracts.js';
-import { packBatches, serializeMessage } from './pack.js';
+import { assertMessageFits, packBatches, serializeMessage } from './pack.js';
 
 /** Publishes "this alert is ready" for the planner (used by ingest). */
 export interface PlanQueue {
@@ -42,7 +42,9 @@ const defaultSleep: Sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /**
  * Sends message bodies with SendMessageBatch: at most 10 per request and under the request size
  * cap. Entries SQS reports as failed are retried on their own (with a short backoff); if any
- * are still failing after MAX_ATTEMPTS, throws so the caller's message is retried.
+ * are still failing after MAX_ATTEMPTS, throws so the caller's message is retried. A body over
+ * the 256 KB SQS limit throws a clear error before anything is sent (SqsSendQueue splits batches
+ * so its bodies never are).
  */
 export async function sendBodies(
   sqs: SqsLike,
@@ -56,6 +58,7 @@ export async function sendBodies(
   let current: string[] = [];
   let bytes = 0;
   for (const body of bodies) {
+    assertMessageFits(body);
     const size = Buffer.byteLength(body, 'utf8');
     if (
       current.length > 0 &&

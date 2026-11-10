@@ -7,32 +7,55 @@
  *   2. re-read the alert and re-check eligibility and the kill switch
  *   3. send all recipients in sub-chunks of SENDER_CHUNK_SIZE, a few chunks in flight at once.
  *      Before each chunk starts we check BatchControl: if the lease was lost or shutdown began we
- *      stop starting chunks.
- *   4. classify results. Permanent failures are dead targets, unless the circuit breaker is
- *      open (see breaker.ts), in which case they are retried and nothing is cleared. Retryable
- *      failures are re-queued as a NEW batch (`${base}:r${attempt + 1}`, only those recipients)
+ *      stop starting chunks. In a batch of more than one chunk, each finished chunk is recorded
+ *      on our claim (IdempotencyStore.recordChunk: what went out, which offsets must be redone).
+ *      A re-claim after a crash (lease expiry) or a release skips what went out and sends only
+ *      the rest, so a crashed sender duplicates at most the chunks it had in flight. Progress is
+ *      bound to the exact recipient list (recipientFingerprint): a re-plan under the same key
+ *      with other recipients ignores it and sends everything (a duplicate, never a miss).
+ *   4. classify results. Permanent failures are dead targets, unless a breaker is open (see
+ *      breaker.ts), in which case nothing is cleared and those permanents are re-checked as
+ *      `${batchKey}:v${attempt + 1}` (a re-check batch: its results are never breaker evidence,
+ *      see carriesEvidence; its permanents all go to the gate, which clears them only on
+ *      positive fresh evidence). Retryable failures are re-queued as a NEW batch (`${base}:r${attempt + 1}`, only those recipients)
  *      with a delay: exponential with full jitter, never shorter than the largest Retry-After.
  *      There is no attempt cap; a retry is dropped (counted as GaveUp) once it would run after
  *      the alert ends or more than 30 minutes after the batch was first processed.
- *   5. markSent(batchKey)
- *   6. only now, queue dead targets for cleanup. Cleanup is asynchronous (dead-target-queue.ts)
- *      and never delays sending or extends a batch past its lease.
+ *   5. markSent(batchKey), with the batch's recipients as a member set (G5, sentDetail)
+ *   6. only now, hand dead targets to the gate (dead-target-gate.ts): it holds them 30 s, then
+ *      queues them for cleanup, or (platform systemic meanwhile) re-queues them as the re-check
+ *      batch `${batchKey}:h${attempt + 1}`, or (a re-check without fresh evidence either way)
+ *      `${batchKey}:u${attempt + 1}` (see retryKey, heldRetryKey, recheckKey and
+ *      blindRecheckKey: all derived keys are distinct). Cleanup is asynchronous
+ *      (dead-target-queue.ts) and never delays sending or extends a batch past its lease.
  *
  * Accepted trade-offs, all of which can mean ONE duplicate push to recipients in chunks that had
- * already been sent (both pushes share the alert's collapse key, so a phone shows one
- * notification, and a duplicate alert is far better than a lost one):
+ * already been sent but not yet recorded (in flight, or a single-chunk batch). Both pushes share
+ * the alert's collapse key, so a phone shows one notification, and a duplicate alert is far
+ * better than a lost one:
  *   - step 4's re-enqueue fails: we release the claim and throw, the message is redelivered.
  *   - the lease is lost mid-batch: we stop and leave the message to whoever now holds the key.
- *   - shutdown deadline (SIGTERM + 25 s): unfinished batches stop starting chunks, persist
- *     nothing, release their claims, and the messages become visible again.
+ *   - shutdown deadline (SIGTERM + 25 s): unfinished batches stop starting chunks, settle
+ *     nothing (only their chunk progress stays), release their claims, and the messages become
+ *     visible again.
+ *   - the sender process dies: the lease runs out and the redelivered message re-claims the key.
  *   - the kill switch flips while we are sending: we release and the message retries later.
+ *
+ * Deploy note (rolling-deploy skew). Re-check classification lives in each task's code
+ * (carriesEvidence). During a rolling deploy, a task still on older code treats keys it does not
+ * know as fresh: before G6b a blind re-check `K:...:u<n>`, before G6c a split re-check
+ * `K:v<n>:s0`. Such a task records those ~100%-permanent results into its breakers and may clear
+ * the re-check's tokens without the G6b evidence rules. Exposure is limited to re-checks in flight
+ * while old tasks still run; to avoid it, deploy these changes outside an active alert (or drain
+ * the old tasks before re-checks are queued). Newer code reads every older key correctly.
  */
+import { createHash } from 'node:crypto';
 import type { Alert } from '@relay/shared';
 import { alertEndTime, claimExpiry, refusalFor } from '../../delivery/eligibility.js';
 import { PUSH_POLICY } from '../../delivery/policy.js';
 import { alertPushText } from '../../delivery/send-jobs.js';
 import type { Logger } from '../../delivery/types.js';
-import type { AlertStore, Clock, IdempotencyStore } from '../../ports.js';
+import type { AlertStore, ChunkProgress, Clock, IdempotencyStore } from '../../ports.js';
 import {
   QUEUE_FOR_SEVERITY,
   SENDER_CHUNK_SIZE,
@@ -43,9 +66,43 @@ import {
   type SendBatch,
   type SendQueue,
 } from '../contracts.js';
-import { PermanentBreaker } from './breaker.js';
+import { errorFields } from '../../delivery/redact.js';
+import { encodeMemberSet, SENT_HASH_BYTES } from '../fanout/member-set.js';
+import { publicAlertDocUrl } from '../publish/paths.js';
+import { PermanentBreaker, platformKeyOf, type BreakerVerdict } from './breaker.js';
+import {
+  DeadTargetGate,
+  RECHECK_EVIDENCE_MAX_AGE_MS,
+  type DeadTargetGateOptions,
+  type HeldGroup,
+  type HeldRequeueResult,
+} from './dead-target-gate.js';
 import { DeadTargetQueue } from './dead-target-queue.js';
 import { consoleMetricWriter, emfLine, type MetricWriter } from './metrics.js';
+
+/**
+ * markSent's detail for a planned batch: the member set of its recipients (every recipient the
+ * batch carried, whatever its push result: a failed one is retried under another key, a dead one
+ * would fail from late join too). Undefined for retries and late-join batches, and over the cap.
+ */
+export function sentDetail(
+  batch: Pick<SendBatch, 'batchKey' | 'attempt' | 'recipients'>,
+  logger: Logger,
+): { members: Uint8Array } | undefined {
+  if (batch.attempt !== 0 || batch.batchKey.includes(':late:')) return undefined;
+  const members = encodeMemberSet(
+    batch.recipients.map((r) => r.deviceId),
+    SENT_HASH_BYTES,
+  );
+  if (!members) {
+    logger.warn('sender.member_set_over_cap', {
+      batchKey: batch.batchKey,
+      recipients: batch.recipients.length,
+    });
+    return undefined;
+  }
+  return { members };
+}
 
 /** How long a claim holds. Must outlast a slow batch; the consumer extends it while the batch runs. */
 export const SENDER_LEASE_MS = 45_000;
@@ -54,10 +111,78 @@ export const RETRY_BUDGET_MS = 30 * 60 * 1000;
 /** Retry delay: min(900, 2 s x 2^attempt) with full jitter. 900 s is the SQS per-message cap. */
 export const RETRY_BASE_SECONDS = 2;
 export const RETRY_MAX_DELAY_SECONDS = 900;
+/**
+ * Unconfirmed ("blind") re-checks (dead-target-gate.ts "Re-check verdicts": a re-check permanent
+ * with no fresh evidence either way) keep their token and are re-queued as `:u<n>` until the
+ * batch's retry deadline (alert end, or RETRY_BUDGET_MS after the first attempt), with a backoff
+ * that doubles: the n-th blind re-check of a lineage waits at least
+ * BLIND_RECHECK_DELAY_SECONDS x 2^(n-1) (120 s, 240 s, 480 s, then the 900 s SQS cap) after the
+ * decision. One that would land past the deadline is pulled in to land
+ * BLIND_RECHECK_DEADLINE_MARGIN_SECONDS before it; once less than BLIND_RECHECK_DELAY_SECONDS of
+ * room is left the recipients are given up with the token kept (delivery.gave_up, reason
+ * 'unconfirmed', metric DeadTargetUnconfirmedKept; never the GaveUp metric, so GaveUpAlarm does
+ * not fire for them).
+ *
+ * Trade-off. A real misconfiguration that persists after fresh traffic has ended (or whose fresh
+ * traffic lands on another task) looks exactly like a chance false alarm: every re-check is
+ * permanent and re-check results are not evidence. Re-checking until the deadline means a fix
+ * deployed any time before the last re-check (about 30 s before the deadline) delivers this
+ * alert. The price is bounded: with the 30-minute budget the blind re-checks land at about 2.5,
+ * 7, 15.5 and 29.5 minutes, so a dead token caught by a chance "systemic" verdict is pushed at
+ * most MAX_PUSHES_PER_DEAD_TOKEN = 6 times in all (the fresh push, the `:v` re-check and 4 blind
+ * ones; derivation at blindRecheckDelaySeconds), and is never cleared without evidence (the next
+ * alert's fresh traffic judges it again).
+ */
+export const BLIND_RECHECK_DELAY_SECONDS = 120;
+export const BLIND_RECHECK_DEADLINE_MARGIN_SECONDS = 30;
+export const MAX_PUSHES_PER_DEAD_TOKEN = 6;
+
+/**
+ * Delay before the next blind re-check of a lineage that has had `blindSoFar` of them, decided at
+ * `nowMs`; undefined when there is no room left before `deadlineMs` (give up, token kept).
+ *
+ * Bound on pushes (MAX_PUSHES_PER_DEAD_TOKEN), budget 1,800 s from the fresh push at t = 0: an
+ * unclamped blind re-check waits at least 120, 240, 480 and 900 s after the previous decision,
+ * which is at or after the previous push, so the 1st to 4th blind pushes come no earlier than
+ * 120, 360, 840 and 1,740 s. A delay is clamped only to land at deadline - 30 s, after which
+ * under 120 s of room is left, so at most one re-check is clamped and it is the last. A 5th blind
+ * push would need the 4th decided by 1,800 - 30 - 120 = 1,650 s, but the 4th is pushed at 1,740 s
+ * or later (or is the clamped last one). So at most 4 blind pushes, 6 in all, whatever the hold
+ * or jitter. A shorter deadline (the alert ends sooner) only removes pushes.
+ */
+export function blindRecheckDelaySeconds(
+  blindSoFar: number,
+  attempt: number,
+  nowMs: number,
+  deadlineMs: number,
+  random: () => number,
+): number | undefined {
+  const wanted = Math.min(
+    RETRY_MAX_DELAY_SECONDS,
+    Math.max(
+      retryDelaySeconds(attempt, 0, random),
+      BLIND_RECHECK_DELAY_SECONDS * 2 ** Math.min(blindSoFar, 30),
+    ),
+  );
+  const room = Math.floor((deadlineMs - nowMs) / 1000) - BLIND_RECHECK_DEADLINE_MARGIN_SECONDS;
+  const delay = Math.min(wanted, room);
+  if (delay >= BLIND_RECHECK_DELAY_SECONDS) return delay;
+  // Under 120 s of room: one last, shorter re-check at deadline - 30 s, so a fix that lands late in
+  // the budget (or before a short alert ends) still delivers. Only while the count bound has room:
+  // this replaces nothing in the bound above, it is never more than the 4th blind push.
+  if (delay >= BLIND_RECHECK_FINAL_MIN_SECONDS && blindSoFar < MAX_PUSHES_PER_DEAD_TOKEN - 2) {
+    return delay;
+  }
+  return undefined;
+}
+/** Shortest last blind re-check (lands at deadline - 30 s when under 120 s of room is left). */
+export const BLIND_RECHECK_FINAL_MIN_SECONDS = 10;
 /** Wait before re-reading an alert whose signature failed (an update may have just committed). */
 const REREAD_DELAY_MS = 200;
 /** Default number of sub-chunks in flight per batch. */
 const DEFAULT_CHUNK_CONCURRENCY = 8;
+/** Result stand-in for a recipient an earlier attempt of the same batch already sent. */
+const ALREADY_SENT: NativePushResult = { ok: true };
 
 /**
  * Shared mutable flags between processBatch and its caller (the consumer). The consumer's
@@ -98,6 +223,12 @@ export interface SenderDeps {
   deadTargets?: Pick<DeadTargetQueue, 'enqueue'>;
   /** Process-wide permanent-failure breaker. Default: one per `deps` object. */
   breaker?: PermanentBreaker;
+  /**
+   * Holds dead targets until the breaker has enough evidence (dead-target-gate.ts), then hands
+   * them to `deadTargets`. Default: one per `deps` object around `breaker` and `deadTargets`; a
+   * gate passed in must be built on the same breaker.
+   */
+  deadTargetGate?: Pick<DeadTargetGate, 'submit'>;
   clock: Clock;
   logger: Logger;
   /** Where EMF metric lines go. Default console.log. */
@@ -112,12 +243,21 @@ export interface SenderDeps {
   random?: () => number;
   /** Sub-chunks in flight per batch. Default 8. */
   chunkConcurrency?: number;
+  /**
+   * CDN origin (env PUBLIC_ALERT_BASE_URL, e.g. https://dxxxx.cloudfront.net). When set, every
+   * push carries `data.alertUrl`, the cell-free alert document, so phones open the alert from the
+   * CDN instead of the API. Unset: the field is left out and the app uses the API.
+   */
+  publicAlertBaseUrl?: string;
 }
 
 export type BatchReason =
   | 'sent'
   | 'duplicate'
   | 'leased'
+  | 'claim_throttled'
+  /** claim() failed with something other than a throttle; the message is left for redelivery. */
+  | 'claim_failed'
   | 'alert_missing'
   | 'unsigned'
   | 'paused'
@@ -196,16 +336,27 @@ async function loadEligible(batch: SendBatch, deps: SenderDeps, now: Date): Prom
   return { alert };
 }
 
-function buildMessages(batch: SendBatch, alert: Alert, now: Date): NativePushMessage[] {
+export function buildMessages(
+  batch: SendBatch,
+  alert: Alert,
+  now: Date,
+  publicAlertBaseUrl?: string,
+): NativePushMessage[] {
   const policy = PUSH_POLICY[alert.relaySeverity];
   const end = alertEndTime(alert);
   const ttlSeconds = Math.max(1, Math.floor((end.getTime() - now.getTime()) / 1000));
   const text = { en: alertPushText(alert, 'en'), es: alertPushText(alert, 'es') };
+  const alertUrl = publicAlertDocUrl(publicAlertBaseUrl, alert);
   return batch.recipients.map((r) => ({
     target: r.target,
     title: text[r.language].title,
     body: text[r.language].body,
-    data: { alertId: alert.id, checkInToken: r.checkInToken, expiresAt: end.toISOString() },
+    data: {
+      alertId: alert.id,
+      checkInToken: r.checkInToken,
+      expiresAt: end.toISOString(),
+      ...(alertUrl ? { alertUrl } : {}),
+    },
     priority: policy.priority,
     sound: policy.sound !== null,
     collapseKey: alert.id,
@@ -223,14 +374,22 @@ async function sendAll(
   deps: SenderDeps,
   batchKey: string,
   control: BatchControl,
+  done: Map<number, Set<number>>,
+  set: string,
 ): Promise<Array<NativePushResult | undefined>> {
   const chunks: NativePushMessage[][] = [];
   for (let i = 0; i < messages.length; i += SENDER_CHUNK_SIZE) {
     chunks.push(messages.slice(i, i + SENDER_CHUNK_SIZE));
   }
-  const perChunk: Array<Array<NativePushResult | undefined>> = chunks.map((c) =>
-    c.map(() => undefined),
-  );
+  const perChunk: Array<Array<NativePushResult | undefined>> = chunks.map((c, idx) => {
+    // A chunk an earlier attempt finished: what went out counts as sent; only `redo` is sent again.
+    const redo = done.get(idx);
+    return c.map((_m, i) => (redo && !redo.has(i) ? ALREADY_SENT : undefined));
+  });
+  // Progress is recorded only for multi-chunk batches: for a single chunk it would save nothing
+  // but the short gap between the push and markSent, at the cost of a write per batch.
+  const record =
+    chunks.length > 1 ? deps.idempotency.recordChunk?.bind(deps.idempotency) : undefined;
   let next = 0;
   const worker = async (): Promise<void> => {
     for (;;) {
@@ -238,25 +397,42 @@ async function sendAll(
       const idx = next++;
       const chunk = chunks[idx];
       if (!chunk) return;
+      const redo = done.get(idx);
+      const offsets = redo ? [...redo].sort((a, b) => a - b) : chunk.map((_m, i) => i);
+      if (offsets.length === 0) continue; // all of it went out before
+      const toSend = offsets.map((i) => chunk[i] as NativePushMessage);
+      const results = perChunk[idx] as Array<NativePushResult | undefined>;
       try {
-        const res = await deps.push.send(chunk);
+        const res = await deps.push.send(toSend);
         // Fewer results than messages is an adapter bug: treat the missing ones as retryable.
-        perChunk[idx] = chunk.map(
-          (_m, i): NativePushResult =>
-            res[i] ?? { ok: false, kind: 'retryable', error: 'NoResult' },
-        );
+        offsets.forEach((o, i) => {
+          results[o] = res[i] ?? { ok: false, kind: 'retryable', error: 'NoResult' };
+        });
       } catch (err) {
         deps.logger.error('sender.chunk_threw', {
           batchKey,
-          size: chunk.length,
+          size: toSend.length,
           // Name only: the message text could carry a token.
           error: err instanceof Error ? err.name : 'Error',
         });
-        perChunk[idx] = chunk.map((): NativePushResult => ({
-          ok: false,
-          kind: 'retryable',
-          error: 'SendThrew',
-        }));
+        for (const o of offsets) results[o] = { ok: false, kind: 'retryable', error: 'SendThrew' };
+      }
+      if (record) {
+        // Everything not ok (except message-scoped failures, which are final) must be redone by
+        // whoever re-claims this batch after a crash: retries and dead targets are only settled
+        // at the end of the batch.
+        const again = offsets.filter((o) => {
+          const r = results[o];
+          return !r?.ok && !(r?.kind === 'permanent' && r.scope === 'message');
+        });
+        try {
+          if (!(await record(batchKey, { set, chunk: idx, redo: again }))) {
+            control.leaseLost = true;
+          }
+        } catch (err) {
+          // Without the record a crash re-sends this chunk; nothing else is lost.
+          deps.logger.warn('sender.record_chunk_failed', { batchKey, ...errorFields(err) });
+        }
       }
     }
   };
@@ -276,6 +452,222 @@ function breakerFor(deps: SenderDeps): PermanentBreaker {
   let b = defaultBreakers.get(deps);
   if (!b) defaultBreakers.set(deps, (b = new PermanentBreaker()));
   return b;
+}
+
+const defaultGates = new WeakMap<object, DeadTargetGate>();
+
+/**
+ * The gate for these deps, built on their breaker and cleanup queue, re-queueing held recipients
+ * through their send queue. `extra` overrides gate options (tests: timer, holdMs).
+ */
+export function createDeadTargetGate(
+  deps: SenderDeps,
+  extra: Partial<DeadTargetGateOptions> = {},
+): DeadTargetGate {
+  return new DeadTargetGate({
+    breaker: breakerFor(deps),
+    queue: deadTargetsFor(deps),
+    requeue: (groups) => requeueHeld(groups, deps),
+    now: () => deps.clock.now().getTime(),
+    logger: deps.logger,
+    ...(deps.writeMetric ? { writeMetric: deps.writeMetric } : {}),
+    ...extra,
+  });
+}
+
+function gateFor(deps: SenderDeps): Pick<DeadTargetGate, 'submit'> {
+  if (deps.deadTargetGate) return deps.deadTargetGate;
+  let g = defaultGates.get(deps);
+  if (!g) defaultGates.set(deps, (g = createDeadTargetGate(deps)));
+  return g;
+}
+
+/*
+ * Derived batch keys. Every batch can spawn four children, all at attempt + 1:
+ *   retry    R(K) = baseBatchKey(K) + `:r<attempt+1>`  (its failed recipients; the existing scheme)
+ *   held     H(K) = K + `:h<attempt+1>`  (recipients the dead-target gate held, then re-queued)
+ *   re-check V(K) = K + `:v<attempt+1>`  (permanents the sender itself found suspicious)
+ *   blind    U(K) = K + `:u<attempt+1>`  (re-check permanents the gate re-queued unconfirmed)
+ * They are distinct by construction:
+ *   - R(K), H(K), V(K) and U(K) end in `:r<n>`, `:h<n>`, `:v<n>` and `:u<n>`, so no two kinds
+ *     are ever equal;
+ *   - H, V and U keep all of K, so H(K1) = H(K2) (likewise V, U) only if K1 = K2;
+ *   - R strips only a trailing `:r<n>`, so R(K1) = R(K2) needs K1 and K2 in one lineage L (L, or
+ *     L:r<n>) and at the same attempt. Within a lineage the attempt identifies the key: L itself
+ *     is a planned key (attempt 0) or ends in `:h<a>`, `:v<a>` or `:u<a>` (attempt a), and L:r<n>
+ *     is at attempt n > a.
+ * One processing of K derives each kind at most once (the gate splits one held group into at
+ * most one H and one U). Nothing ever strips or rewrites an `:h<n>`, `:v<n>` or `:u<n>` segment,
+ * so the `:u` segments of a key count its lineage's blind re-checks (blindRechecks).
+ * test/scale/sender/derived-keys.test.ts checks this on random derivation chains.
+ */
+
+/** Key of the retry of a batch's failed recipients. */
+export const retryKey = (batch: Pick<SendBatch, 'batchKey' | 'attempt'>): string =>
+  `${baseBatchKey(batch.batchKey)}:r${batch.attempt + 1}`;
+
+/** Key of the re-queue of a batch's held recipients (see the derivation comment above). */
+export const heldRetryKey = (batch: Pick<SendBatch, 'batchKey' | 'attempt'>): string =>
+  `${batch.batchKey}:h${batch.attempt + 1}`;
+
+/** Key of the re-check of a batch's suspicious permanents (see the derivation comment above). */
+export const recheckKey = (batch: Pick<SendBatch, 'batchKey' | 'attempt'>): string =>
+  `${batch.batchKey}:v${batch.attempt + 1}`;
+
+/** Key of an unconfirmed re-check's re-queue (see the derivation comment above). */
+export const blindRecheckKey = (batch: Pick<SendBatch, 'batchKey' | 'attempt'>): string =>
+  `${batch.batchKey}:u${batch.attempt + 1}`;
+
+/** Blind re-checks in this key's lineage so far (its `:u<n>` segments). */
+export const blindRechecks = (batchKey: string): number =>
+  batchKey.match(/:u\d+(?=:|$)/g)?.length ?? 0;
+
+/**
+ * A re-check batch: a held re-queue (`:h<n>`), a sender re-check (`:v<n>`), a blind re-check
+ * (`:u<n>`), or any retry or re-check descended from one (`K:h1:r2`, `K:v1:u2`). Its recipients
+ * were all answered permanent once, while a breaker said their platform looked misconfigured, so
+ * its results are selection-biased (about 100% permanent when the tokens really are dead) and are
+ * NOT evidence: they never feed the breakers (breaker.ts). Only the trailing chain of derived
+ * segments is looked at, so a planned key is never mistaken for one: planned keys end in a bucket
+ * number, a dense part or a hex late-join hash, never in `:r<n>`, `:h<n>`, `:v<n>` or `:u<n>`.
+ * The chain includes split paths (`:s<0|1...>`, fanout/pack.ts splitToFit, applied to any batch
+ * too big for one SQS message, re-checks included), so `K:v1:s0` and `K:v1:s0:r2` are re-checks
+ * while a planned `K:s01` and its `K:s01:r1` retry stay fresh.
+ */
+const RECHECK_SUFFIX = /:[hvu]\d+(?::(?:[rhvu]\d+|s[01]+))*$/;
+export const carriesEvidence = (batchKey: string): boolean => !RECHECK_SUFFIX.test(batchKey);
+
+/**
+ * What a re-check batch carries beyond SendBatch (it rides along in the same SQS JSON).
+ * `suspectedAt`: per platform key, epoch ms of the latest moment a sender process judged that
+ * platform suspicious for this lineage (a breaker opened on it, or the gate kept it). The process
+ * that judges the re-check accepts only fresh evidence recorded after it (dead-target-gate.ts),
+ * so a task that never saw the misconfiguration starts from suspicion, not a blank slate.
+ */
+export interface RecheckFields {
+  suspectedAt?: Record<string, number>;
+}
+/** A SendBatch as the sender reads it (a re-check carries RecheckFields too). */
+export type Batch = SendBatch & RecheckFields;
+
+const suspectedAtOf = (batch: SendBatch): Record<string, number> | undefined => {
+  const s = (batch as Batch).suspectedAt;
+  if (!s || typeof s !== 'object') return undefined;
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(s))
+    if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+  return out;
+};
+
+const REQUEUE_TRIES = 3;
+
+/**
+ * Re-queues recipients the gate held when the breaker found the "dead" tokens to be a
+ * misconfiguration: one retry batch per source batch, on its severity's queue, attempt + 1,
+ * firstAttemptAt kept (same 30-minute budget), the usual retry delay, its suspicion carried.
+ * Tokens are not touched. An unconfirmed group (`blind`) goes out as `:u` on the blind backoff
+ * (blindRecheckDelaySeconds) until its deadline, then is given up with its tokens kept. Resolves
+ * with how many recipients were re-queued, and how many of those given up were unconfirmed.
+ */
+async function requeueHeld(groups: HeldGroup[], deps: SenderDeps): Promise<HeldRequeueResult> {
+  const random = deps.random ?? Math.random;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let requeued = 0;
+  let unconfirmed = 0;
+  for (const g of groups) {
+    const batch = g.source;
+    const nowMs = deps.clock.now().getTime();
+    const delay = g.blind
+      ? blindRecheckDelaySeconds(
+          blindRechecks(batch.batchKey),
+          batch.attempt,
+          nowMs,
+          g.deadlineMs,
+          random,
+        )
+      : retryDelaySeconds(batch.attempt, 0, random);
+    if (delay === undefined) {
+      // Still unconfirmed at the deadline: kept, never cleared; not a GaveUp (see above).
+      deps.logger.error('delivery.gave_up', {
+        alertId: batch.alertId,
+        batchKey: batch.batchKey,
+        attempt: batch.attempt,
+        count: g.recipients.length,
+        reason: 'unconfirmed',
+        held: true,
+      });
+      unconfirmed += g.recipients.length;
+      continue;
+    }
+    if (nowMs + delay * 1000 >= g.deadlineMs) {
+      deps.logger.error('delivery.gave_up', {
+        alertId: batch.alertId,
+        batchKey: batch.batchKey,
+        attempt: batch.attempt,
+        count: g.recipients.length,
+        reason: nowMs >= g.deadlineMs ? 'budget_spent' : 'retry_would_miss_budget',
+        held: true,
+      });
+      continue;
+    }
+    const retryBatch: Batch = {
+      ...batch,
+      batchKey: g.blind ? blindRecheckKey(batch) : heldRetryKey(batch),
+      recipients: g.recipients,
+      attempt: batch.attempt + 1,
+      firstAttemptAt: new Date(g.firstAttemptMs).toISOString(),
+      ...(g.suspectedAt ? { suspectedAt: g.suspectedAt } : {}),
+    };
+    const queue = QUEUE_FOR_SEVERITY[batch.relaySeverity] ?? 'standard';
+    for (let i = 1; ; i++) {
+      try {
+        await deps.sendQueue.enqueue(queue, [retryBatch], { delaySeconds: delay });
+        requeued += g.recipients.length;
+        break;
+      } catch (err) {
+        if (i >= REQUEUE_TRIES) {
+          deps.logger.error('sender.held_requeue_failed', {
+            alertId: batch.alertId,
+            batchKey: retryBatch.batchKey,
+            count: g.recipients.length,
+            ...errorFields(err),
+          });
+          break;
+        }
+        await sleep(200 * i);
+      }
+    }
+  }
+  return { requeued, unconfirmed };
+}
+
+/**
+ * Fingerprint of what chunk progress offsets point at: the batch's recipients in order (device
+ * id and push target) and the chunk size. Order matters, not just the set: offsets are positions,
+ * so the same devices in another order would make an offset name a different device. The push
+ * target is in it too, so a device whose token changed is sent again rather than skipped.
+ */
+export function recipientFingerprint(recipients: SendBatch['recipients']): string {
+  const h = createHash('sha256').update(`chunk=${SENDER_CHUNK_SIZE}\n`);
+  for (const r of recipients) h.update(`${r.deviceId}\t${r.target.platform}\t${r.target.token}\n`);
+  return h.digest('hex').slice(0, 24);
+}
+
+/**
+ * Turns progress recorded by earlier attempts into chunk -> offsets still to send. Only entries
+ * recorded for this exact recipient list (`set`) count; others are ignored, so a re-planned batch
+ * with the same key but different recipients is sent in full (a possible duplicate, never a
+ * miss). Several entries for a chunk intersect: an offset is done once any attempt sent it.
+ */
+export function progressByChunk(progress: ChunkProgress[], set: string): Map<number, Set<number>> {
+  const done = new Map<number, Set<number>>();
+  for (const p of progress) {
+    if (p.set !== set) continue;
+    const prev = done.get(p.chunk);
+    const redo = new Set(p.redo);
+    done.set(p.chunk, prev ? new Set([...prev].filter((o) => redo.has(o))) : redo);
+  }
+  return done;
 }
 
 function deadTargetsFor(deps: SenderDeps): Pick<DeadTargetQueue, 'enqueue'> {
@@ -299,23 +691,88 @@ function topErrors(results: NativePushResult[]): Record<string, number> {
   return Object.fromEntries([...counts].sort((a, b) => b[1] - a[1]).slice(0, 3));
 }
 
+const TRANSIENT_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'EPIPE',
+  'EAI_AGAIN',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT_TIMEOUT',
+]);
+const TRANSIENT_NAMES = new Set([
+  'TimeoutError',
+  'AbortError',
+  'RequestTimeout',
+  'RequestTimeoutException',
+  'NetworkingError',
+  'ServiceUnavailable',
+  'InternalServerError',
+]);
+
+/**
+ * A network or server-side failure worth simply retrying later: socket errors, timeouts, an AWS
+ * SDK error marked retryable or answered with a 5xx. Not a bug, a validation or a permission error.
+ */
+export function isTransientError(err: unknown, depth = 0): boolean {
+  if (err === null || typeof err !== 'object') return false;
+  const e = err as {
+    name?: unknown;
+    code?: unknown;
+    message?: unknown;
+    status?: unknown;
+    $retryable?: unknown;
+    $metadata?: { httpStatusCode?: unknown };
+    cause?: unknown;
+  };
+  if (typeof e.code === 'string' && TRANSIENT_CODES.has(e.code)) return true;
+  if (typeof e.name === 'string' && TRANSIENT_NAMES.has(e.name)) return true;
+  if (e.$retryable !== undefined && e.$retryable !== null) return true;
+  const status = typeof e.status === 'number' ? e.status : e.$metadata?.httpStatusCode;
+  if (typeof status === 'number' && status >= 500) return true;
+  if (typeof e.message === 'string' && /socket hang up|\btimed? ?out\b/i.test(e.message)) {
+    return true;
+  }
+  return depth < 4 && e.cause !== undefined && isTransientError(e.cause, depth + 1);
+}
+
 export async function processBatch(
-  batch: SendBatch,
+  batch: Batch,
   deps: SenderDeps,
   control: BatchControl = newBatchControl(),
 ): Promise<BatchOutcome> {
   const { idempotency, logger } = deps;
   const write = deps.writeMetric ?? consoleMetricWriter;
-  const claim = await idempotency.claim(
-    batch.batchKey,
-    new Date(deps.clock.now().getTime() + SENDER_LEASE_MS),
-  );
+  let claim: Awaited<ReturnType<typeof idempotency.claim>>;
+  try {
+    claim = await idempotency.claim(
+      batch.batchKey,
+      new Date(deps.clock.now().getTime() + SENDER_LEASE_MS),
+    );
+  } catch (err) {
+    // The store retried its own throttles and gave up (PERF-4b). No claim was taken, so there is
+    // nothing to release: leave this batch's message to be redelivered, never crash the message.
+    if ((err as { retryable?: unknown } | null)?.retryable === true) {
+      logger.warn('sender.claim_throttled', { batchKey: batch.batchKey, ...errorFields(err) });
+      return outcome(false, 'claim_throttled');
+    }
+    // A transient transport failure (connection reset, timeout, a 5xx). Whether a claim was taken
+    // is unknown, so do not release: if it was, it runs out with its lease and the redelivered
+    // message re-claims it (inheriting any progress). Leaving the message un-acked is what a
+    // throw would do, without counting the batch as failed. Anything else (a bug, a wrong table,
+    // no permission) still throws, loudly, as before.
+    if (!isTransientError(err)) throw err;
+    logger.error('sender.claim_failed', { batchKey: batch.batchKey, ...errorFields(err) });
+    write(emfLine('ClaimFailed', 1, deps.clock.now().getTime()));
+    return outcome(false, 'claim_failed');
+  }
   if (claim === 'sent') return outcome(true, 'duplicate');
   if (claim === 'leased') return outcome(false, 'leased'); // another attempt is live; retry later
 
   const release = async () => {
     await idempotency.release(batch.batchKey).catch((err: unknown) => {
-      logger.error('sender.release_failed', { batchKey: batch.batchKey, error: String(err) });
+      logger.error('sender.release_failed', { batchKey: batch.batchKey, ...errorFields(err) });
     });
   };
   control.release = release;
@@ -353,8 +810,63 @@ export async function processBatch(
       return outcome(false, 'paused');
     }
 
-    const messages = buildMessages(batch, alert, now);
-    const results = await sendAll(messages, deps, batch.batchKey, control);
+    const messages = buildMessages(batch, alert, now, deps.publicAlertBaseUrl);
+    // A re-claim after a crashed attempt skips the sub-chunks that attempt finished, but only
+    // if it was sending this very recipient list (see recipientFingerprint).
+    const set = recipientFingerprint(batch.recipients);
+    let done = new Map<number, Set<number>>();
+    if (deps.idempotency.claimedProgress) {
+      try {
+        const inherited = await deps.idempotency.claimedProgress(batch.batchKey);
+        done = progressByChunk(inherited, set);
+        const foreign = inherited.filter((p) => p.set !== set).length;
+        if (foreign > 0) {
+          logger.warn('sender.progress_ignored', {
+            batchKey: batch.batchKey,
+            entries: foreign,
+            reason: 'recipients_changed',
+          });
+        }
+      } catch (err) {
+        logger.warn('sender.progress_read_failed', {
+          batchKey: batch.batchKey,
+          ...errorFields(err),
+        });
+      }
+      if (done.size > 0) {
+        logger.info('sender.batch_resumed', {
+          batchKey: batch.batchKey,
+          chunksDone: done.size,
+          redo: [...done.values()].reduce((n, s) => n + s.size, 0),
+        });
+      }
+    }
+    // Per platform key, where this batch's evidence starts (HeldGroup.since): taken before
+    // sending, and including the platform's state right now, so a systemic stretch that begins,
+    // or is already under way, while this batch is in flight still keeps its clears held.
+    // A re-check batch also takes, per key, whether the platform is already proven healthy since
+    // the lineage's latest suspicion (HeldGroup.primed): the "before" half of the evidence that
+    // may clear its permanents. A key the batch carries no suspicion for counts as suspected now.
+    const breaker = breakerFor(deps);
+    const platforms = breaker.platforms;
+    const evidence = carriesEvidence(batch.batchKey);
+    const carried = evidence ? undefined : suspectedAtOf(batch);
+    const startMs = deps.clock.now().getTime();
+    const since: Record<string, number> = {};
+    const primed: Record<string, boolean> = {};
+    for (const rec of batch.recipients) {
+      const key = platformKeyOf(rec.target);
+      if (since[key] !== undefined) continue;
+      since[key] = platforms.seq(key);
+      if (!evidence) {
+        primed[key] = platforms.healthyAfter(
+          key,
+          carried?.[key] ?? startMs,
+          startMs - RECHECK_EVIDENCE_MAX_AGE_MS,
+        );
+      }
+    }
+    const results = await sendAll(messages, deps, batch.batchKey, control, done, set);
 
     // The lease went away or shutdown began while sending: settle nothing.
     if (control.leaseLost) {
@@ -376,17 +888,18 @@ export async function processBatch(
       (r): NativePushResult => r ?? { ok: false, kind: 'retryable', error: 'NoResult' },
     );
     let sent = 0;
-    const permanent: Array<{ deviceId: string; target: PushTarget }> = [];
+    const permanent: SendBatch['recipients'] = [];
     const failed: SendBatch['recipients'] = [];
     let messageFailed = 0;
+    let resumed = 0; // sent by an earlier attempt: not new evidence for the breaker
     let retryAfter = 0;
     settled.forEach((r, i) => {
       const rec = batch.recipients[i];
       if (!rec) return;
+      if (r === ALREADY_SENT) resumed++;
       if (r.ok) sent++;
       else if (r.kind === 'permanent' && r.scope === 'message') messageFailed++;
-      else if (r.kind === 'permanent')
-        permanent.push({ deviceId: rec.deviceId, target: rec.target });
+      else if (r.kind === 'permanent') permanent.push(rec);
       else {
         failed.push(rec);
         retryAfter = Math.max(retryAfter, r.retryAfterSeconds ?? 0);
@@ -394,28 +907,65 @@ export async function processBatch(
     });
 
     // Circuit breaker: when permanent failures look systemic (wrong bundle id, sandbox/prod
-    // mismatch) do not clear anyone; treat them as retryable. Message-scoped failures are not
-    // evidence about tokens, so they stay out of the rate.
+    // mismatch) do not clear anyone; re-check them instead (`suspect`, below). Message-scoped
+    // failures are not evidence about tokens, so they stay out of the rate. A re-check batch's
+    // results are not evidence at all (carriesEvidence): it records nothing, opens nothing, and
+    // hands all its permanents to the gate, which clears them only on positive fresh evidence
+    // (dead-target-gate.ts "Re-check verdicts") and otherwise re-queues them.
+    const settledMs = deps.clock.now().getTime();
     let dead = permanent;
-    if (settled.length > 0) {
-      const verdict = breakerFor(deps).record(settled.length - messageFailed, permanent.length);
-      if (verdict.open && permanent.length > 0) {
-        logger.error('delivery.permanent_breaker_open', {
+    let suspect: SendBatch['recipients'] = [];
+    let verdict: BreakerVerdict | undefined;
+    if (evidence && settled.length > 0) {
+      verdict = breaker.record(settled.length - messageFailed - resumed, permanent.length);
+    }
+    const globalOpen = verdict?.open === true;
+    if (globalOpen && permanent.length > 0) {
+      logger.error('delivery.permanent_breaker_open', {
+        alertId: alert.id,
+        batchKey: batch.batchKey,
+        reason: verdict?.reason ?? 'rolling_rate',
+        permanent: permanent.length,
+        total: settled.length,
+        ...(verdict ? { batchRate: Number(verdict.batchRate.toFixed(4)) } : {}),
+        rollingRate: Number(breaker.rollingRate.toFixed(4)),
+        errors: topErrors(settled),
+      });
+      write(emfLine('PermanentBreakerOpen', 1, deps.clock.now().getTime()));
+      suspect = permanent;
+      dead = [];
+    }
+    // Per-platform breaker (breaker.ts PlatformWindows): every fresh token result counts toward
+    // its platform's windows; permanents of a platform that now looks misconfigured are
+    // re-checked, not treated as dead. This catches a single platform (an APNs key, one FCM
+    // project) that the process-wide rules dilute, and an onset in small batches.
+    if (evidence) {
+      settled.forEach((r, i) => {
+        const rec = batch.recipients[i];
+        if (
+          !rec ||
+          r === ALREADY_SENT ||
+          (!r.ok && r.kind === 'permanent' && r.scope === 'message')
+        ) {
+          return;
+        }
+        platforms.record(platformKeyOf(rec.target), !r.ok && r.kind === 'permanent', settledMs);
+      });
+    }
+    if (evidence && dead.length > 0) {
+      const systemic = dead.filter((d) => platforms.systemic(platformKeyOf(d.target)));
+      if (systemic.length > 0) {
+        const keys = [...new Set(systemic.map((d) => platformKeyOf(d.target)))];
+        logger.error('delivery.platform_breaker_open', {
           alertId: alert.id,
           batchKey: batch.batchKey,
-          reason: verdict.reason,
-          permanent: permanent.length,
-          total: settled.length,
-          batchRate: Number(verdict.batchRate.toFixed(4)),
-          rollingRate: Number(verdict.rollingRate.toFixed(4)),
-          errors: topErrors(settled),
+          permanent: systemic.length,
+          platforms: keys.map((k) => ({ platform: k, ...platforms.stats(k) })),
         });
-        write(emfLine('PermanentBreakerOpen', 1, deps.clock.now().getTime()));
-        for (const d of permanent) {
-          const rec = batch.recipients.find((x) => x.deviceId === d.deviceId);
-          if (rec) failed.push(rec);
-        }
-        dead = [];
+        write(emfLine('PlatformBreakerOpen', 1, deps.clock.now().getTime()));
+        suspect = systemic;
+        const moved = new Set(systemic);
+        dead = dead.filter((d) => !moved.has(d));
       }
     }
 
@@ -428,13 +978,13 @@ export async function processBatch(
         count: messageFailed,
       });
     }
+    const firstMs = Date.parse(batch.firstAttemptAt ?? '');
+    const firstAttemptMs = Number.isNaN(firstMs) ? now.getTime() : firstMs;
+    const deadline = Math.min(alertEndTime(alert).getTime(), firstAttemptMs + RETRY_BUDGET_MS);
     if (failed.length > 0) {
       const random = deps.random ?? Math.random;
       const delay = retryDelaySeconds(batch.attempt, retryAfter, random);
       const nowMs = deps.clock.now().getTime();
-      const firstMs = Date.parse(batch.firstAttemptAt ?? '');
-      const firstAttemptMs = Number.isNaN(firstMs) ? now.getTime() : firstMs;
-      const deadline = Math.min(alertEndTime(alert).getTime(), firstAttemptMs + RETRY_BUDGET_MS);
       if (nowMs + delay * 1000 >= deadline) {
         gaveUp += failed.length;
         logger.error('delivery.gave_up', {
@@ -447,7 +997,7 @@ export async function processBatch(
       } else {
         const retryBatch: SendBatch = {
           ...batch,
-          batchKey: `${baseBatchKey(batch.batchKey)}:r${batch.attempt + 1}`,
+          batchKey: retryKey(batch),
           recipients: failed,
           attempt: batch.attempt + 1,
           firstAttemptAt: new Date(firstAttemptMs).toISOString(),
@@ -461,17 +1011,79 @@ export async function processBatch(
         retried = failed.length;
       }
     }
+    // Suspicious permanents (a breaker was open; only fresh batches have any) are re-checked as
+    // `:v<attempt+1>`, not merged into the `:r` retry: a re-check is evidence-free
+    // (carriesEvidence), so these recipients, ~100% permanent if really dead, can never make
+    // their platform look misconfigured. Their tokens are kept and the re-check carries the
+    // suspicion (RecheckFields), so whichever process takes it clears its permanents only on fresh
+    // evidence recorded after now. A failure here throws like the `:r` enqueue (the message is
+    // redelivered).
+    if (suspect.length > 0) {
+      const delay = retryDelaySeconds(batch.attempt, 0, deps.random ?? Math.random);
+      const nowMs = deps.clock.now().getTime();
+      if (nowMs + delay * 1000 >= deadline) {
+        gaveUp += suspect.length;
+        logger.error('delivery.gave_up', {
+          alertId: alert.id,
+          batchKey: batch.batchKey,
+          attempt: batch.attempt,
+          count: suspect.length,
+          reason: nowMs >= deadline ? 'budget_spent' : 'retry_would_miss_budget',
+          held: true,
+        });
+      } else {
+        const suspectedAt: Record<string, number> = {};
+        for (const d of suspect) suspectedAt[platformKeyOf(d.target)] = settledMs;
+        const recheck: Batch = {
+          ...batch,
+          batchKey: recheckKey(batch),
+          recipients: suspect,
+          attempt: batch.attempt + 1,
+          firstAttemptAt: new Date(firstAttemptMs).toISOString(),
+          suspectedAt,
+        };
+        await deps.sendQueue.enqueue(
+          QUEUE_FOR_SEVERITY[batch.relaySeverity] ?? 'standard',
+          [recheck],
+          { delaySeconds: delay },
+        );
+        retried += suspect.length;
+      }
+    }
 
     // Only now is the batch finished for good. If this fails the pushes already went out;
     // ack anyway (failing the message would re-send once the lease runs out).
-    await idempotency.markSent(batch.batchKey, claimExpiry(alert)).catch((err: unknown) => {
-      logger.error('sender.mark_sent_failed', { batchKey: batch.batchKey, error: String(err) });
-    });
+    // A planned batch also records whom it carried (G5), so late join can tell whether a device that
+    // registered during the fan-out was in it (latejoin.ts). Retries and late-join batches are
+    // never asked about.
+    await idempotency
+      .markSent(batch.batchKey, claimExpiry(alert), sentDetail(batch, logger))
+      .catch((err: unknown) => {
+        logger.error('sender.mark_sent_failed', { batchKey: batch.batchKey, ...errorFields(err) });
+      });
 
-    // Cleanup comes after markSent and is asynchronous: enqueue is synchronous and cheap.
+    // Cleanup comes after markSent and is asynchronous: submit is synchronous and cheap. The
+    // gate holds every clear for a short delay and re-checks the target's platform before it
+    // clears (dead-target-gate.ts). Held recipients carry their batch so the gate can re-queue
+    // them if the platform turns out misconfigured.
     if (dead.length > 0) {
-      const q = deadTargetsFor(deps);
-      for (const d of dead) q.enqueue(d.deviceId, d.target);
+      gateFor(deps).submit({
+        // Only the batch's identity, not its recipient list: the gate may hold this a while.
+        source: {
+          alertId: batch.alertId,
+          sourceId: batch.sourceId,
+          relaySeverity: batch.relaySeverity,
+          batchKey: batch.batchKey,
+          attempt: batch.attempt,
+        },
+        firstAttemptMs,
+        deadlineMs: deadline,
+        recipients: dead,
+        since,
+        ...(evidence
+          ? {}
+          : { recheck: true, primed, ...(carried ? { suspectedAt: carried } : {}) }),
+      });
     }
 
     logger.info('sender.batch_done', {

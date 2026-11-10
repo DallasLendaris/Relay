@@ -33,7 +33,12 @@ export type VerifyFailure =
  * the caller must then fall back to a place lookup (v1 tokens exist only until their alerts expire).
  */
 export type VerifyResult =
-  { ok: true; h3Cell: string | null } | { ok: false; reason: VerifyFailure };
+  | {
+      ok: true;
+      h3Cell: string | null;
+      /** The signed end of the token (the alert's end time). */ expiresAt: Date;
+    }
+  | { ok: false; reason: VerifyFailure };
 
 /** Allowed difference between our clock and the device/server clock. */
 export const CLOCK_SKEW_SECONDS = 60;
@@ -146,7 +151,11 @@ export function verifyCheckInToken(
 
     const nowSec = Math.floor((params.now ?? new Date()).getTime() / 1000);
     if (nowSec > claims.exp + CLOCK_SKEW_SECONDS) return fail('expired');
-    return { ok: true, h3Cell: version === 2 ? (claims.c as string) : null };
+    return {
+      ok: true,
+      h3Cell: version === 2 ? (claims.c as string) : null,
+      expiresAt: new Date(claims.exp * 1000),
+    };
   } catch {
     return fail('malformed');
   }
