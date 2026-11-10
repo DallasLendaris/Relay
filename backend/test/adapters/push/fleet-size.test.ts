@@ -13,7 +13,7 @@ import type { NativePushSender } from '../../../src/scale/contracts.js';
 
 const noopSender: NativePushSender = { send: async () => [] };
 
-function fakeEcs(counts: Array<number | Error | undefined>) {
+function fakeEcs(counts: Array<number | Error | undefined>, desired?: number) {
   const calls: any[] = [];
   let i = 0;
   return {
@@ -22,7 +22,7 @@ function fakeEcs(counts: Array<number | Error | undefined>) {
       calls.push(cmd.input);
       const v = counts[Math.min(i++, counts.length - 1)];
       if (v instanceof Error) throw v;
-      return { services: v === undefined ? [] : [{ runningCount: v }] };
+      return { services: v === undefined ? [] : [{ runningCount: v, desiredCount: desired ?? v }] };
     },
   } as any;
 }
@@ -81,7 +81,7 @@ describe('fleet-wide FCM rate', () => {
 });
 
 describe('EcsFleetSize', () => {
-  const opts = { cluster: 'c', service: 's', jitter: 0 };
+  const opts = { cluster: 'c', service: 's', jitter: 0, fallback: 100 };
 
   it('reads runningCount, caches for the ttl, then refreshes', async () => {
     let t = 0;
@@ -102,7 +102,12 @@ describe('EcsFleetSize', () => {
     let t = 0;
     const errors: unknown[] = [];
     const ecs = fakeEcs([25, new Error('Throttling'), undefined, 0]);
-    const f = new EcsFleetSize(ecs, { ...opts, now: () => t, onError: (e) => errors.push(e) });
+    const f = new EcsFleetSize(ecs, {
+      ...opts,
+      staleAfterMs: 120_000,
+      now: () => t,
+      onError: (e) => errors.push(e),
+    });
     await f.refresh();
     t += 20_000;
     await f.refresh();
@@ -114,6 +119,49 @@ describe('EcsFleetSize', () => {
     t += 20_000;
     await f.refresh();
     expect(f.size()).toBe(1);
+  });
+
+  it('uses desiredCount when it leads runningCount (scale-out)', async () => {
+    const f = new EcsFleetSize(fakeEcs([10], 100), opts);
+    await f.refresh();
+    expect(f.size()).toBe(100);
+  });
+
+  it('assumes the fallback fleet until the first read, and a good read replaces it', async () => {
+    let t = 0;
+    const ecs = fakeEcs([new Error('AccessDenied'), 20]);
+    const f = new EcsFleetSize(ecs, { ...opts, fallback: 80, now: () => t });
+    expect(f.size()).toBe(80);
+    expect(fcmRateFromEnv({}, f).provider()).toBe(9000 / 80);
+    await f.refresh();
+    expect(f.inFallback).toBe(true);
+    expect(f.size()).toBe(80);
+    t = 20_000;
+    await f.refresh();
+    expect(f.inFallback).toBe(false);
+    expect(f.size()).toBe(20);
+  });
+
+  it('falls back again when reads keep failing past staleAfterMs', async () => {
+    let t = 0;
+    const ecs = fakeEcs([20, new Error('Throttling')]);
+    const f = new EcsFleetSize(ecs, { ...opts, fallback: 100, staleAfterMs: 60_000, now: () => t });
+    await f.refresh();
+    expect(f.size()).toBe(20);
+    t = 30_000;
+    await f.refresh();
+    expect(f.size()).toBe(20);
+    t = 70_000;
+    await f.refresh();
+    expect(f.size()).toBe(100);
+  });
+
+  it('reads FCM_FLEET_SIZE_FALLBACK from the environment', () => {
+    const src = fleetSizeFromEnv(
+      { ECS_CLUSTER: 'c', ECS_SERVICE: 's', FCM_FLEET_SIZE_FALLBACK: '50' },
+      () => fakeEcs([1]),
+    );
+    expect(src.size()).toBe(50);
   });
 
   it('adds jitter to the cache time and shares one in-flight request', async () => {
