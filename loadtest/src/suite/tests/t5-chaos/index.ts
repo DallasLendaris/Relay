@@ -769,7 +769,7 @@ function buildDefs(sizes: Sizes): Def[] {
             unit: 'recipients',
           },
           {
-            name: 'held retry batches handled (<batchKey>:h<n>)',
+            name: 'held retry batches handled (<batchKey>:h<n> or :v<n>)',
             value: r.sum.heldRetryBatches,
             unit: 'batches',
           },
