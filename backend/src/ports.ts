@@ -237,6 +237,26 @@ export interface IdempotencyStore {
    * the real sender see 'leased', so a probe cannot delay an urgent batch.
    */
   peek?(key: string): Promise<'absent' | 'leased' | 'sent'>;
+  /**
+   * Progress of a batch sent in sub-chunks (optional; the sender works without it). Records,
+   * under our own live claim only, that sub-chunk `progress.chunk` finished: every recipient in it
+   * went out except the offsets in `progress.redo`. Resolves false if the claim is no longer ours
+   * (the caller must stop). Progress outlives an expired lease and a release, so the next claim
+   * of the key can skip what already went out; markSent ends it.
+   */
+  recordChunk?(key: string, progress: ChunkProgress): Promise<boolean>;
+  /**
+   * After claim() returned 'claimed': the sub-chunk progress earlier attempts on this key
+   * recorded (empty for a fresh key). Several entries for one chunk mean the union of what went
+   * out: a recipient is done if any entry leaves it out of `redo`.
+   */
+  claimedProgress?(key: string): Promise<ChunkProgress[]>;
+}
+
+/** One finished sub-chunk: offsets (within the chunk) that still need sending. See recordChunk. */
+export interface ChunkProgress {
+  chunk: number;
+  redo: number[];
 }
 
 export interface PushMessage {

@@ -15,6 +15,11 @@
  *   - the rolling permanent rate over the last 1,000 results (process-wide) is above 20%, once
  *     the window holds at least 200 results and 20 permanents (so a small first batch with a few
  *     genuinely dead tokens cannot trip it).
+ *
+ * Until the window holds ROLLING_MIN_SAMPLES results the rolling rule cannot judge, and most
+ * batches are far too small (a few recipients) for the batch rule. Dead targets found in that
+ * time are therefore held, not cleared, by DeadTargetGate (dead-target-gate.ts), which releases
+ * or drops them once this breaker has the evidence (`samples`, `rollingRate`).
  */
 export const BATCH_RATE_LIMIT = 0.25;
 export const BATCH_MIN_PERMANENT = 20;
@@ -52,6 +57,26 @@ export class PermanentBreaker {
       reason = 'rolling_rate';
     }
     return { open: reason !== undefined, ...(reason ? { reason } : {}), batchRate, rollingRate };
+  }
+
+  /** Results in the rolling window (it only grows, from the very first result, up to ROLLING_WINDOW). */
+  get samples(): number {
+    return this.filled;
+  }
+  /** Permanent results in the rolling window. */
+  get permanentSamples(): number {
+    return this.permanents;
+  }
+  get rollingRate(): number {
+    return this.filled === 0 ? 0 : this.permanents / this.filled;
+  }
+  /**
+   * The rolling rule judged on whatever the window holds, minimum sample size aside: at least
+   * ROLLING_MIN_PERMANENT permanents and above ROLLING_RATE_LIMIT. Used when held dead targets
+   * must be decided before the window is full enough (hold timeout, shutdown).
+   */
+  get looksSystemic(): boolean {
+    return this.permanents >= ROLLING_MIN_PERMANENT && this.rollingRate > ROLLING_RATE_LIMIT;
   }
 
   private push(v: 0 | 1): void {
