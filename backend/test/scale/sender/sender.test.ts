@@ -4,7 +4,15 @@ import { PUSH_POLICY } from '../../../src/delivery/policy.js';
 import { SENDER_CHUNK_SIZE, type NativePushMessage } from '../../../src/scale/contracts.js';
 import { SENDER_LEASE_MS, baseBatchKey, processBatch } from '../../../src/scale/sender/sender.js';
 import { tampered } from '../../delivery/fakes.js';
-import { FakePush, makeBatch, makeDeps, recordingLogger, seedAlert, waitFor } from './fakes.js';
+import {
+  FakePush,
+  clearAtOnce,
+  makeBatch,
+  makeDeps,
+  recordingLogger,
+  seedAlert,
+  waitFor,
+} from './fakes.js';
 
 describe('processBatch: claim states', () => {
   it('acks without sending when the batch is already sent', async () => {
@@ -212,6 +220,7 @@ describe('processBatch: failures', () => {
         deadSeen.push({ deviceId, target });
       },
     });
+    clearAtOnce(t.deps); // about the order of cleanup, not the hold
     const realSent = t.idempotency.markSent.bind(t.idempotency);
     t.idempotency.markSent = async (k, e) => (order.push('markSent'), realSent(k, e));
     t.sendQueue.onEnqueue = () => void order.push('enqueue');

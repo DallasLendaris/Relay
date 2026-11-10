@@ -42,8 +42,9 @@ import { alertVerifierFromEnv } from '../../signing/kms.js';
 import { CachedAlertStore } from './cached-alerts.js';
 import { SenderConsumer } from './consumer.js';
 import { createDeadTargetClearer } from './dead-target.js';
+import { PermanentBreaker } from './breaker.js';
 import { DeadTargetQueue } from './dead-target-queue.js';
-import { SENDER_LEASE_MS, processBatch, type SenderDeps } from './sender.js';
+import { SENDER_LEASE_MS, createDeadTargetGate, processBatch, type SenderDeps } from './sender.js';
 import { errorFields } from '../../delivery/redact.js';
 import { SqsSendQueue } from './sqs-send-queue.js';
 
@@ -138,6 +139,8 @@ async function main(): Promise<void> {
   });
   // Cleanup runs in the background (4 at a time, 10,000 queued) so it never delays a batch.
   const deadTargets = new DeadTargetQueue({ process: clearDeadTarget, logger });
+  // Clears wait for the breaker's evidence (200 results, at most 60 s): see dead-target-gate.ts.
+  const breaker = new PermanentBreaker();
   const isPaused = createKillSwitch(env.KILL_SWITCH_PARAM);
   const deps: SenderDeps = {
     idempotency,
@@ -162,6 +165,7 @@ async function main(): Promise<void> {
     }),
     onDeadTarget: clearDeadTarget,
     deadTargets,
+    breaker,
     clock: { now: () => new Date() },
     logger,
     ...(process.env['PUBLIC_ALERT_BASE_URL']
@@ -169,6 +173,9 @@ async function main(): Promise<void> {
       : {}),
     invalidateAlert: (id) => alerts.invalidate(id),
   };
+  // Held clears are re-queued as retries (send queue above) if the breaker opens.
+  const deadTargetGate = createDeadTargetGate(deps);
+  deps.deadTargetGate = deadTargetGate;
 
   const consumer = new SenderConsumer({
     sqs,
@@ -198,7 +205,10 @@ async function main(): Promise<void> {
   await consumer.run();
   // Flush pending dead-target cleanups with whatever is left of the 29 s budget.
   const left = Math.max(500, 29_000 - (Date.now() - (shutdownAt || Date.now())));
-  await deadTargets.flush(left);
+  deadTargetGate.shutdown(); // decide on held clears now, so the flush below includes them
+  const start = Date.now();
+  await deadTargetGate.settle(Math.min(5_000, left)); // re-queues of held recipients go first
+  await deadTargets.flush(Math.max(500, left - (Date.now() - start)));
   logger.info('sender.stopped', {});
 }
 
