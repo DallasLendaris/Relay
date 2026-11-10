@@ -16,6 +16,7 @@
  *    fixed chunks of 1,250,000 devices, each with its own RNG stream, so the result does not depend
  *    on how many processes ran it.
  */
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { open, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
@@ -30,7 +31,9 @@ import { createRng, normal, type Rng } from '../../../mock-common.js';
 import { COUNTY_BOUNDS, CELL_RESOLUTION, uuidForDevice } from '../../../seed.js';
 
 export type Region = 'county' | 'state';
-export const SEED_FORMAT = 'v1';
+// v2: statewide tokens derive from the device index (v1 drew them from per-chunk 32-bit PRNG
+// streams, which overlap at 10M devices and gave about 2.1M devices a duplicate token).
+export const SEED_FORMAT = 'v2';
 export const STATE_CHUNK = 1_250_000;
 export const SHARD_RES = 4;
 
@@ -181,23 +184,15 @@ function drawStatePoint(rng: Rng): { lat: number; lng: number } {
   }
 }
 
-const B64URL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
-const word = (rng: Rng) => (rng() * 4294967296) >>> 0;
-function apnsToken(rng: Rng): string {
-  let s = '';
-  for (let i = 0; i < 8; i++) s += word(rng).toString(16).padStart(8, '0');
-  return s;
-}
-function b64(rng: Rng, chars: number): string {
-  let s = '';
-  while (s.length < chars) {
-    let w = word(rng);
-    for (let k = 0; k < 5; k++) {
-      s += B64URL[w & 63];
-      w >>>= 6;
-    }
-  }
-  return s.slice(0, chars);
+/**
+ * A push token unique to device `i`, independent of any PRNG stream: hashing the index makes
+ * collisions astronomically unlikely (the per-chunk 32-bit streams of v1 overlapped at 10M).
+ */
+function stateToken(seed: number, i: number, ios: boolean): string {
+  const h = (n: number) => createHash('sha512').update(`relay-state:${seed}:${i}:${n}`).digest();
+  if (ios) return h(0).subarray(0, 32).toString('hex');
+  const raw = Buffer.concat([h(0), h(1)]).toString('base64url');
+  return `${raw.slice(0, 22)}:APA91b${raw.slice(22, 154)}`;
 }
 
 export interface GenDevice {
@@ -230,7 +225,7 @@ export function* generateStateChunk(
     yield {
       deviceId: uuidForDevice(i),
       platform: ios ? 'ios' : 'android',
-      token: ios ? apnsToken(rng) : `${b64(rng, 22)}:APA91b${b64(rng, 132)}`,
+      token: stateToken(seed, i, ios),
       language,
       cells,
     };
