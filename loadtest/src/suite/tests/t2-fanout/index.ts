@@ -379,6 +379,7 @@ async function runScenario(
     denseCells: 0,
     coveredBuckets: 0,
     peakBufferedRecipients: 0,
+    rereadPasses: 0,
     cells: 0,
     entries: 0,
     skippedNoTarget: 0,
@@ -408,6 +409,7 @@ async function runScenario(
         shardTotals.batches += r.batches;
         shardTotals.denseCells += r.denseCells ?? 0;
         shardTotals.coveredBuckets += r.coveredBuckets ?? 0;
+        shardTotals.rereadPasses += r.rereadPasses ?? 0;
         shardTotals.peakBufferedRecipients = Math.max(
           shardTotals.peakBufferedRecipients,
           r.peakBufferedRecipients ?? 0,
@@ -828,7 +830,7 @@ export function toScenarioResult(r: ScenarioRaw): ScenarioResult {
   if (sc.region === 'dense') {
     notes.push(
       `Dense cell: ${sc.denseDevices} of ${sc.devices} devices in one res-7 cell; shard-worker peak RSS ${r.peakRss['shard-worker'] ?? 0} MB; ` +
-        `peak buffered ${r.shardTotals.peakBufferedRecipients} recipients in one shard job; largest SQS body ${round(r.broker.maxBodyBytes / 1024, 1)} KB.`,
+        `peak buffered ${r.shardTotals.peakBufferedRecipients} recipients in one shard job (${r.shardTotals.rereadPasses} dense-part re-read passes); largest SQS body ${round(r.broker.maxBodyBytes / 1024, 1)} KB.`,
     );
   }
   notes.push(`FCM rate per sender per project: ${r.fcmRateSource}.`);
