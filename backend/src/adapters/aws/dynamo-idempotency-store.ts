@@ -76,7 +76,9 @@ export interface ThrottleRetryOptions {
  * Member sets (G5, scale/fanout/member-set.ts) live in a binary attribute `members`: the sender's
  * markSent writes the recipients of the batch it sent (in the same UpdateItem, under the same
  * "never overwrite another attempt's sent" condition); markPlanned writes the shard worker's plan
- * record with one unconditional PutItem; inspect reads either back with the same GetItem peek does.
+ * record with one unconditional PutItem (with a target set, G5b: first a PutItem conditional on
+ * the key not existing, and on a conflict the unconditional one without it); inspect reads either
+ * back with the same GetItem peek does.
  */
 export const encodeChunkProgress = (p: ChunkProgress): string =>
   `${p.set}@${p.chunk}:${p.redo.join(',')}`;
@@ -241,24 +243,48 @@ export class DynamoIdempotencyStore implements IdempotencyStore {
       ),
     );
     const state = stateOf(Item, this.clock.now().getTime());
+    if (state !== 'sent') return { state };
     const members: unknown = Item?.['members'];
-    return state === 'sent' && members instanceof Uint8Array ? { state, members } : { state };
+    const targets: unknown = Item?.['targets'];
+    return {
+      state,
+      ...(members instanceof Uint8Array ? { members } : {}),
+      ...(targets instanceof Uint8Array ? { targets } : {}),
+    };
   }
 
-  async markPlanned(key: string, members: Uint8Array | null, expiresAt: Date): Promise<void> {
-    await this.send(() =>
-      this.doc.send(
-        new PutCommand({
-          TableName: this.tableName,
-          Item: {
-            pk: key,
-            state: 'sent',
-            ttl: Math.floor(expiresAt.getTime() / 1000),
-            ...(members ? { members } : {}),
-          },
-        }),
-      ),
-    );
+  async markPlanned(
+    key: string,
+    members: Uint8Array | null,
+    expiresAt: Date,
+    detail?: { targets?: Uint8Array },
+  ): Promise<void> {
+    const item = {
+      pk: key,
+      state: 'sent',
+      ttl: Math.floor(expiresAt.getTime() / 1000),
+      ...(members ? { members } : {}),
+    };
+    const targets = detail?.targets;
+    if (targets) {
+      // The target set only on the key's first record (G5b): one conditional PutItem.
+      try {
+        await this.send(() =>
+          this.doc.send(
+            new PutCommand({
+              TableName: this.tableName,
+              Item: { ...item, targets },
+              ConditionExpression: 'attribute_not_exists(pk)',
+            }),
+          ),
+        );
+        return;
+      } catch (err) {
+        if (!(err instanceof ConditionalCheckFailedException)) throw err;
+        // An earlier plan wrote the key: replace its record without any target set.
+      }
+    }
+    await this.send(() => this.doc.send(new PutCommand({ TableName: this.tableName, Item: item })));
   }
 
   async markSent(key: string, expiresAt: Date, detail?: { members?: Uint8Array }): Promise<void> {

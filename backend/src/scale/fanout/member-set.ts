@@ -15,6 +15,22 @@ import { createHash } from 'node:crypto';
  */
 export const SENT_HASH_BYTES = 8;
 export const PLAN_HASH_BYTES = 4;
+/**
+ * TARGET_HASH_BYTES (8): the plan record's second set, of (device, push target) pairs (G5b). Late
+ * join SKIPS a device in a sent batch only when the pair with its CURRENT target is in it (or its
+ * target predates the alert), so like the sent set a false positive would be a miss: 64 bits.
+ */
+export const TARGET_HASH_BYTES = 8;
+
+/**
+ * The member a (device, push target) pair is stored as in a plan record's target set. A device
+ * whose target changed since the plan read it is not in the set under its new target, so late
+ * join sends to the new target instead of trusting a batch that pushed the old one.
+ */
+export const targetMemberOf = (
+  deviceId: string,
+  target: { platform: string; token: string },
+): string => `${deviceId}\n${target.platform}\n${target.token}`;
 
 /**
  * Most bytes one set may take: DynamoDB items are capped at 400 KB, and the key and the other

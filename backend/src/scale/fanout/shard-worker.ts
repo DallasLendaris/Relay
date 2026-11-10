@@ -22,7 +22,13 @@ import {
   planMarkerKey,
   splitMarkerKey,
 } from './keys.js';
-import { encodeMemberSet, PLAN_HASH_BYTES } from './member-set.js';
+import {
+  encodeMemberSet,
+  MAX_SET_BYTES,
+  PLAN_HASH_BYTES,
+  TARGET_HASH_BYTES,
+  targetMemberOf,
+} from './member-set.js';
 import { splitToFit } from './pack.js';
 import { isPrimaryCell } from './primary-cell.js';
 import type { ShardDispatcher } from './queues.js';
@@ -315,10 +321,26 @@ export async function processShard(
    * they carry. Late join waits while it is absent and sends at once to a device not in it.
    * Best effort: without it late join waits (bounded) and then sends, a possible duplicate.
    */
-  const writePlan = async (h3Cell: string, part: number | undefined, ids: string[]) => {
+  const writePlan = async (
+    h3Cell: string,
+    part: number | undefined,
+    ids: string[],
+    carried?: readonly Recipient[],
+  ) => {
     const store = deps.idempotency;
     if (!store?.markPlanned || failed) return;
     const members = encodeMemberSet(ids, PLAN_HASH_BYTES);
+    // G5b: the (device, target) pairs, only for a normal cell (whose record is written before any
+    // of its batches can be enqueued) and only within the item's room. Without it late join falls
+    // back to its timestamp rule for a device whose target may have changed.
+    const targets =
+      carried && members
+        ? encodeMemberSet(
+            carried.map((r) => targetMemberOf(r.deviceId, r.target)),
+            TARGET_HASH_BYTES,
+            MAX_SET_BYTES - members.length,
+          )
+        : undefined;
     if (!members) {
       deps.logger.warn('fanout.plan_set_over_cap', {
         alertId: alert.id,
@@ -332,6 +354,7 @@ export async function processShard(
         planMarkerKey(alert, h3Cell, part),
         members ?? null,
         claimExpiry(alert),
+        ...(targets ? [{ targets }] : []),
       );
       result.planRecords++;
     } catch (err) {
@@ -341,6 +364,10 @@ export async function processShard(
         part,
         error: err instanceof Error ? err.name : 'UnknownError',
       });
+      // A record with a target set must describe every batch of its key that can be sent: if it
+      // did not land, this attempt sends nothing for the cell and the retry writes it (the
+      // retry's write finds no record or an older one, and late join stays exact either way).
+      if (targets) throw err;
     }
   };
 
@@ -489,28 +516,46 @@ export async function processShard(
     /** Emits the current dense part, frees it, and re-reads the buckets set aside for it. */
     const emitPart = async (part: number): Promise<void> => {
       if (!dense) return;
+      const d = dense;
+      const going: Array<[number, Recipient[]]> = [];
       for (let bucket = 0; bucket < CELL_BUCKETS; bucket++) {
         const recipients = buckets.get(bucket);
         if (!recipients || recipients.length === 0) continue;
-        if (dense.emitBucket[bucket]) {
-          carry(part, recipients);
-          emit(makeBatch(densePartKey(alert, h3Cell, bucket, part), recipients), true);
-          countDupes(part, bucket);
-          // Recipients move to `pending` (still counted in `buffered` until flushed).
-          held -= recipients.length;
-        } else {
-          release(recipients.length);
-        }
+        if (d.emitBucket[bucket]) going.push([bucket, recipients]);
+        else release(recipients.length);
       }
       buckets = new Map();
-      const setAside = dense.dropped;
-      dense.dropped = [];
+      const setAside = d.dropped;
+      d.dropped = [];
+      const record = !contendedHere && !failed && part >= 0;
+      // The stream is sorted, so this part is complete. With nothing set aside its batches are all
+      // known now, and its record (with the target set, G5b) goes out before any of them can be
+      // enqueued, like a normal cell's. A part with buckets set aside is recorded after its
+      // re-read, without a target set.
+      const early = record && setAside.length === 0;
+      if (early) {
+        const carried = going.flatMap(([, recipients]) => recipients);
+        await writePlan(
+          h3Cell,
+          part,
+          carried.map((r) => r.deviceId),
+          carried,
+        );
+        plannedParts.add(part);
+        if (failed) return;
+      }
+      for (const [bucket, recipients] of going) {
+        if (!early) carry(part, recipients);
+        emit(makeBatch(densePartKey(alert, h3Cell, bucket, part), recipients), true);
+        countDupes(part, bucket);
+        // Recipients move to `pending` (still counted in `buffered` until flushed).
+        held -= recipients.length;
+      }
       if (setAside.length > 0) {
         await flush(false);
-        await rereadPart(part, dense.partCursor, setAside);
+        await rereadPart(part, d.partCursor, setAside);
       }
-      // The stream is sorted, so this part is complete: its batches are all decided.
-      if (!contendedHere && !failed && part >= 0) {
+      if (record && !early && !contendedHere && !failed) {
         await writePlan(h3Cell, part, partIds.get(part) ?? []);
         plannedParts.add(part);
       }
@@ -650,8 +695,14 @@ export async function processShard(
       await emitPart(dense.part);
     } else {
       for (const v of dupes.values()) result.duplicates += v;
+      const carried = normal.flatMap((b) => b.recipients);
+      for (const r of carried) planIds.push(r.deviceId);
+      // The plan record goes first (G5b): another cell's flush may enqueue this cell's batches as
+      // soon as they are in `pending`, and a sent batch must always be the one its record (and
+      // target set) describes, even if this attempt dies right after.
+      await writePlan(h3Cell, undefined, planIds, carried);
+      if (failed) return;
       for (const b of normal) {
-        for (const r of b.recipients) planIds.push(r.deviceId);
         emit(b, false); // measured just above
         held -= b.recipients.length;
       }
@@ -659,9 +710,7 @@ export async function processShard(
     }
     if (failed) return;
     const readEndMs = deps.clock.now().getTime();
-    if (!dense) {
-      await writePlan(h3Cell, undefined, planIds);
-    } else if (!contendedHere) {
+    if (dense && !contendedHere) {
       // Parts no entry fell in are planned too (empty), so late join does not wait on them.
       for (let part = 0; part < DENSE_PARTS; part++) {
         if (!plannedParts.has(part)) await writePlan(h3Cell, part, []);

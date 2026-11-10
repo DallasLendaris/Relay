@@ -231,8 +231,17 @@ export interface IdempotencyStore {
    * The shard worker's per-cell (or per dense part) plan record (G5): marks `key` sent and stores
    * the planned recipients' member set, replacing any earlier record of the key (a later plan's
    * read is newer). `members` null: the set was over MAX_SET_BYTES and is not stored.
+   * `detail.targets` (G5b): the set of (device, push target) pairs the plan's batches carry. It is
+   * stored only by the FIRST plan of the key; any later plan's write removes it, so a record with
+   * targets means exactly one plan wrote it (and the shard worker writes it before enqueueing any
+   * of those batches, so a sent batch of the key is that plan's).
    */
-  markPlanned?(key: string, members: Uint8Array | null, expiresAt: Date): Promise<void>;
+  markPlanned?(
+    key: string,
+    members: Uint8Array | null,
+    expiresAt: Date,
+    detail?: { targets?: Uint8Array },
+  ): Promise<void>;
   /**
    * peek() plus the stored member set, in the same single read: `members` is undefined when the
    * item has none (absent, leased, written by an older version, or over the size cap).
@@ -273,6 +282,8 @@ export interface IdempotencyStore {
 export interface KeyInspection {
   state: 'absent' | 'leased' | 'sent';
   members?: Uint8Array;
+  /** A plan record's (device, target) set, when exactly one plan wrote it (markPlanned). */
+  targets?: Uint8Array;
 }
 
 /** One finished sub-chunk: offsets (within the chunk) that still need sending. See recordChunk. */
