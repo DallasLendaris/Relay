@@ -65,6 +65,8 @@ const state = {
   capBytes: 256 * 1048576,
   nextMid: 0,
   sentMessages: 0,
+  maxBodyBytes: 0,
+  overBudgetMessages: 0,
   sentDelayed: 0,
   receives: 0,
   redeliveries: 0,
@@ -155,6 +157,8 @@ async function handle(f: Frame): Promise<{ h: Record<string, unknown>; p?: Buffe
           visibleAt: 0,
         };
         state.sentMessages++;
+        state.maxBodyBytes = Math.max(state.maxBodyBytes, body.length);
+        if (body.length > 240 * 1024) state.overBudgetMessages++;
         addBytes(body.length);
         if (e.delay > 0) {
           state.sentDelayed++;
@@ -296,6 +300,8 @@ function stats() {
     bytes: state.bytes,
     peakBytesMb: Math.round(state.peakBytes / 1048576),
     sentMessages: state.sentMessages,
+    maxBodyBytes: state.maxBodyBytes,
+    overBudgetMessages: state.overBudgetMessages,
     sentDelayed: state.sentDelayed,
     receives: state.receives,
     redeliveries: state.redeliveries,
@@ -323,6 +329,8 @@ serve({
     state.bytes = 0;
     state.peakBytes = 0;
     state.sentMessages = 0;
+    state.maxBodyBytes = 0;
+    state.overBudgetMessages = 0;
     state.sentDelayed = 0;
     state.receives = 0;
     state.redeliveries = 0;

@@ -8,6 +8,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { OUTBOX_DEFAULT_BUDGET_MS } from '../../../../../backend/src/scale/cell-index/drainer.js';
 import { DynamoCellIndex } from '../../../../../backend/src/scale/cell-index/dynamo-cell-index.js';
 import type { SqlExecutor } from '../../../../../backend/src/db/sql.js';
 import { targetOf } from '../../../../../backend/src/scale/cell-index/util.js';
@@ -196,6 +197,8 @@ export interface Env {
   postgresUrl?: string;
 }
 
+/** The backlog must be gone after this many scheduled runs (one a minute: about 2 minutes). */
+const DRAIN_MAX_RUNS = 2;
 const sec = (ms: number): number => ms / 1000;
 const rate = (n: number, ms: number): number => (ms > 0 ? n / sec(ms) : 0);
 const sum = (xs: number[]): number => xs.reduce((a, b) => a + b, 0);
@@ -875,9 +878,13 @@ export async function scenarioD(env: Env): Promise<ScenarioResult> {
   );
 
   const dr = (
-    await env.runner.run<DDrainResult>('d-drain', [{ maxRuns: 100_000 } satisfies DDrainParams])
+    await env.runner.run<DDrainResult>('d-drain', [
+      { maxRuns: 100, budgetMs: OUTBOX_DEFAULT_BUDGET_MS } satisfies DDrainParams,
+    ])
   )[0] as DDrainResult;
   const afterDrain = await verifyCellIndex(env);
+  const drainAwsSeconds =
+    dr.runs === 0 ? 0 : (dr.runs - 1) * 60 + sec(dr.runDetails[dr.runs - 1]?.ms ?? 0);
   const pendingAfter = await count(env.admin, 'SELECT count(*)::int AS n FROM cell_index_outbox');
 
   // Erasure of the first `erase` devices (by id), spread over the processes.
@@ -916,13 +923,28 @@ export async function scenarioD(env: Env): Promise<ScenarioResult> {
     { name: 'write-throughs failed on purpose', value: injected, unit: 'places' },
     { name: 'outbox rows left for the drainer', value: pending, unit: 'rows' },
     { name: 'index entries missing before the drain', value: before.missing, unit: 'entries' },
-    { name: 'drain time (one drainer, back to back)', value: sec(dr.ms), unit: 's' },
-    { name: 'drain runs (100 rows each)', value: dr.runs, unit: 'runs' },
+    {
+      name: `scheduled runs needed (one drainOutbox call, budget ${sec(OUTBOX_DEFAULT_BUDGET_MS)} s each)`,
+      value: dr.runs,
+      unit: 'runs',
+      target: { op: '<=', value: DRAIN_MAX_RUNS },
+    },
+    {
+      name: 'drain wall time to clear the backlog (all runs, no waits)',
+      value: sec(dr.ms),
+      unit: 's',
+    },
+    ...dr.runDetails.map((r, i) => ({
+      name: `run ${i + 1}: wall time (${r.applied} applied, ${r.failed} failed${r.budgetExhausted ? ', budget used up' : ''})`,
+      value: sec(r.ms),
+      unit: 's',
+    })),
     { name: 'drained rows/s', value: rate(dr.applied, dr.ms), unit: 'rows/s' },
     {
-      name: 'drain time at the real once-a-minute cadence (100 rows per run)',
-      value: Math.ceil(pending / 100),
-      unit: 'min',
+      name: 'time to clear in AWS (runs once a minute: (runs - 1) x 60 s + last run)',
+      value: drainAwsSeconds,
+      unit: 's',
+      target: { op: '<=', value: 120 },
     },
     { name: 'devices erased', value: erased, unit: 'devices' },
     {
@@ -949,6 +971,11 @@ export async function scenarioD(env: Env): Promise<ScenarioResult> {
       'before the drain, no more entries are missing than rows wait',
       before.missing <= pending,
       `${before.missing} vs ${pending}`,
+    ),
+    ok(
+      `backlog cleared within ${DRAIN_MAX_RUNS} scheduled runs (~2 minutes in AWS)`,
+      pendingAfter === 0 && dr.runs <= DRAIN_MAX_RUNS && drainAwsSeconds <= 120,
+      `${dr.runs} run(s), ${drainAwsSeconds.toFixed(1)} s in AWS, ${pending} rows`,
     ),
     ok(
       'drainer emptied the outbox without failures',
@@ -988,6 +1015,6 @@ export async function scenarioD(env: Env): Promise<ScenarioResult> {
   ];
   return finish('(d) Postgres places, outbox, drainer and erasure', t0, metrics, checks, [
     'Add and erase run as the relay_api role, the drainer as relay_ops (migration 0011 grants).',
-    'The drainer is run back to back; in AWS it runs once a minute and takes 100 rows per run, so a backlog this size would clear at 100 rows/min (see the row above).',
+    `The drainer runs at its real cadence: each scheduled run is one drainOutbox call with budgetMs = ${OUTBOX_DEFAULT_BUDGET_MS} (it loops claim and apply until the outbox is empty or the budget is used up). The 60 s wait between runs is counted, not slept: time in AWS = (runs - 1) x 60 s + the last run.`,
   ]);
 }

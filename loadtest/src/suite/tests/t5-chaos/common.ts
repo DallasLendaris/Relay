@@ -26,6 +26,9 @@ export const vnow = (c: VClock): number => c.epochMs + (Date.now() - c.epochMs) 
 export const vclock = (c: VClock): { now: () => Date } => ({ now: () => new Date(vnow(c)) });
 
 /** Real milliseconds a virtual duration takes. */
+/** Sub-chunks of one batch sent at once (the sender's default; set explicitly in the sender stand-in). */
+export const CHUNK_CONCURRENCY = 8;
+
 export const realMs = (c: VClock, virtualMs: number): number => virtualMs / c.scale;
 
 // ---------- Deterministic token hash ----------

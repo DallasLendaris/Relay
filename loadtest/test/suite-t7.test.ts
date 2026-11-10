@@ -42,12 +42,31 @@ describe('suite t7 helpers', () => {
     ).toBe(false);
     const grow = leakReport(
       'p',
-      rows((s) => 100 + s * 0.2),
+      rows((s) => 100 + s * 0.5),
       t0,
       o,
     );
     expect(grow.leak).toBe(true);
-    expect(grow.slopeMbPerHour).toBeCloseTo(0.2 * 3600, 0);
+    expect(grow.counted).toBe(true);
+    expect(grow.slopeMbPerHour).toBeCloseTo(0.5 * 3600, 0);
+    // The load driver is test code: reported, not counted.
+    expect(
+      leakReport(
+        'load',
+        rows((s) => 100 + s * 0.5),
+        t0,
+        { ...o, uncounted: ['load'] },
+      ).counted,
+    ).toBe(false);
+    // A cache that fills up in the first two thirds and then plateaus is not a leak.
+    expect(
+      leakReport(
+        'p',
+        rows((s) => 100 + Math.min(s, 250) * 0.5),
+        t0,
+        o,
+      ).leak,
+    ).toBe(false);
     // 50% growth of a tiny heap stays under the absolute floor.
     expect(
       leakReport(

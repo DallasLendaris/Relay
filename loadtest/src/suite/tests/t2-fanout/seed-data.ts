@@ -30,7 +30,7 @@ import { assignFcmProject } from '../../../../../backend/src/adapters/push/fcm-p
 import { createRng, normal, type Rng } from '../../../mock-common.js';
 import { COUNTY_BOUNDS, CELL_RESOLUTION, uuidForDevice } from '../../../seed.js';
 
-export type Region = 'county' | 'state';
+export type Region = 'county' | 'state' | 'dense';
 // v2: statewide tokens derive from the device index (v1 drew them from per-chunk 32-bit PRNG
 // streams, which overlap at 10M devices and gave about 2.1M devices a duplicate token).
 export const SEED_FORMAT = 'v2';
@@ -50,8 +50,40 @@ export interface SeedManifest {
   generatedMs: number;
 }
 
-export function seedDirFor(dataDir: string, region: Region, devices: number, seed: number): string {
-  return path.join(dataDir, 't2-seed', `${region}-${devices}-s${seed}-${SEED_FORMAT}`);
+export function seedDirFor(
+  dataDir: string,
+  region: Region,
+  devices: number,
+  seed: number,
+  denseDevices = 0,
+): string {
+  const dense = region === 'dense' ? `-d${denseDevices}` : '';
+  return path.join(dataDir, 't2-seed', `${region}-${devices}${dense}-s${seed}-${SEED_FORMAT}`);
+}
+
+/**
+ * The one dense res-7 cell of scenario f: downtown San Jose, inside the county alert area. Real
+ * metro cells (LA, SF, San Diego) hold 75,000-150,000 devices (contracts.ts DENSE_CELL_RECIPIENTS).
+ */
+export const DENSE_CELL = latLngToCell(37.3382, -121.8863, CELL_RESOLUTION);
+
+/** `count` devices that all live in DENSE_CELL (indices start..start+count-1, 55% iOS). */
+export function* generateDenseCell(
+  seed: number,
+  start: number,
+  count: number,
+): Generator<GenDevice> {
+  const rng = createRng((Math.imul(seed, 0x9e3779b1) ^ 0x51ed270b) >>> 0);
+  for (let i = start; i < start + count; i++) {
+    const ios = rng() < 0.55;
+    yield {
+      deviceId: uuidForDevice(i),
+      platform: ios ? 'ios' : 'android',
+      token: stateToken(seed, i, ios),
+      language: rng() < 0.8 ? 'en' : 'es',
+      cells: [DENSE_CELL],
+    };
+  }
 }
 
 export function readManifest(dir: string): SeedManifest | null {

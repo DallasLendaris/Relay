@@ -764,6 +764,16 @@ export async function dAdd(b: Backend, p: DAddParams): Promise<DAddResult> {
 export interface DDrainParams {
   /** Safety stop. */
   maxRuns: number;
+  /** Time budget of ONE scheduled run (one drainOutbox call). Prod: OUTBOX_DEFAULT_BUDGET_MS. */
+  budgetMs: number;
+}
+export interface DDrainRun {
+  ms: number;
+  claimed: number;
+  applied: number;
+  failed: number;
+  batches: number;
+  budgetExhausted: boolean;
 }
 export interface DDrainResult {
   pendingBefore: number;
@@ -774,9 +784,15 @@ export interface DDrainResult {
   failed: number;
   maxAttemptsSeen: number;
   ms: number;
+  /** One entry per scheduled run (drainOutbox call), in order. */
+  runDetails: DDrainRun[];
 }
 
-/** One drainer, back to back (the real one runs once a minute and takes 100 rows per run). */
+/**
+ * The drainer at its real cadence: each loop iteration is ONE scheduled run, a single drainOutbox
+ * call with the production time budget (it loops claim -> apply until the outbox is empty or the
+ * budget is used up). The one-minute wait between runs is not slept, only counted by the caller.
+ */
 export async function dDrain(b: Backend, p: DDrainParams): Promise<DDrainResult> {
   const db = b.sql('relay_ops');
   const outbox = new PostgresCellIndexOutbox(db);
@@ -797,11 +813,21 @@ export async function dDrain(b: Backend, p: DDrainParams): Promise<DDrainResult>
   let failed = 0;
   let maxAttemptsSeen = 0;
   let stalled = 0;
+  const runDetails: DDrainRun[] = [];
   const t0 = performance.now();
   while (runs < p.maxRuns) {
     const stats = await outbox.stats(deps.now());
     if (stats.pending === 0) break;
-    const r = await drainOutbox(deps);
+    const tr = performance.now();
+    const r = await drainOutbox({ ...deps, budgetMs: p.budgetMs });
+    runDetails.push({
+      ms: performance.now() - tr,
+      claimed: r.claimed,
+      applied: r.applied,
+      failed: r.failed,
+      batches: r.batches,
+      budgetExhausted: r.budgetExhausted,
+    });
     runs++;
     claimed += r.claimed;
     applied += r.applied;
@@ -820,6 +846,7 @@ export async function dDrain(b: Backend, p: DDrainParams): Promise<DDrainResult>
     failed,
     maxAttemptsSeen,
     ms: performance.now() - t0,
+    runDetails,
   };
 }
 

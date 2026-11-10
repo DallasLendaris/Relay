@@ -6,8 +6,10 @@
  *   a  kill switch: pause at ~30% sent, hold, unpause (real paused-queue parking and sender pause)
  *   b  APNs 429 (Retry-After) storm, then 503 bursts: the real backoff must ride it out
  *   c  5% dead tokens (410 / UNREGISTERED): the breaker must stay closed, only dead tokens cleared
- *   d  misconfiguration (40% BadDeviceToken): the breaker must open, nothing cleared after that
+ *   d  misconfiguration (40% BadDeviceToken, fixed after 90 s): the breaker must open, no live token
+ *      cleared, held recipients re-queued (`<batchKey>:held:r<n>`) and delivered after the fix
  *   e  a sender process killed at ~50%: the others finish after lease expiry, duplicates bounded
+ *      by the in-flight chunks of the crashed sender (per-chunk progress resume)
  *   f  idempotency store throttling for 10% of claims: claim_throttled, batch re-queued
  *
  * A clean run comes first as the time reference. Every scenario verifies missed devices == 0 and
@@ -19,6 +21,7 @@ import { spawnWorker, type ChildHandle } from '../../lib/child.js';
 import { fmt, writeTestReport } from '../../lib/report.js';
 import { RssSampler } from '../../lib/rss.js';
 import type { Metric, ScenarioResult, SuiteContext, SuiteTest, TestResult } from '../../types.js';
+import { SENDER_CHUNK_SIZE } from '../../../../../backend/src/scale/contracts.js';
 import { ROLLING_MIN_SAMPLES } from '../../../../../backend/src/scale/sender/breaker.js';
 import { call, sleep, type FaultRule, type ThrottleSpec, type VClock } from './common.js';
 import type { SenderTally } from './sender-worker.js';
@@ -46,6 +49,12 @@ interface Sizes {
 }
 
 function sizesFor(ctx: SuiteContext): Sizes {
+  const base = sizesForScale(ctx);
+  const c = Number(process.env['T5_SENDER_CONCURRENCY']);
+  return Number.isFinite(c) && c >= 1 ? { ...base, concurrency: Math.floor(c) } : base;
+}
+
+function sizesForScale(ctx: SuiteContext): Sizes {
   if (ctx.scale === 'smoke') {
     return {
       devices: 5_000,
@@ -338,8 +347,14 @@ function mergeTallies(list: SenderTally[]): SenderTally {
     deadEnqueuedAfterBreaker: 0,
     logEvents: {},
     deadFlushLeft: 0,
+    deadRequeuedRecipients: 0,
+    gateDecisions: [],
+    heldRetryBatches: 0,
   };
   for (const t of list) {
+    out.gateDecisions.push(...t.gateDecisions);
+    out.deadRequeuedRecipients += t.deadRequeuedRecipients;
+    out.heldRetryBatches += t.heldRetryBatches;
     out.batches += t.batches;
     out.retryBatches += t.retryBatches;
     out.thrown += t.thrown;
@@ -676,28 +691,41 @@ function buildDefs(sizes: Sizes): Def[] {
     },
   };
 
+  const misconfigEndS = smoke ? 30 : 90;
   const misconfig: Def = {
     key: 'd',
     name: 'd: misconfiguration (40% BadDeviceToken)',
-    // A wrong APNs topic / FCM project for the first 20 s (virtual), then fixed.
-    apnsRules: both({ fromS: 0, toS: 20, p: 0.4, byToken: true, kind: 'badtoken' }).apns,
-    fcmRules: both({ fromS: 0, toS: 20, p: 0.4, byToken: true, kind: 'badtoken' }).fcm,
+    // A wrong APNs topic / FCM project until the misconfiguration is fixed at a defined point:
+    // 90 s after the start (smoke: 30 virtual s, 3 s real). The held recipients are re-queued with
+    // backoff (2, 4, 8, ... s), so their retries land after the fix and succeed.
+    apnsRules: both({ fromS: 0, toS: misconfigEndS, p: 0.4, byToken: true, kind: 'badtoken' }).apns,
+    fcmRules: both({ fromS: 0, toS: misconfigEndS, p: 0.4, byToken: true, kind: 'badtoken' }).fcm,
     deadRate: 0,
     evaluate(r) {
       const opens = sumLog(r, 'delivery.permanent_breaker_open');
       const bad = (r.apnsStats.injected['badtoken'] ?? 0) + (r.fcmStats.injected['badtoken'] ?? 0);
-      // The rolling rate only counts once the window holds ROLLING_MIN_SAMPLES results, and a
-      // sparse batch cannot trip the per-batch rule, so each sender can clear the permanent
-      // failures of at most its first ROLLING_MIN_SAMPLES results before the breaker is armed
-      // (see breaker.ts). Beyond this bound something else is wrong.
-      const bound = r.sendersAtStart * ROLLING_MIN_SAMPLES;
-      const checks = baseChecks(r, undefined, r.broker.cleared);
+      const requeuedEvents = sumLog(r, 'sender.dead_targets_requeued');
+      const requeued = r.sum.deadRequeuedRecipients;
+      const dropped = sumLog(r, 'sender.dead_targets_dropped') + sumLog(r, 'delivery.gave_up');
+      // Normal-path (not misconfigured) clears can only be dead tokens; here there are none, so
+      // every cleared token is a live one.
+      const checks = baseChecks(r);
       checks.push(
         { name: 'circuit breaker opened', ok: opens >= 1, detail: `${opens} breaker-open events` },
         {
-          name: `tokens cleared before the breaker is armed <= ${fmt(bound)} (${ROLLING_MIN_SAMPLES} results per sender)`,
-          ok: r.broker.cleared <= bound,
-          detail: `${r.broker.cleared} cleared`,
+          name: '0 live tokens cleared',
+          ok: r.broker.clearedLive === 0 && r.broker.cleared === 0,
+          detail: `${r.broker.clearedLive} live tokens cleared, ${r.broker.cleared} clears in all`,
+        },
+        {
+          name: 'held recipients were re-queued (sender.dead_targets_requeued)',
+          ok: requeuedEvents >= 1 && requeued > 0 && r.sum.heldRetryBatches >= 1,
+          detail: `${requeuedEvents} events, ${requeued} recipients, ${r.sum.heldRetryBatches} retry batches handled`,
+        },
+        {
+          name: 'no held recipient dropped or given up; 0 missed devices after the fix',
+          ok: dropped === 0 && missedTotal(r) === 0,
+          detail: `${dropped} dropped or given up, ${missedTotal(r)} missed`,
         },
       );
       return {
@@ -711,20 +739,44 @@ function buildDefs(sizes: Sizes): Def[] {
             target: { op: '>=', value: 1 },
           },
           {
-            name: 'tokens cleared (and so devices missed) before the breaker was armed',
-            value: r.broker.cleared,
+            name: 'live tokens cleared',
+            value: r.broker.clearedLive,
             unit: 'tokens',
+            target: { op: '==', value: 0 },
           },
           {
-            name: 'of which cleared after the first batch-level open',
-            value: r.sum.deadEnqueuedAfterBreaker,
-            unit: 'tokens',
+            name: 'permanent failures handed to the dead-target gate (verdict closed)',
+            value: r.sum.permanentFailed,
+            unit: 'recipients',
           },
+          { name: 'dead-target gate re-queue events', value: requeuedEvents, unit: 'events' },
+          {
+            name: 'dead-target gate release events (cleared as dead)',
+            value: sumLog(r, 'sender.dead_targets_released'),
+            unit: 'events',
+          },
+          {
+            name: "dead targets cleared before / after a sender's breaker first opened",
+            value: r.sum.deadEnqueuedBeforeBreaker,
+            unit: `tokens (after: ${r.sum.deadEnqueuedAfterBreaker})`,
+          },
+          {
+            name: 'recipients re-queued by the gate (held, not cleared)',
+            value: requeued,
+            unit: 'recipients',
+          },
+          {
+            name: 'held retry batches handled (<batchKey>:held:r<n>)',
+            value: r.sum.heldRetryBatches,
+            unit: 'batches',
+          },
+          { name: 'misconfiguration ended at', value: misconfigEndS, unit: 's (virtual)' },
           { name: 'extra time over the clean run', value: extraTime(r), unit: 's' },
         ],
         checks,
         notes: [
-          `FINDING: the breaker judges one batch only with at least 20 permanent results above 25%, and the rolling rate only after ${ROLLING_MIN_SAMPLES} results per sender process. Sparse batches (a few recipients each, the common case) therefore cannot trip it at the start of a misconfiguration, and their dead targets are cleared: here ${r.broker.cleared} tokens (${((r.broker.cleared / Math.max(1, r.expectedTotal)) * 100).toFixed(3)}% of the devices), who also miss this alert; the rest of the fan-out is protected and is retried to completion once the misconfiguration is fixed. The brief's "no tokens wiped" does not hold for the first ${ROLLING_MIN_SAMPLES} results of each sender; the check here asserts that bound instead.`,
+          `Gate decisions: ${r.sum.gateDecisions.map((g) => `${g.kind} ${g.count} (${g.reason}, ${g.samples} samples, rolling ${g.rollingRate})`).join('; ') || 'none'}.`,
+          `The dead-target gate holds clears until the breaker has seen ${ROLLING_MIN_SAMPLES} results (or 60 s pass); when the breaker finds a misconfiguration it re-queues the held recipients as retry batches (\`<batchKey>:held:r<n>\`) and clears nobody. The misconfiguration ends ${misconfigEndS} virtual s after the start, so the retries (backoff 2, 4, 8, ... s) succeed and no device is missed.`,
         ],
       };
     },
@@ -742,22 +794,41 @@ function buildDefs(sizes: Sizes): Def[] {
       victim.proc.handle.kill();
       await victim.proc.handle.exited;
       victim.alive = false;
-      const inflight = await call<{ messages: number; recipients: number }>(
-        d.h.broker.control,
-        'GET',
-        `/inflight?sender=${victim.id}`,
-      );
+      const inflight = await call<{
+        messages: number;
+        recipients: number;
+        batches: number;
+        multiChunkBatches: number;
+        chunkBound: number;
+      }>(d.h.broker.control, 'GET', `/inflight?sender=${victim.id}`);
       return {
         tKill,
         inflightMessagesAtCrash: inflight.messages,
         inflightRecipientsAtCrash: inflight.recipients,
+        inflightBatchesAtCrash: inflight.batches,
+        multiChunkBatchesAtCrash: inflight.multiChunkBatches,
+        chunkBoundAtCrash: inflight.chunkBound,
         survivors: d.h.senders.filter((s) => s.alive).length,
       };
     },
     evaluate(r) {
       const n = r.drivenNotes as Record<string, number>;
-      const bound = n['inflightRecipientsAtCrash'] ?? 0;
+      const multi = n['multiChunkBatchesAtCrash'] ?? 0;
+      const inflightBatches = n['inflightBatchesAtCrash'] ?? 0;
+      const oldBound = n['inflightRecipientsAtCrash'] ?? 0;
+      // Per-chunk progress: a re-claim skips the chunks the crashed sender finished, so at most the
+      // chunks it was sending can be sent again: up to chunk concurrency x SENDER_CHUNK_SIZE per
+      // multi-chunk batch; a single-chunk batch records nothing and can repeat once, whole.
+      const bound = n['chunkBoundAtCrash'] ?? 0;
+      const strict = multi * SENDER_CHUNK_SIZE;
+      const resumed = sumLog(r, 'sender.batch_resumed');
+      const dups = dupTotal(r);
       const checks = baseChecks(r, bound);
+      checks[1] = {
+        name: `duplicates <= in-flight chunks of the crashed sender x ${SENDER_CHUNK_SIZE} (${fmt(bound)})`,
+        ok: dups <= bound,
+        detail: `${dups} duplicates; ${multi} multi-chunk batches in flight (x ${SENDER_CHUNK_SIZE} = ${fmt(strict)}), ${inflightBatches} batches, ${fmt(oldBound)} in-flight recipients`,
+      };
       checks.push({
         name: 'remaining senders completed the alert after lease expiry',
         ok: missedTotal(r) === 0 && (n['survivors'] ?? 0) >= 1,
@@ -772,9 +843,40 @@ function buildDefs(sizes: Sizes): Def[] {
             unit: 'messages',
           },
           {
-            name: 'in-flight recipients of the crashed sender (duplicate bound)',
+            name: 'in-flight batches of the crashed sender',
+            value: inflightBatches,
+            unit: 'batches',
+          },
+          {
+            name: `in-flight multi-chunk batches (more than ${SENDER_CHUNK_SIZE} recipients)`,
+            value: multi,
+            unit: 'batches',
+          },
+          {
+            name: 'in-flight recipients of the crashed sender (the old duplicate bound)',
+            value: oldBound,
+            unit: 'recipients',
+          },
+          {
+            name: `duplicate bound (in-flight chunks x ${SENDER_CHUNK_SIZE})`,
             value: bound,
             unit: 'recipients',
+          },
+          {
+            name: `brief formula: multi-chunk batches x ${SENDER_CHUNK_SIZE}`,
+            value: strict,
+            unit: 'recipients',
+          },
+          {
+            name: 'duplicate pushes after the crash',
+            value: dups,
+            unit: 'pushes',
+            target: { op: '<=', value: bound },
+          },
+          {
+            name: 'batches resumed from recorded chunk progress (sender.batch_resumed)',
+            value: resumed,
+            unit: 'batches',
           },
           {
             name: 'messages redelivered after visibility timeout',
@@ -785,7 +887,8 @@ function buildDefs(sizes: Sizes): Def[] {
         ],
         checks,
         notes: [
-          'A killed sender cannot release its claims, so its batches wait for the 45 s lease and the 60 s queue visibility; whichever sender then takes a batch sends it again. Chunks the dead sender had already sent become one duplicate each (same collapse key, so the phone shows one notification): the documented lease-expiry trade-off.',
+          'A killed sender cannot release its claims, so its batches wait for the 45 s lease and the 60 s queue visibility. Whoever re-claims a multi-chunk batch reads the progress the dead sender recorded per chunk (sender.batch_resumed) and sends only the chunks it had not finished, so duplicates are limited to the chunks that were in flight at the kill (same collapse key, so the phone shows one notification). A single-chunk batch records no progress and is sent again whole.',
+          'The idempotency stand-in implements recordChunk and claimedProgress (the real MemoryIdempotencyStore behind the broker), so the per-chunk resume path is the one that runs.',
         ],
       };
     },
@@ -966,7 +1069,22 @@ async function runDef(
         `t5 ${def.name}: ${fmt(await progress())}/${fmt(expectedTotal)} pushes, queued ${depth.queued}, delayed ${depth.delayed}, in flight ${depth.inflight}`,
       );
     }
-    const drained = status.done && depth.queued + depth.delayed + depth.inflight === 0;
+    // Held dead-target clears are decided by the gate (sample count or its 60 s hold); a re-queue
+    // lands in the queue, so do not call the system drained while one is still undecided.
+    const gates = await Promise.all(
+      h.senders
+        .filter((s) => s.alive)
+        .map((s) =>
+          // A sender killed by the scenario answers with a reset: nothing undecided there.
+          call<{ undecided: boolean }>(s.proc.control, 'GET', '/gate').catch(() => ({
+            undecided: false,
+          })),
+        ),
+    );
+    const drained =
+      status.done &&
+      depth.queued + depth.delayed + depth.inflight === 0 &&
+      gates.every((g) => !g.undecided);
     stable = drained ? stable + 1 : 0;
     if (stable >= 3) break;
   }
@@ -1040,7 +1158,14 @@ export const t5Chaos: SuiteTest = {
     let peak = 0;
     try {
       await h.boot();
-      const defs = buildDefs(sizes);
+      // T5_SCENARIOS=d,e reruns only those scenarios (the clean run always goes first).
+      const only = (process.env['T5_SCENARIOS'] ?? '')
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean);
+      const defs = buildDefs(sizes).filter(
+        (d) => d.key === '0' || only.length === 0 || only.includes(d.key),
+      );
       let cleanElapsedS = 0;
       for (const [i, def] of defs.entries()) {
         const s = await runDef(h, def, i, cleanElapsedS, ctx.log);
