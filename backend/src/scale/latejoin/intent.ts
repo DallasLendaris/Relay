@@ -54,8 +54,28 @@ export function isLateJoinIntent(v: unknown): v is LateJoinIntent {
  * minute of being queued even in a 1M-device fan-out; 5 minutes leaves room for a backlog.
  */
 export const PLAN_WAIT_GIVE_UP_MS = 5 * 60 * 1000;
-/** Delay between two looks while waiting for the planned fan-out. */
+/** The longest delay between two looks while waiting for the planned fan-out (the cap). */
 export const PLAN_WAIT_DELAY_SECONDS = 15;
+/** The delay before the first look again: most waits end within seconds (see planWaitDelaySeconds). */
+export const PLAN_WAIT_FIRST_DELAY_SECONDS = 2;
+
+/**
+ * Delay before deciding a deferred intent again, given how long it has waited so far: half the
+ * time waited, at least `first` and at most `cap` (2, 2, 2, 3, 5, 7, 11, 15, 15 ... s with the
+ * defaults). A device whose planned batch goes out at time T after its first deferral is decided
+ * by about T + max(first, T / 2), never later than T + cap, instead of up to a whole cap late:
+ * a cell's plan record follows its read by seconds and a queued batch is usually sent within
+ * seconds, so a fixed 15 s first delay was most of the wait. Later looks back off to the cap, so
+ * a long wait costs about as many re-runs as before (about 25 in the 5 minute bound instead of 20).
+ */
+export function planWaitDelaySeconds(
+  waitedMs: number,
+  cap: number = PLAN_WAIT_DELAY_SECONDS,
+  first: number = PLAN_WAIT_FIRST_DELAY_SECONDS,
+): number {
+  const half = Math.ceil(Math.max(0, waitedMs) / 2000);
+  return Math.min(cap, MAX_DELAY_SECONDS, Math.max(first, half));
+}
 
 /** How long a paused intent keeps being parked before it is given up on. */
 export const PARK_GIVE_UP_MS = 24 * 60 * 60 * 1000;

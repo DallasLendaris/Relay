@@ -16,6 +16,7 @@ import {
 import { processShard } from '../../../src/scale/fanout/shard-worker.js';
 import {
   PLAN_WAIT_DELAY_SECONDS,
+  PLAN_WAIT_FIRST_DELAY_SECONDS,
   PLAN_WAIT_GIVE_UP_MS,
   processLateJoin,
 } from '../../../src/scale/latejoin/index.js';
@@ -158,7 +159,7 @@ describe('G5: a device registering during an active fan-out gets exactly one pus
       await w.lateJoin(); // the intent runs while the shard is still reading
     };
     await w.plan();
-    expect(w.h.intents.log.at(-1)?.delaySeconds).toBe(PLAN_WAIT_DELAY_SECONDS); // deferred
+    expect(w.h.intents.log.at(-1)?.delaySeconds).toBe(PLAN_WAIT_FIRST_DELAY_SECONDS); // deferred
     expect(lateBatches(w.h)).toEqual([]);
 
     // Planned now (the record has the device), batch still queued: late join keeps waiting.
