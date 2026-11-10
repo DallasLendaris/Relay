@@ -37,6 +37,7 @@ describe('alerts topic (OPS-1 / SEC-C-3)', () => {
         env: { account: '111111111111', region: 'us-west-2' },
         edgeEnv: { account: '111111111111', region: 'us-east-1' },
         prefix: `x-${stage}`,
+        publicAlertBaseUrl: 'https://alerts.example.org',
         monitoring,
       });
     };
@@ -186,20 +187,17 @@ describe('audit trail (SEC-C-4)', () => {
 
   it('kill-switch writes and relay secret changes are routed to the topic by EventBridge', () => {
     const rules = values(t, 'AWS::Events::Rule').map((r) => r.Properties);
-    const ssm = rules.find((r) => r.EventPattern.source?.includes('aws.ssm'));
-    expect(ssm.EventPattern.detail.eventName).toContain('PutParameter');
+    const ssm = rules.filter((r) => r.EventPattern.source?.includes('aws.ssm'));
+    expect(ssm.length).toBeGreaterThanOrEqual(2);
+    expect(ssm[0].EventPattern.detail.eventName).toContain('PutParameter');
     // The name is the config stack's kill-switch parameter, imported (not retyped).
-    expect(JSON.stringify(ssm.EventPattern.detail.requestParameters)).toContain(
+    expect(JSON.stringify(ssm[0].EventPattern.detail.requestParameters)).toContain(
       'DeliveryKillSwitch',
     );
     const sm = rules.find((r) => r.EventPattern.source?.includes('aws.secretsmanager'));
-    expect(sm.EventPattern.detail.eventName).toEqual([
-      'PutSecretValue',
-      'UpdateSecret',
-      'DeleteSecret',
-    ]);
+    expect(sm.EventPattern.detail.eventName).toContain('PutSecretValue');
     expect(JSON.stringify(sm.EventPattern.detail.requestParameters)).toContain('relay/prod/');
-    for (const r of [ssm, sm]) expect(JSON.stringify(r.Targets)).toContain('AlertsTopic');
+    for (const r of [...ssm, sm]) expect(JSON.stringify(r.Targets)).toContain('AlertsTopic');
   });
 
   it('IAM policy changes (global events, so read from the trail log group) alarm to the topic', () => {

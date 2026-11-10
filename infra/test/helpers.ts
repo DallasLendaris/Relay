@@ -16,7 +16,12 @@ const cache = new Map<string, { stacks: Stacks; templates: Templates }>();
 type Options = Partial<
   Pick<
     RelayAppOptions,
-    'throttle' | 'fanoutMode' | 'capacity' | 'monitoring' | 'publicAlertBaseUrl'
+    | 'throttle'
+    | 'fanoutMode'
+    | 'capacity'
+    | 'monitoring'
+    | 'publicAlertBaseUrl'
+    | 'allowNoPublicAlertUrl'
   >
 >;
 
@@ -32,6 +37,8 @@ export function synthApp(stage: 'dev' | 'prod' = 'dev', options: Options = {}) {
     prefix: stage,
     // Prod refuses to synth without an alarm email.
     monitoring: { alarmEmail: 'ops@example.com' },
+    // Prod refuses to synth without the CDN origin (PERF-3).
+    ...(stage === 'prod' ? { publicAlertBaseUrl: 'https://alerts.example.org' } : {}),
     ...options,
   });
   const templates = Object.fromEntries(

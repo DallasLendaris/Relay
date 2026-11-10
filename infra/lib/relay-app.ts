@@ -28,6 +28,12 @@ export interface RelayAppOptions {
   fanoutMode?: FanoutMode;
   /** CDN origin the sender puts in push data (PUBLIC_ALERT_BASE_URL); bin/relay.ts reads `-c publicAlertBaseUrl`. */
   publicAlertBaseUrl?: string;
+  /**
+   * `-c allowNoPublicAlertUrl=true`: lets prod synth without publicAlertBaseUrl. Without the URL,
+   * pushes carry no alertUrl and every phone opens its alert through the API, which is the load the
+   * CDN exists to absorb (PERF-3). Prod therefore refuses to synth without one.
+   */
+  allowNoPublicAlertUrl?: boolean;
   /** Capacity settings (bin/relay.ts reads them from CDK context). All optional; see each stack. */
   capacity?: {
     /** Aurora max ACU (default prod 16, dev 2). */
@@ -69,6 +75,13 @@ export interface RelayAppOptions {
 export function buildRelayApp(app: App, o: RelayAppOptions) {
   const { stage, env, edgeEnv } = o;
   const id = (name: string) => `${o.prefix ?? `relay-${stage}`}-${name}`;
+  if (stage === 'prod' && !o.publicAlertBaseUrl && !o.allowNoPublicAlertUrl) {
+    throw new Error(
+      'prod needs the CDN origin for alert links: pass -c publicAlertBaseUrl=https://alerts.example.org ' +
+        '(or -c allowNoPublicAlertUrl=true to deploy knowing every phone will open alerts through the API, ' +
+        'not the CDN)',
+    );
+  }
 
   const config = new ConfigStack(app, id('config'), {
     env,
@@ -80,6 +93,7 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     env,
     stage,
     killSwitchParamName: config.killSwitchParamName,
+    alertSigningKeyArns: config.alertSigning.verify.map((k) => k.keyArn),
     ...o.monitoring,
   });
   const data = new DataStack(app, id('data'), {
@@ -214,6 +228,7 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     stage,
     apiDomainName: api.apiDomainName,
     originVerifySecretName: config.originVerifySecretName,
+    ...(o.monitoring?.alarmEmail ? { alarmEmail: o.monitoring.alarmEmail } : {}),
     crossRegionReferences: true,
   });
   // The origin-verify secret must have been replicated to the edge region first.
@@ -230,7 +245,8 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
   addDeliveryAlarms(delivery);
 
   // Every CloudWatch alarm notifies the alerts topic; every log group gets the stage's retention.
-  // Edge (us-east-1) has no alarms, and an SNS topic in another region could not serve them.
+  // Edge (us-east-1) has one alarm (WAF) that notifies the edge stack's own SNS topic, because an
+  // alarm cannot notify a topic in another region, so the shared aspect is not applied to it.
   // Config is retention-only: monitoring reads its kill-switch name, so config must not depend on it.
   for (const stack of [data, delivery, fanout, latejoin, api, ingest, sender, monitoring]) {
     applyMonitoring(stack, monitoring, { alarms: true });

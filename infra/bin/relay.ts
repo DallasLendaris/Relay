@@ -37,6 +37,9 @@ if (
   throw new Error('publicAlertBaseUrl must be an https origin such as https://alerts.example.org');
 }
 
+// Prod must name the CDN origin (PERF-3) unless -c allowNoPublicAlertUrl=true says it is deliberate.
+const allowNoPublicAlertUrl = app.node.tryGetContext('allowNoPublicAlertUrl');
+
 // Capacity settings from context, e.g. -c auroraMaxAcu=32 -c apiReservedConcurrency=3000.
 // Prod reserves concurrency by default, sized from -c lambdaConcurrencyQuota (default 1000, the
 // AWS default; raise the real quota first, see docs/scale-quotas.md). Dev stays unreserved.
@@ -94,5 +97,8 @@ buildRelayApp(app, {
   edgeEnv,
   ...(throttle ? { throttle } : {}),
   ...(publicAlertBaseUrl ? { publicAlertBaseUrl: String(publicAlertBaseUrl) } : {}),
+  ...(allowNoPublicAlertUrl !== undefined
+    ? { allowNoPublicAlertUrl: String(allowNoPublicAlertUrl) === 'true' }
+    : {}),
   ...(modeCtx ? { fanoutMode: modeCtx as 'queue' | 'inline' } : {}),
 });

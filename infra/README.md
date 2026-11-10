@@ -100,7 +100,7 @@ The Expo secret starts as a placeholder string. Put the real raw token in with:
 
 ## Kill switch
 
-The parameter `/relay/<stage>/delivery-kill-switch` stops all push delivery. The only valid values are exactly `running` or `paused` (case and surrounding spaces are ignored). **Anything else counts as paused** (a typo such as `pause` or `true` stops delivery instead of leaving it running) and is logged as `killswitch.invalid_value`; a missing parameter means running. If SSM cannot be read, the last good value is used for up to 10 minutes, then the switch fails closed (paused). The planner, shard workers, paused consumer, delivery worker, late-join Lambda and sender re-read it about every 30 seconds.
+The parameter `/relay/<stage>/delivery-kill-switch` stops all push delivery. The only valid values are exactly `running` or `paused` (case and surrounding spaces are ignored). **Anything else counts as paused** (a typo such as `pause` or `true` stops delivery instead of leaving it running) and is logged as `killswitch.invalid_value` (with the metric `KillSwitchInvalidValue`); a missing parameter means running (metric `KillSwitchParameterMissing`, so deleting it is alarmed). If SSM cannot be read, the last good value is used for up to 10 minutes, then the switch fails closed (paused). The planner, shard workers, paused consumer, delivery worker, late-join Lambda and sender re-read it about every 30 seconds.
 
 **Flip:**
 
@@ -125,7 +125,9 @@ While paused, nothing is dropped. The sender stops receiving. The planner and sh
 
 After 24 hours of pause, parked work fails into the **paused DLQ** (alarm `ShardPausedDlqAlarm`). The shard redrive function does NOT cover it. If that alarm fires, move the messages back to the paused queue with SQS's own redrive (console or `aws sqs start-message-move-task`); the paused consumer then resumes them.
 
-Every change to this parameter emails the alerts topic (EventBridge rule on `ssm:PutParameter`), so a flip is never silent.
+Every change to this parameter emails the alerts topic (EventBridge rules on `PutParameter`, `DeleteParameter` and `DeleteParameters`), so a flip is never silent. Deleting it gets its own, louder message, because a missing parameter fails open to running.
+
+**It cannot fail silently either.** Every real SSM read emits metrics (`Relay/Config`, dimension `Source=killswitch`; ingest reads once a minute as a heartbeat). Alarms to the alerts topic: `KillSwitchInvalidValueAlarm` (the value is not `running`/`paused`: check the parameter for a typo), `KillSwitchFailedClosedAlarm` (SSM unreadable and the last good value older than 10 minutes, or never loaded: check SSM throttling/outage and the IAM grant), `KillSwitchParameterMissingAlarm` (parameter deleted: redeploy the config stack), each on a single datapoint in 5 minutes; and `KillSwitchPausedAlarm` when delivery has been paused for about 15 minutes (14 of 15 one-minute periods), which is a reminder when the pause is intentional.
 
 ## Monitoring, alerting and audit trail
 
@@ -135,6 +137,8 @@ The `monitoring` stack owns one SNS topic per stage, `relay-<stage>-alerts`. **E
 
 Prod synth fails without `alarmEmail`, unless `-c allowNoAlarmEmail=true` (alarms then reach nobody).
 
+The edge stack lives in us-east-1 and a CloudWatch alarm can only notify an SNS topic in its own region, so the edge stack has its own topic `relay-<stage>-edge-alerts` for its one alarm (`WafBlockedRequestsAlarm`: 1,000 or more blocked requests in 5 minutes on the web ACL). It subscribes the same `alarmEmail`, and that second subscription needs its own confirmation click.
+
 | Context            | Default              | Meaning                                                                              |
 | ------------------ | -------------------- | ------------------------------------------------------------------------------------ |
 | `alarmEmail`       | none                 | Email subscribed to the alerts topic                                                 |
@@ -142,13 +146,17 @@ Prod synth fails without `alarmEmail`, unless `-c allowNoAlarmEmail=true` (alarm
 | `logRetentionDays` | prod 365, dev 30     | Retention of every Lambda, ECS and trail log group                                   |
 | `monthlyBudgetUsd` | prod 600, dev 50     | AWS Budgets limit; emails at 80% and 100% of actual spend                            |
 
-Alarms: DLQs (delivery, plan, shard, urgent, standard, aggregator, index repair), ingest errors, fetch failures and quarantines; sender running tasks below desired for 3 minutes (also the deployment-rollback alarm), `PermanentBreakerOpen`, `GaveUp`, `DeadTargetDropped`, urgent queue age; planner and shard Lambda `Errors`; plan and standard queue age over 120 s; aggregator `IteratorAge` over 60 s; and `delivery.signature_failed` / `fanout.signature_failed` log counts.
+Alarms: DLQs (delivery, plan, shard, urgent, standard, aggregator, index repair), ingest errors, fetch failures and quarantines; sender running tasks below desired for 3 minutes (also the deployment-rollback alarm), `PermanentBreakerOpen`, `GaveUp`, `DeadTargetDropped`, urgent queue age; planner and shard Lambda `Errors`; plan and standard queue age over 120 s; aggregator `IteratorAge` over 60 s; `delivery.signature_failed` / `fanout.signature_failed` log counts; the kill-switch alarms above; `IngestFeedStaleAlarm` (no successful NWS poll, a 200 or 304, for 10 minutes; the poller runs every minute and missing data counts as breaching); and the WAF blocked-requests alarm. Not alarmed yet: Aurora resume latency after a pause, and planned-versus-sent recipient counts per alert.
 
-**Audit trail.** A multi-region CloudTrail trail with log file validation writes to an encrypted, versioned bucket (kept 1 year, retained when the stack is deleted) and to a log group. EventBridge reports to the topic: writes or deletes of the kill-switch parameter, `PutSecretValue`/`UpdateSecret`/`DeleteSecret` on any `relay/<stage>/` secret, and GuardDuty findings of severity 7 or higher. IAM policy changes are reported by an alarm on the trail's log group (IAM is a global service whose events EventBridge only sees in us-east-1), excluding CloudFormation's own changes.
+**Audit trail.** A multi-region CloudTrail trail with log file validation writes to an encrypted, versioned bucket (kept 1 year, retained when the stack is deleted) and to a log group. EventBridge reports to the topic: writes or deletes of the kill-switch parameter, every change to any `relay/<stage>/` secret (`PutSecretValue`, `UpdateSecret`, `DeleteSecret`, `RotateSecret`, `RestoreSecret`, `PutResourcePolicy`, `DeleteResourcePolicy`, `ReplicateSecretToRegions`; the Aurora admin secret is named `relay/<stage>/db/relay_admin` so it is covered, and a test checks every secret's name), events on the alert-signing KMS keys and aliases (`ScheduleKeyDeletion`, `CancelKeyDeletion`, `DisableKey`, `EnableKey`, `PutKeyPolicy`, `CreateGrant`, and `CreateAlias`/`UpdateAlias`/`DeleteAlias`), and GuardDuty findings of severity 7 or higher. IAM policy changes are reported by an alarm on the trail's log group (IAM is a global service whose events EventBridge only sees in us-east-1), excluding CloudFormation's own changes.
 
 **Cost.** One AWS Budgets budget per stage. On prod, also a Cost Anomaly Detection monitor per AWS service with an immediate SNS subscription. The budget has no tag filter (it needs the `stage` cost allocation tag activated); if dev and prod share an account, each budget sees the account total.
 
 ## Deploying safely
+
+**Prod needs the CDN origin.** Prod synth fails without `-c publicAlertBaseUrl=https://alerts.example.org` (like `alarmEmail`). Without it pushes carry no `alertUrl`, every phone opens its alert through the API, and the CDN does nothing at the moment of an alert. `-c allowNoPublicAlertUrl=true` is the explicit escape for a deploy that really wants that. Example prod deploy:
+
+    npx cdk deploy --all -c stage=prod -c alarmEmail=oncall@example.com -c publicAlertBaseUrl=https://alerts.example.org
 
 Prod runs the sender fleet by default (`senderEnabled` defaults to true when `stage=prod`), so a deploy that forgets a flag cannot scale delivery to zero. Turning prod's fleet off needs both `-c senderEnabled=false -c iUnderstandSenderStops=true`; with only the first, synth fails. A bad image rolls back: the ECS circuit breaker plus a deployment alarm on running tasks below desired. The first prod deploy needs the explicit off switch once, because the APNs and FCM secrets hold placeholders until you fill them in (see "Sender stack").
 
@@ -200,7 +208,7 @@ Each DLQ message is re-invoked asynchronously on the shard function and deleted 
 
 The sender fleet (Fargate, 1 vCPU / 2 GB tasks) runs by default on prod and is off by default on dev. The APNs and FCM secrets are created with placeholder values and a sender that boots with them crash-loops, so the first deploy of a stage keeps the fleet off:
 
-1. Prod: `npx cdk deploy ... -c stage=prod -c alarmEmail=... -c senderEnabled=false -c iUnderstandSenderStops=true`. Dev: no flag. Everything is created; the sender service has desiredCount 0 and no auto scaling.
+1. Prod: `npx cdk deploy ... -c stage=prod -c alarmEmail=... -c publicAlertBaseUrl=https://alerts.example.org -c senderEnabled=false -c iUnderstandSenderStops=true`. Dev: no flag. Everything is created; the sender service has desiredCount 0 and no auto scaling.
 2. Put the real values in `relay/<stage>/apns-key` and `relay/<stage>/fcm-service-account` (`aws secretsmanager put-secret-value`).
 3. Prod: deploy again with no sender flags. Dev: `-c senderEnabled=true`. The fleet starts. Prod keeps at least 10 tasks (override with `-c senderMinTasks=<n>`) and scales to 100 on queue depth (1-minute periods, aggressive steps) and urgent queue age; it scales in only after 15 idle minutes. Dev scales from 0 to 10.
 

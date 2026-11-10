@@ -107,6 +107,7 @@ const METRICS = [
   'Quarantined',
   'UnknownZones',
   'PublishFailed',
+  'PollsOk',
 ] as const;
 
 /**
@@ -136,6 +137,9 @@ export function buildEmf(polls: PollCounts[], now: Date = new Date()): Record<st
     Quarantined: sum((c) => c.quarantined),
     UnknownZones: sum((c) => c.unknownZones),
     PublishFailed: sum((c) => c.publishFailed),
+    // Polls that reached NWS and got an answer (200 or 304). Not a fetch error, not skipped for
+    // pacing. The "feed stale" alarm fires when this is 0 for 10 minutes.
+    PollsOk: sum((c) => (c.fetchFailed === 0 && c.throttled === 0 ? 1 : 0)),
   };
 }
 
@@ -274,6 +278,9 @@ export const handler = async (
 ): Promise<{ polls: PollCounts[] }> => {
   runtime ??= buildRuntime(process.env);
   const { env, stores, secrets, kms, signer } = runtime;
+  // Heartbeat: one (cached, never throwing) kill-switch read per invocation, so its metrics
+  // (paused / invalid / failed closed) are reported every minute even when no alert arrives.
+  await stores.isDeliveryPaused();
   // loadKeyring caches for 5 minutes, so a rotated secret is picked up while warm. Alert public
   // keys are fetched from KMS once per container; signing calls KMS once per saved alert.
   const [publicKeys, tokenKeys] = await Promise.all([

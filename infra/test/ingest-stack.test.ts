@@ -106,7 +106,7 @@ describe('IngestStack', () => {
       Period: 300,
       TreatMissingData: 'notBreaching',
     });
-    t.resourceCountIs('AWS::CloudWatch::Alarm', 5); // the original Lambda Errors alarm stays
+    t.resourceCountIs('AWS::CloudWatch::Alarm', 6); // Lambda Errors, the four custom ones and the feed-stale alarm
   });
 
   it('retains data and enables PITR on prod, destroys on dev', () => {

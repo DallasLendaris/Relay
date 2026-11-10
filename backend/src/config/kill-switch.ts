@@ -1,6 +1,17 @@
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import { configMetric, errorName, logStaleServed } from './stale.js';
 
+/**
+ * EMF metrics (namespace Relay/Config, dimension Source=killswitch), emitted on every real SSM
+ * read (not on cache hits), so alarms can tell a quiet pause from a broken switch:
+ * - KillSwitchPaused: gauge, 1 when the read decided "paused" for any reason, else 0.
+ * - KillSwitchInvalidValue: count; the parameter held something other than running/paused.
+ * - KillSwitchFailedClosed: count; SSM was unreadable and no value younger than the stale limit
+ *   existed (never loaded, or expired), so delivery was paused by default.
+ * - KillSwitchParameterMissing: count; the parameter does not exist (treated as running).
+ */
+export const KILL_SWITCH_METRIC_SOURCE = 'killswitch';
+
 /** How long a read is cached; a ShardJob's passed-in kill-switch value is trusted for the same time. */
 export const KILL_SWITCH_TTL_MS = 30 * 1000;
 const TTL_MS = KILL_SWITCH_TTL_MS;
@@ -65,18 +76,22 @@ export function createKillSwitch(
             length: raw?.length ?? 0,
           }),
         );
-        console.log(configMetric('KillSwitchInvalidValue', 'killswitch', t));
+        console.log(configMetric('KillSwitchInvalidValue', KILL_SWITCH_METRIC_SOURCE, t));
       }
+      console.log(configMetric('KillSwitchPaused', KILL_SWITCH_METRIC_SOURCE, t, paused ? 1 : 0));
       cached = { at: now(), paused };
       return paused;
     } catch (err) {
       if ((err as { name?: string }).name === 'ParameterNotFound') {
+        console.warn(JSON.stringify({ level: 'warn', msg: 'killswitch.parameter_missing' }));
+        console.log(configMetric('KillSwitchParameterMissing', KILL_SWITCH_METRIC_SOURCE, t));
+        console.log(configMetric('KillSwitchPaused', KILL_SWITCH_METRIC_SOURCE, t, 0));
         cached = { at: now(), paused: false };
         return false;
       }
       if (cached && t - cached.at < staleMs) {
         cached = { ...cached, retryAt: t + RETRY_MS };
-        logStaleServed('killswitch', t - cached.at, err, t);
+        logStaleServed(KILL_SWITCH_METRIC_SOURCE, t - cached.at, err, t);
         return cached.paused;
       }
       console.error(
@@ -86,6 +101,8 @@ export function createKillSwitch(
           error: errorName(err),
         }),
       );
+      console.log(configMetric('KillSwitchFailedClosed', KILL_SWITCH_METRIC_SOURCE, t));
+      console.log(configMetric('KillSwitchPaused', KILL_SWITCH_METRIC_SOURCE, t, 1));
       return true;
     }
   }
