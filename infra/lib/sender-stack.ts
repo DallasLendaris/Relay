@@ -1,5 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import {
+  Arn,
+  ArnFormat,
   CfnOutput,
   Duration,
   RemovalPolicy,
@@ -93,6 +95,23 @@ export const SENDER_MAX_TASKS = SENDER_MAX_TASKS_PROD;
 export const SENDER_MIN_TASKS_PROD = 10;
 /** Context: override the prod minimum task count (default 10). */
 export const SENDER_MIN_TASKS_CONTEXT = 'senderMinTasks';
+/**
+ * Context: per-Firebase-project send budget for the whole sender fleet, per second (default 9,000,
+ * under the ~10,000/s quota). Each task sends budget / running tasks (FCM_PROJECT_FLEET_RATE_PER_SEC).
+ */
+export const FCM_PROJECT_FLEET_RATE_CONTEXT = 'fcmProjectFleetRatePerSec';
+export const FCM_PROJECT_FLEET_RATE_DEFAULT = 9_000;
+
+function fcmProjectFleetRate(scope: Construct): number {
+  const raw = scope.node.tryGetContext(FCM_PROJECT_FLEET_RATE_CONTEXT);
+  if (raw === undefined) return FCM_PROJECT_FLEET_RATE_DEFAULT;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`context ${FCM_PROJECT_FLEET_RATE_CONTEXT} must be a positive number`);
+  }
+  return n;
+}
+
 /** Scale in only after this many consecutive idle minutes. */
 export const SENDER_IDLE_MINUTES_BEFORE_SCALE_IN = 15;
 /** Context flag: when "true" the image comes from a public base image instead of building the Dockerfile. */
@@ -251,6 +270,10 @@ export class SenderStack extends Stack {
         KILL_SWITCH_PARAM: props.killSwitchParamName,
         APNS_KEY_SECRET_ARN: apnsSecret.secretArn,
         FCM_SERVICE_ACCOUNT_SECRET_ARN: fcmSecret.secretArn,
+        // The sender counts its own fleet (ecs:DescribeServices) to split the FCM budget.
+        ECS_CLUSTER: senderClusterName(props.stage),
+        ECS_SERVICE: senderServiceName(props.stage),
+        FCM_PROJECT_FLEET_RATE_PER_SEC: String(fcmProjectFleetRate(this)),
         ...(props.publicAlertBaseUrl ? { PUBLIC_ALERT_BASE_URL: props.publicAlertBaseUrl } : {}),
         ...(projectIds.length > 0 ? { FCM_PROJECT_IDS: projectIds.join(',') } : {}),
       },
@@ -285,6 +308,21 @@ export class SenderStack extends Stack {
     // Verify only: the sender fetches the alert public key once and never holds kms:Sign.
     taskDef.taskRole.addToPrincipalPolicy(alertVerifyStatement(props.alertSigning));
     allow(['ssm:GetParameter'], [props.killSwitchParamArn]);
+    // Read the running task count of its own service (FCM fleet rate); a built ARN, no cycle.
+    allow(
+      ['ecs:DescribeServices'],
+      [
+        Arn.format(
+          {
+            service: 'ecs',
+            resource: 'service',
+            resourceName: `${senderClusterName(props.stage)}/${senderServiceName(props.stage)}`,
+            arnFormat: ArnFormat.SLASH_RESOURCE_NAME,
+          },
+          this,
+        ),
+      ],
+    );
 
     const enabled = isSenderEnabled(this, props.stage);
 
