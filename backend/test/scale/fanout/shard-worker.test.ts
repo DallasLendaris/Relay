@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Alert } from '@relay/shared';
 import { alertEndTime } from '../../../src/delivery/eligibility.js';
 import { CELL_BUCKETS, type SendBatch, type ShardJob } from '../../../src/scale/contracts.js';
-import { bucketFor } from '../../../src/scale/fanout/hash.js';
+import { bucketFor, densePartFor } from '../../../src/scale/fanout/hash.js';
 import { MAX_MESSAGE_BYTES } from '../../../src/scale/fanout/pack.js';
 import { processShard } from '../../../src/scale/fanout/shard-worker.js';
 import { countyCells, entry, fakeToken, setup, signed } from './helpers.js';
@@ -192,10 +192,36 @@ describe('processShard', () => {
     expect(sendQueue.batches('urgent').flatMap((b) => b.recipients)).toHaveLength(30_040);
   });
 
-  it('splits a single bucket too big for one message, with deterministic keys', async () => {
+  it('a bucket too big for one message makes the cell dense: stable part keys, no halving', async () => {
     const alert = signed();
     const { deps, cellIndex, sendQueue, lines } = setup(alert);
-    // Find ids that all land in bucket 5: one oversized bucket.
+    // UUID-like ids that all land in bucket 5: one oversized bucket in a small cell.
+    let n = 0;
+    const ids: string[] = [];
+    while (ids.length < 1_800) {
+      const id = `${(n++ * 2654435761).toString(16).padStart(8, '0').slice(-8)}-0000-4000-8000-000000000000`;
+      if (bucketFor(id) === 5) ids.push(id);
+    }
+    for (const id of ids) cellIndex.add(entry(CELL_A, id));
+    const r = await processShard(jobFor(alert, [CELL_A]), deps);
+    expect(r.denseCells).toBe(1);
+    const batches = sendQueue.batches('urgent');
+    expect(batches.length).toBeGreaterThan(1);
+    for (const b of batches) {
+      const part = densePartFor(b.recipients[0]?.deviceId as string);
+      expect(b.batchKey).toBe(`${keyOf(alert, CELL_A, 5)}.${part}/16`);
+      for (const rcp of b.recipients) expect(densePartFor(rcp.deviceId)).toBe(part);
+    }
+    expect(batches.flatMap((b) => b.recipients)).toHaveLength(1_800);
+    for (const m of sendQueue.messages.urgent) {
+      expect(Buffer.byteLength(m)).toBeLessThanOrEqual(MAX_MESSAGE_BYTES);
+    }
+    expect(lines.some((l) => l.msg === 'splitting oversize batch')).toBe(false);
+  });
+
+  it('halves a dense part that is still over budget (non-hex ids: one part), as a last resort', async () => {
+    const alert = signed();
+    const { deps, cellIndex, sendQueue, lines } = setup(alert);
     let n = 0;
     const ids: string[] = [];
     while (ids.length < 1_800) {
@@ -206,7 +232,10 @@ describe('processShard', () => {
     await processShard(jobFor(alert, [CELL_A]), deps);
     const batches = sendQueue.batches('urgent');
     expect(batches.length).toBeGreaterThan(1);
-    expect(batches.every((b) => b.batchKey.startsWith(`${keyOf(alert, CELL_A, 5)}:s`))).toBe(true);
+    // 'b' is part 11; the part is halved into `:s<path>` keys.
+    expect(batches.every((b) => b.batchKey.startsWith(`${keyOf(alert, CELL_A, 5)}.11/16:s`))).toBe(
+      true,
+    );
     expect(batches.flatMap((b) => b.recipients)).toHaveLength(1_800);
     for (const m of sendQueue.messages.urgent) {
       expect(Buffer.byteLength(m)).toBeLessThanOrEqual(MAX_MESSAGE_BYTES);

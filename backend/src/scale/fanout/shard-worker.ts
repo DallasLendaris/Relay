@@ -1,10 +1,20 @@
 import { KILL_SWITCH_TTL_MS } from '../../config/kill-switch.js';
-import { alertEndTime } from '../../delivery/eligibility.js';
-import { CELL_BUCKETS, type CellIndex, type SendBatch, type SendQueue } from '../contracts.js';
+import { alertEndTime, claimExpiry } from '../../delivery/eligibility.js';
+import type { IdempotencyStore } from '../../ports.js';
+import type { Alert } from '@relay/shared';
+import {
+  BATCH_BYTE_BUDGET,
+  CELL_BUCKETS,
+  DENSE_CELL_RECIPIENTS,
+  DENSE_PARTS,
+  type CellIndex,
+  type SendBatch,
+  type SendQueue,
+} from '../contracts.js';
 import { checkEligibility, type EligibilityDeps, type FanoutRefusal } from './common.js';
-import { bucketFor } from './hash.js';
+import { bucketFor, densePartFor } from './hash.js';
 import type { ResumableShardJob } from './messages.js';
-import { MAX_MESSAGE_BYTES } from './pack.js';
+import { splitToFit } from './pack.js';
 import { isPrimaryCell } from './primary-cell.js';
 import type { ShardDispatcher } from './queues.js';
 
@@ -13,12 +23,25 @@ export interface ShardWorkerDeps extends EligibilityDeps {
   sendQueue: SendQueue;
   /** Signed check-in token with the cell bound in (token v2). */
   makeCheckInToken(alertId: string, deviceId: string, h3Cell: string, expiresAt: Date): string;
+  /**
+   * The sender's idempotency store, used only for dense cells: before a dense cell's part batches
+   * go out, each bucket's normal key is tombstoned (see contracts.ts DENSE_CELL_RECIPIENTS). Absent
+   * (old wiring, tests): dense cells still send, logged as an error, and a tier change between two
+   * plans of one alert version could then double-send those buckets.
+   */
+  idempotency?: Required<Pick<IdempotencyStore, 'claim' | 'markSent' | 'peek'>>;
   /** Cells processed at the same time. Default 16. */
   cellConcurrency?: number;
   /** Cell-index page size. Default 1,000. */
   pageSize?: number;
   /** Batches held before they are handed to the send queue. Default 200. */
   flushBatches?: number;
+  /** Or recipients held in those batches. Default 5,000. */
+  flushRecipients?: number;
+  /** Recipients above which a cell is dense. Default DENSE_CELL_RECIPIENTS. */
+  denseCellRecipients?: number;
+  /** Serialized-size budget of one batch. Default BATCH_BYTE_BUDGET. */
+  maxBatchBytes?: number;
   /**
    * Milliseconds left before the Lambda is killed. With `continuation` set, the worker stops
    * taking new cells when this drops under `continueUnderMs` and hands the rest to a new job.
@@ -44,6 +67,12 @@ export interface ShardResult {
   /** Recipients across all batches. */
   recipients: number;
   batches: number;
+  /** Cells sent in dense parts (DENSE_CELL_RECIPIENTS). */
+  denseCells: number;
+  /** Dense-cell buckets skipped because an earlier plan's normal batch already covered them. */
+  coveredBuckets: number;
+  /** Most recipients held in memory at once (cell buffers plus unflushed batches). */
+  peakBufferedRecipients: number;
   /** Set when time ran short: the `startAt` of the continuation job that was dispatched. */
   continuedAt?: number;
 }
@@ -53,8 +82,10 @@ const CONTINUE_UNDER_MS = 10_000;
 const CELL_CONCURRENCY = 16;
 const PAGE_SIZE = 1_000;
 const FLUSH_BATCHES = 200;
-/** Headroom under MAX_MESSAGE_BYTES for the array brackets and a single-batch message. */
-const OVERSIZE_LIMIT = MAX_MESSAGE_BYTES - 1_024;
+/** Also flush once this many recipients wait (dense parts make many small batches quickly). */
+const FLUSH_RECIPIENTS = 5_000;
+/** How long the shard worker holds a bucket's normal key while it tombstones it. */
+const TOMBSTONE_LEASE_MS = 30_000;
 
 /**
  * The job's kill-switch value if it is fresh (younger than the worker's own cache TTL), else
@@ -75,15 +106,75 @@ const emptyResult = (cells: number): ShardResult => ({
   duplicates: 0,
   recipients: 0,
   batches: 0,
+  denseCells: 0,
+  coveredBuckets: 0,
+  peakBufferedRecipients: 0,
 });
+
+type Recipient = SendBatch['recipients'][number];
+
+/**
+ * A cheap size estimate of a batch's recipients in JSON (string lengths plus the field names).
+ * Never below half the real size for ASCII ids and tokens, which is all it is used for.
+ */
+function roughBytes(recipients: Recipient[]): number {
+  let n = 300;
+  for (const r of recipients) {
+    n +=
+      110 +
+      r.deviceId.length +
+      r.target.token.length +
+      (r.target.project?.length ?? 0) +
+      r.checkInToken.length;
+  }
+  return n;
+}
+
+const byDeviceId = (a: Recipient, b: Recipient): number =>
+  a.deviceId < b.deviceId ? -1 : a.deviceId > b.deviceId ? 1 : 0;
+
+/** The key of a normal cell's bucket, which is also the tombstone of a dense cell's bucket. */
+export const bucketKey = (
+  alert: Pick<Alert, 'id' | 'relaySeverity'>,
+  h3Cell: string,
+  bucket: number,
+): string => `${alert.id}:${alert.relaySeverity}:${h3Cell}:${bucket}`;
+
+/** The key of one part of one bucket of a dense cell. */
+export const densePartKey = (
+  alert: Pick<Alert, 'id' | 'relaySeverity'>,
+  h3Cell: string,
+  bucket: number,
+  part: number,
+): string => `${bucketKey(alert, h3Cell, bucket)}.${part}/${DENSE_PARTS}`;
+
+/** Marks that a dense plan (not a normal batch) owns this bucket's tombstone. */
+export const denseMarkerKey = (normalKey: string): string => `${normalKey}:dense`;
+
+/** Thrown after a shard finished all it could, when some dense bucket's tombstone was contended. */
+export class DenseBucketContendedError extends Error {
+  constructor(readonly buckets: number) {
+    super(`${buckets} dense bucket(s) are held by another attempt; the shard will retry`);
+    this.name = 'DenseBucketContendedError';
+  }
+}
 
 /**
  * Builds and enqueues every SendBatch for one ShardJob.
  *
- * Per cell, the cell index is paged and devices are bucketed with fnv1a32(deviceId) % CELL_BUCKETS,
- * giving one SendBatch per non-empty (cell, bucket): `${alertId}:${severity}:${cell}:${bucket}`.
- * Batch keys depend only on the alert, the cell and the bucket, so re-planning, or SQS retrying
- * this job after a crash partway, re-enqueues identical keys and the sender's claims make that safe.
+ * Normal cells: the cell index is paged and devices are bucketed with fnv1a32(deviceId) %
+ * CELL_BUCKETS, giving one SendBatch per non-empty (cell, bucket):
+ * `${alertId}:${severity}:${cell}:${bucket}`. Batch keys depend only on the alert, the cell and the
+ * bucket, so re-planning, or a retry of this job after a crash partway, re-enqueues identical keys
+ * and the sender's claims make that safe.
+ *
+ * Dense cells (more than DENSE_CELL_RECIPIENTS recipients, or a bucket over the byte budget): each
+ * bucket is split into DENSE_PARTS parts by densePartFor(deviceId), key `...:${bucket}.${part}/16`.
+ * The cell index returns a cell sorted by deviceId and densePartFor is monotone in that order, so
+ * the worker streams: it holds only the part being read, emits it when the next part starts, and
+ * never holds more than about DENSE_CELL_RECIPIENTS recipients for any one cell. Before the first
+ * part goes out, every bucket's normal key is tombstoned (tombstoneDenseCell), which keeps a tier
+ * change between plans exactly-once (contracts.ts).
  *
  * Cross-cell duplicates: a device with saved places in several cells of one alert area has an entry
  * in each. Every entry carries the device's full `deviceCells`, and only the entry in the
@@ -110,23 +201,139 @@ export async function processShard(
   const concurrency = deps.cellConcurrency ?? CELL_CONCURRENCY;
   const pageSize = deps.pageSize ?? PAGE_SIZE;
   const flushAt = deps.flushBatches ?? FLUSH_BATCHES;
+  const flushRecipients = deps.flushRecipients ?? FLUSH_RECIPIENTS;
+  const denseAt = deps.denseCellRecipients ?? DENSE_CELL_RECIPIENTS;
+  const maxBytes = deps.maxBatchBytes ?? BATCH_BYTE_BUDGET;
+
+  // Memory accounting: recipients held in cell buffers plus unflushed batches.
+  let buffered = 0;
+  const hold = (n: number): void => {
+    buffered += n;
+    if (buffered > result.peakBufferedRecipients) result.peakBufferedRecipients = buffered;
+  };
 
   // Batches from many (often sparse) cells are pooled so messages fill up to
   // MAX_BATCHES_PER_MESSAGE; the send queue packs them by measured size.
   let pending: SendBatch[] = [];
+  let pendingRecipients = 0;
   const flush = async (force: boolean): Promise<void> => {
-    if (pending.length === 0 || (!force && pending.length < flushAt)) return;
+    if (
+      pending.length === 0 ||
+      (!force && pending.length < flushAt && pendingRecipients < flushRecipients)
+    ) {
+      return;
+    }
     const toSend = pending;
+    const n = pendingRecipients;
     pending = [];
-    await deps.sendQueue.enqueue(queue, toSend);
+    pendingRecipients = 0;
+    try {
+      await deps.sendQueue.enqueue(queue, toSend);
+    } finally {
+      buffered -= n;
+    }
   };
+  /**
+   * Queues one batch (its recipients stay counted in `buffered` until flushed). With `measure`, a
+   * batch still over the byte budget is halved (pathological: see splitToFit).
+   */
+  const emit = (batch: SendBatch, measure: boolean): void => {
+    let pieces: SendBatch[] = [batch];
+    if (measure && batch.recipients.length > 1 && roughBytes(batch.recipients) > maxBytes / 2) {
+      pieces = splitToFit(batch, maxBytes);
+      if (pieces.length > 1) {
+        deps.logger.warn('splitting oversize batch', {
+          batchKey: batch.batchKey,
+          recipients: batch.recipients.length,
+          parts: pieces.length,
+        });
+      }
+    }
+    for (const b of pieces) {
+      pending.push(b);
+      pendingRecipients += b.recipients.length;
+      result.batches++;
+      result.recipients += b.recipients.length;
+    }
+  };
+  const bytesOf = (b: SendBatch): number => Buffer.byteLength(JSON.stringify(b), 'utf8');
+
+  const makeBatch = (batchKey: string, recipients: Recipient[]): SendBatch => ({
+    alertId: alert.id,
+    sourceId: alert.sourceId,
+    relaySeverity: alert.relaySeverity,
+    batchKey,
+    recipients: recipients.sort(byDeviceId),
+    attempt: 0,
+  });
 
   // When one cell fails, the others stop at their next step so a dead attempt does not keep
   // sending while the retry starts.
   let failed = false;
+  let contended = 0;
+
   const doCell = async (h3Cell: string): Promise<void> => {
-    const buckets = new Map<number, SendBatch['recipients']>();
-    const seen = new Set<string>();
+    // Normal mode: bucket -> recipients for the whole cell. Dense mode: (bucket -> recipients) for
+    // the current part only; `emitBucket[b]` says whether bucket b's parts are sent at all.
+    let buckets = new Map<number, Recipient[]>();
+    let held = 0; // recipients in `buckets`
+    let seen = new Set<string>();
+    let dense: { part: number; emitBucket: boolean[] } | undefined;
+
+    const release = (n: number): void => {
+      held -= n;
+      buffered -= n;
+    };
+
+    /** Emits the current dense part and frees it. */
+    const emitPart = (part: number): void => {
+      if (!dense) return;
+      for (let bucket = 0; bucket < CELL_BUCKETS; bucket++) {
+        const recipients = buckets.get(bucket);
+        if (!recipients || recipients.length === 0) continue;
+        if (dense.emitBucket[bucket]) {
+          emit(makeBatch(densePartKey(alert, h3Cell, bucket, part), recipients), true);
+          // Recipients move to `pending` (still counted in `buffered` until flushed).
+          held -= recipients.length;
+        } else {
+          release(recipients.length);
+        }
+      }
+      buckets = new Map();
+    };
+
+    /** Switches this cell to dense parts: tombstones its buckets, emits the parts already read. */
+    const goDense = async (): Promise<void> => {
+      const emitBucket = await tombstoneDenseCell(alert, h3Cell, deps);
+      result.denseCells++;
+      result.coveredBuckets += emitBucket.filter((e) => e === 'covered').length;
+      contended += emitBucket.filter((e) => e === 'contended').length;
+      dense = { part: -1, emitBucket: emitBucket.map((e) => e === 'emit') };
+      deps.logger.info('fanout.dense_cell', { alertId: alert.id, h3Cell, recipientsSoFar: held });
+      // Regroup what was read so far by part. The stream is sorted, so every part but the highest
+      // seen is complete and goes out now.
+      const all = [...buckets.values()].flat();
+      buckets = new Map();
+      all.sort(byDeviceId);
+      let i = 0;
+      while (i < all.length) {
+        const part = densePartFor((all[i] as Recipient).deviceId);
+        let j = i;
+        while (j < all.length && densePartFor((all[j] as Recipient).deviceId) === part) {
+          const r = all[j] as Recipient;
+          const bucket = bucketFor(r.deviceId);
+          let list = buckets.get(bucket);
+          if (!list) buckets.set(bucket, (list = []));
+          list.push(r);
+          j++;
+        }
+        dense.part = part;
+        if (j < all.length) emitPart(part);
+        i = j;
+      }
+      await flush(false);
+    };
+
     let cursor: string | undefined;
     do {
       if (failed) return;
@@ -142,6 +349,19 @@ export async function processShard(
           result.skippedNonPrimary++;
           continue;
         }
+        if (dense) {
+          const part = densePartFor(entry.deviceId);
+          if (part < dense.part) {
+            // The stream is not sorted by deviceId: emitted parts would be incomplete. Never
+            // happens with DynamoDB (sk order); fail loudly rather than skip or double-send.
+            throw new Error(`cell index for ${h3Cell} is not in deviceId order`);
+          }
+          if (part > dense.part) {
+            emitPart(dense.part);
+            dense.part = part;
+            seen = new Set(); // a device's entries are all in one part
+          }
+        }
         if (seen.has(entry.deviceId)) {
           result.duplicates++;
           continue;
@@ -156,27 +376,37 @@ export async function processShard(
           language: entry.language,
           checkInToken: deps.makeCheckInToken(alert.id, entry.deviceId, h3Cell, expiresAt),
         });
+        held++;
+        hold(1);
       }
+      if (!dense && held > denseAt) await goDense();
+      if (dense) await flush(false);
     } while (cursor);
+    if (failed) return;
 
-    for (let bucket = 0; bucket < CELL_BUCKETS; bucket++) {
-      const recipients = buckets.get(bucket);
-      if (!recipients || recipients.length === 0) continue;
-      recipients.sort((a, b) => (a.deviceId < b.deviceId ? -1 : a.deviceId > b.deviceId ? 1 : 0));
-      const batch: SendBatch = {
-        alertId: alert.id,
-        sourceId: alert.sourceId,
-        relaySeverity: alert.relaySeverity,
-        batchKey: `${alert.id}:${alert.relaySeverity}:${h3Cell}:${bucket}`,
-        recipients,
-        attempt: 0,
-      };
-      if (failed) return;
-      for (const b of splitIfOversize(batch, batch.batchKey, deps)) {
-        pending.push(b);
-        result.batches++;
-        result.recipients += b.recipients.length;
+    let normal: SendBatch[] = [];
+    if (!dense) {
+      for (let bucket = 0; bucket < CELL_BUCKETS; bucket++) {
+        const recipients = buckets.get(bucket);
+        if (recipients && recipients.length > 0) {
+          normal.push(makeBatch(bucketKey(alert, h3Cell, bucket), recipients));
+        }
       }
+      // A cell under the dense size whose bucket would still not fit the budget goes dense too.
+      // Exact measuring is a full serialization, so only for batches a cheap estimate puts near it.
+      if (normal.some((b) => roughBytes(b.recipients) > maxBytes / 2 && bytesOf(b) > maxBytes)) {
+        normal = [];
+        await goDense();
+      }
+    }
+    if (dense) {
+      emitPart(dense.part);
+    } else {
+      for (const b of normal) {
+        emit(b, false); // measured just above
+        held -= b.recipients.length;
+      }
+      buckets = new Map();
     }
     await flush(false);
   };
@@ -207,6 +437,17 @@ export async function processShard(
   await Promise.all(Array.from({ length: Math.min(concurrency, job.cells.length) }, worker));
   await flush(true);
 
+  if (contended > 0) {
+    // Everything else went out. A retry of the whole job re-sends identical keys (deduped by the
+    // sender) and settles these buckets once the other attempt has finished or its lease ran out.
+    deps.logger.warn('fanout.dense_bucket_contended', {
+      alertId: alert.id,
+      shardId: job.shardId,
+      buckets: contended,
+    });
+    throw new DenseBucketContendedError(contended);
+  }
+
   // Every cell pulled so far has finished (the pool is joined above), so `next` is exactly the
   // first cell not yet done: the continuation neither skips nor repeats a cell.
   if (outOfTime && next < job.cells.length && deps.continuation) {
@@ -231,36 +472,45 @@ export async function processShard(
   return result;
 }
 
+type BucketFate = 'emit' | 'covered' | 'contended';
+
 /**
- * Normal batches (about 300 recipients) are far below the message limit. If a bucket is so large
- * that one batch alone would not fit in a message (a cell with 100,000+ devices), halve it
- * until it fits; the halves get deterministic keys `<batchKey>:s<path>` (path = 0/1 digits).
- * Pathological and logged. Keys inside such a bucket can shift if devices are added.
+ * Takes over every bucket of a dense cell from the normal tier, so a tier change between two plans
+ * of the same alert version neither double-sends nor skips (contracts.ts DENSE_CELL_RECIPIENTS).
+ * Per bucket, with N its normal key and D = `${N}:dense`:
+ *  - claim(N) wins: mark D sent, then N sent (the tombstone: a queued normal batch for N is now a
+ *    duplicate to the sender, and late join reads N as planned). Emit the parts.
+ *  - N is taken and D is sent: an earlier dense plan of this alert did the above. Emit the parts
+ *    again (same keys; the sender dedupes them).
+ *  - N is sent and D is not: a normal batch was sent for this bucket. 'covered': emit nothing.
+ *  - N is leased and D is not: a sender is sending the normal batch, or another dense attempt is
+ *    between its claim and its mark. 'contended': nothing now, the shard is retried.
+ * D is marked before N: a crash between the two can only lead to a duplicate later, never a miss.
  */
-function splitIfOversize(
-  batch: SendBatch,
-  base: string,
+async function tombstoneDenseCell(
+  alert: Alert,
+  h3Cell: string,
   deps: ShardWorkerDeps,
-  path = '',
-): SendBatch[] {
-  // Measuring costs a full serialization, so only look at batches that could be big.
-  if (batch.recipients.length <= 200) return [batch];
-  const bytes = Buffer.byteLength(JSON.stringify(batch), 'utf8');
-  if (bytes <= OVERSIZE_LIMIT || batch.recipients.length < 2) return [batch];
-  if (path === '') {
-    deps.logger.warn('splitting oversize batch', {
-      batchKey: batch.batchKey,
-      recipients: batch.recipients.length,
-    });
+): Promise<BucketFate[]> {
+  const store = deps.idempotency;
+  if (!store) {
+    deps.logger.error('fanout.dense_without_idempotency', { alertId: alert.id, h3Cell });
+    return Array.from({ length: CELL_BUCKETS }, () => 'emit' as const);
   }
-  const mid = Math.ceil(batch.recipients.length / 2);
-  const halves = [batch.recipients.slice(0, mid), batch.recipients.slice(mid)];
-  return halves.flatMap((recipients, i) =>
-    splitIfOversize(
-      { ...batch, batchKey: `${base}:s${path}${i}`, recipients },
-      base,
-      deps,
-      `${path}${i}`,
-    ),
+  const lease = new Date(deps.clock.now().getTime() + TOMBSTONE_LEASE_MS);
+  const keep = claimExpiry(alert);
+  return Promise.all(
+    Array.from({ length: CELL_BUCKETS }, async (_, bucket): Promise<BucketFate> => {
+      const normal = bucketKey(alert, h3Cell, bucket);
+      const marker = denseMarkerKey(normal);
+      const claim = await store.claim(normal, lease);
+      if (claim === 'claimed') {
+        await store.markSent(marker, keep);
+        await store.markSent(normal, keep);
+        return 'emit';
+      }
+      if ((await store.peek(marker)) === 'sent') return 'emit';
+      return claim === 'sent' ? 'covered' : 'contended';
+    }),
   );
 }

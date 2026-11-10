@@ -11,6 +11,7 @@ import { SQSClient } from '@aws-sdk/client-sqs';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import type { SQSBatchResponse, SQSEvent } from 'aws-lambda';
 import { errorFields } from '../../delivery/redact.js';
+import { DynamoIdempotencyStore } from '../../adapters/aws/dynamo-idempotency-store.js';
 import { PostgresAlertStore } from '../../adapters/postgres/alert-store.js';
 import { createKillSwitch } from '../../config/kill-switch.js';
 import { clearKeyringCache, loadKeyring } from '../../config/secrets.js';
@@ -209,6 +210,8 @@ const SHARD_ENV = [
   'TOKEN_KEYS_SECRET_ARN',
   'KILL_SWITCH_PARAM',
   'PAUSED_QUEUE_URL',
+  // Dense-cell tombstones (shard-worker.ts tombstoneDenseCell).
+  'IDEMPOTENCY_TABLE',
 ] as const;
 
 let planner: Promise<(event: SQSEvent) => Promise<SQSBatchResponse>> | undefined;
@@ -263,8 +266,10 @@ function buildPlanner(env: Record<string, string | undefined>) {
 
 function buildShard(env: Record<string, string | undefined>) {
   const e = requireEnv(env, SHARD_ENV);
+  const doc = DynamoDBDocumentClient.from(new DynamoDBClient({}));
   const base = {
     alerts: new CachedAlertReader(alertStore(e)),
+    idempotency: new DynamoIdempotencyStore(doc, e.IDEMPOTENCY_TABLE),
     // Continuations go back to this same function: Lambda sets AWS_LAMBDA_FUNCTION_NAME, so the
     // stack needs no env var that would make the function's configuration refer to itself.
     continuation: new LambdaShardDispatcher(
@@ -272,10 +277,7 @@ function buildShard(env: Record<string, string | undefined>) {
       env.AWS_LAMBDA_FUNCTION_NAME ?? '',
       1,
     ),
-    cellIndex: new DynamoCellReader(
-      DynamoDBDocumentClient.from(new DynamoDBClient({})),
-      e.CELL_INDEX_TABLE,
-    ),
+    cellIndex: new DynamoCellReader(doc, e.CELL_INDEX_TABLE),
     sendQueue: new SqsSendQueue(new SQSClient({}), {
       urgent: e.URGENT_QUEUE_URL,
       standard: e.STANDARD_QUEUE_URL,

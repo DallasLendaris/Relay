@@ -68,8 +68,8 @@ export interface RelayAppOptions {
  * Builds every stack. bin/relay.ts and the infra tests both call it, so the tests exercise the
  * real wiring. Values flow between stacks as plain props (ARNs, names, URLs).
  *
- * Dependency order (acyclic): config -> monitoring -> data -> fanout -> latejoin -> api, and sender, ingest -> edge. Delivery
- * sits beside fanout (it needs config and data only). Nothing depends back on edge: ingest names
+ * Dependency order (acyclic): config -> monitoring -> data -> delivery -> fanout -> latejoin -> api, and sender, ingest -> edge.
+ * Delivery needs config and data only; fanout reads its idempotency table (dense-cell tombstones). Nothing depends back on edge: ingest names
  * the public-alerts bucket deterministically instead of referencing it.
  */
 export function buildRelayApp(app: App, o: RelayAppOptions) {
@@ -138,6 +138,7 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     tokenKeysSecretArn: config.tokenKeysSecretArn,
     alertSigning: config.alertSigning,
     ...killSwitch,
+    idempotencyTable: { name: delivery.idempotencyTableName, arn: delivery.idempotencyTableArn },
     ...(plan
       ? { plannerReservedConcurrency: plan.planner, shardReservedConcurrency: plan.shard }
       : {}),
