@@ -803,7 +803,7 @@ describe('fan-out and sender env contracts', () => {
   checkEnvContract(
     'sender container',
     senderEnv(all.sender),
-    envNamesRead('scale/sender/main.ts'),
+    [...envNamesRead('scale/sender/main.ts'), ...envNamesRead('adapters/push/fleet-size.ts')],
     {
       optional: [
         'SENDER_CONCURRENCY',

@@ -393,6 +393,35 @@ it('Aws pseudo parameters can stand in for placeholder ARNs (bin/relay.ts keeps 
   expect(typeof Aws.ACCOUNT_ID).toBe('string');
 });
 
+describe('SenderStack FCM fleet rate', () => {
+  const envOf = (t: Template, name: string): any => {
+    const defs = Object.values(t.findResources('AWS::ECS::TaskDefinition')) as any[];
+    const env = defs[0].Properties.ContainerDefinitions[0].Environment as any[];
+    return env.find((e) => e.Name === name)?.Value;
+  };
+
+  it('tells the task its own cluster and service and the per-project fleet budget (default 9000)', () => {
+    expect(envOf(prod, 'ECS_CLUSTER')).toBe('relay-prod-sender');
+    expect(envOf(prod, 'ECS_SERVICE')).toBe('relay-prod-sender');
+    expect(envOf(prod, 'FCM_PROJECT_FLEET_RATE_PER_SEC')).toBe('9000');
+    expect(envOf(prod, 'FCM_PROJECT_RATE_PER_SEC')).toBeUndefined();
+  });
+
+  it('context fcmProjectFleetRatePerSec overrides the budget and is validated', () => {
+    expect(
+      envOf(synth('dev', { fcmProjectFleetRatePerSec: '4500' }), 'FCM_PROJECT_FLEET_RATE_PER_SEC'),
+    ).toBe('4500');
+    expect(() => synth('dev', { fcmProjectFleetRatePerSec: '0' })).toThrow(/positive/);
+  });
+
+  it('grants only ecs:DescribeServices, on the sender service ARN', () => {
+    expect(grantedOn(prod, ':service/')).toEqual(['ecs:DescribeServices']);
+    const s = statements(prod).find((x) => actionsOf(x).includes('ecs:DescribeServices'));
+    expect(JSON.stringify(s.Resource)).toContain('service/');
+    expect(JSON.stringify(s.Resource)).not.toContain('*');
+  });
+});
+
 describe('SenderStack alarms (OPS-2)', () => {
   const alarm = (t: Template, re: string) =>
     Object.values(
