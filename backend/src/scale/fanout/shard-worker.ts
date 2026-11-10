@@ -5,6 +5,7 @@ import type { Alert } from '@relay/shared';
 import {
   BATCH_BYTE_BUDGET,
   CELL_BUCKETS,
+  DENSE_PARTS,
   DENSE_CELL_RECIPIENTS,
   type CellIndex,
   type SendBatch,
@@ -13,7 +14,15 @@ import {
 import { checkEligibility, type EligibilityDeps, type FanoutRefusal } from './common.js';
 import { bucketFor, densePartFor } from './hash.js';
 import type { ResumableShardJob } from './messages.js';
-import { bucketKey, denseCellKey, denseMarkerKey, densePartKey, splitMarkerKey } from './keys.js';
+import {
+  bucketKey,
+  denseCellKey,
+  denseMarkerKey,
+  densePartKey,
+  planMarkerKey,
+  splitMarkerKey,
+} from './keys.js';
+import { encodeMemberSet, PLAN_HASH_BYTES } from './member-set.js';
 import { splitToFit } from './pack.js';
 import { isPrimaryCell } from './primary-cell.js';
 import type { ShardDispatcher } from './queues.js';
@@ -29,7 +38,8 @@ export interface ShardWorkerDeps extends EligibilityDeps {
    * (old wiring, tests): dense cells still send, logged as an error, and a tier change between two
    * plans of one alert version could then double-send those buckets.
    */
-  idempotency?: Required<Pick<IdempotencyStore, 'claim' | 'markSent' | 'peek'>>;
+  idempotency?: Required<Pick<IdempotencyStore, 'claim' | 'markSent' | 'peek'>> &
+    Pick<IdempotencyStore, 'markPlanned'>;
   /**
    * Re-runs a job later (the paused queue: about 60 s, then back to the shard function). Used for
    * the cells of a dense bucket that another attempt holds, so they settle without failing the job
@@ -87,6 +97,8 @@ export interface ShardResult {
   rereadPasses: number;
   /** Most recipients held in memory at once (cell buffers plus unflushed batches). */
   peakBufferedRecipients: number;
+  /** Plan records written for late join (one per normal cell, one per part of a dense cell). */
+  planRecords: number;
   /** Set when time ran short: the `startAt` of the continuation job that was dispatched. */
   continuedAt?: number;
 }
@@ -124,6 +136,7 @@ const emptyResult = (cells: number): ShardResult => ({
   coveredBuckets: 0,
   rereadPasses: 0,
   peakBufferedRecipients: 0,
+  planRecords: 0,
 });
 
 type Recipient = SendBatch['recipients'][number];
@@ -296,6 +309,41 @@ export async function processShard(
     attempt: 0,
   });
 
+  /**
+   * The plan record of a normal cell (part undefined) or of one dense part (G5): written once its
+   * batches are decided (they may still be in `pending`), with the member set of every recipient
+   * they carry. Late join waits while it is absent and sends at once to a device not in it.
+   * Best effort: without it late join waits (bounded) and then sends, a possible duplicate.
+   */
+  const writePlan = async (h3Cell: string, part: number | undefined, ids: string[]) => {
+    const store = deps.idempotency;
+    if (!store?.markPlanned || failed) return;
+    const members = encodeMemberSet(ids, PLAN_HASH_BYTES);
+    if (!members) {
+      deps.logger.warn('fanout.plan_set_over_cap', {
+        alertId: alert.id,
+        h3Cell,
+        part,
+        n: ids.length,
+      });
+    }
+    try {
+      await store.markPlanned(
+        planMarkerKey(alert, h3Cell, part),
+        members ?? null,
+        claimExpiry(alert),
+      );
+      result.planRecords++;
+    } catch (err) {
+      deps.logger.error('fanout.plan_record_failed', {
+        alertId: alert.id,
+        h3Cell,
+        part,
+        error: err instanceof Error ? err.name : 'UnknownError',
+      });
+    }
+  };
+
   // When one cell fails, the others stop at their next step so a dead attempt does not keep
   // sending while the retry starts.
   let failed = false;
@@ -317,6 +365,19 @@ export async function processShard(
     let topCursor: string | undefined;
     // Duplicate entries per (part, bucket) not yet counted in the result.
     const dupes = new Map<number, number>();
+    // G5 plan records: who this cell's batches carry (normal), or each part's (dense); parts whose
+    // record is written; and whether a dense bucket was contended (then no record at all: the
+    // retry that settles it writes them, so late join waits instead of sending early).
+    const planIds: string[] = [];
+    const partIds = new Map<number, string[]>();
+    const plannedParts = new Set<number>();
+    let contendedHere = false;
+    const readStartMs = deps.clock.now().getTime();
+    const carry = (part: number, recipients: Recipient[]): void => {
+      let list = partIds.get(part);
+      if (!list) partIds.set(part, (list = []));
+      for (const r of recipients) list.push(r.deviceId);
+    };
     const countDupes = (part: number, bucket: number): void => {
       const k = part * CELL_BUCKETS + bucket;
       result.duplicates += dupes.get(k) ?? 0;
@@ -409,6 +470,7 @@ export async function processShard(
           }
         } while (c && !past);
         for (const [bucket, recipients] of map) {
+          carry(part, recipients);
           emit(makeBatch(densePartKey(alert, h3Cell, bucket, part), recipients), true);
           result.duplicates += passDupes.get(bucket) ?? 0;
         }
@@ -431,6 +493,7 @@ export async function processShard(
         const recipients = buckets.get(bucket);
         if (!recipients || recipients.length === 0) continue;
         if (dense.emitBucket[bucket]) {
+          carry(part, recipients);
           emit(makeBatch(densePartKey(alert, h3Cell, bucket, part), recipients), true);
           countDupes(part, bucket);
           // Recipients move to `pending` (still counted in `buffered` until flushed).
@@ -446,6 +509,12 @@ export async function processShard(
         await flush(false);
         await rereadPart(part, dense.partCursor, setAside);
       }
+      // The stream is sorted, so this part is complete: its batches are all decided.
+      if (!contendedHere && !failed && part >= 0) {
+        await writePlan(h3Cell, part, partIds.get(part) ?? []);
+        plannedParts.add(part);
+      }
+      partIds.delete(part);
     };
 
     /** Switches this cell to dense parts: tombstones its buckets, emits the parts already read. */
@@ -457,6 +526,7 @@ export async function processShard(
       if (taken > 0) {
         contended += taken;
         contendedCells.push(h3Cell);
+        contendedHere = true;
       }
       const emitBucket = fates.map((e) => e === 'emit');
       dense = { part: -1, partCursor: undefined, emitBucket, dropped: [] };
@@ -581,11 +651,30 @@ export async function processShard(
     } else {
       for (const v of dupes.values()) result.duplicates += v;
       for (const b of normal) {
+        for (const r of b.recipients) planIds.push(r.deviceId);
         emit(b, false); // measured just above
         held -= b.recipients.length;
       }
       buckets = new Map();
     }
+    if (failed) return;
+    const readEndMs = deps.clock.now().getTime();
+    if (!dense) {
+      await writePlan(h3Cell, undefined, planIds);
+    } else if (!contendedHere) {
+      // Parts no entry fell in are planned too (empty), so late join does not wait on them.
+      for (let part = 0; part < DENSE_PARTS; part++) {
+        if (!plannedParts.has(part)) await writePlan(h3Cell, part, []);
+      }
+    }
+    // Per-cell read window, for measuring which registrations a plan could have seen (G5).
+    deps.logger.info('fanout.cell_planned', {
+      alertId: alert.id,
+      h3Cell,
+      dense: dense !== undefined,
+      readStartMs,
+      readEndMs,
+    });
     await flush(false);
   };
 

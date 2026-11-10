@@ -21,6 +21,12 @@ export interface LateJoinIntent {
    * so the 24 h give-up counts from the original request, not from the latest re-enqueue.
    */
   enqueuedAt?: string;
+  /**
+   * ISO time late join FIRST deferred this intent because the planned fan-out might still carry
+   * the device (G5). Set by the Lambda when it re-enqueues the intent; the wait is given up
+   * PLAN_WAIT_GIVE_UP_MS after it (then the device is sent, at worst a duplicate).
+   */
+  waitingSince?: string;
 }
 
 /**
@@ -41,6 +47,15 @@ export function isLateJoinIntent(v: unknown): v is LateJoinIntent {
     typeof o === 'object' && o !== null && typeof o.deviceId === 'string' && UUID.test(o.deviceId)
   );
 }
+
+/**
+ * How long an intent waits for the planned fan-out to settle (G5) before late join sends anyway.
+ * A cell's plan record follows its read by seconds, and a planned batch is sent within about a
+ * minute of being queued even in a 1M-device fan-out; 5 minutes leaves room for a backlog.
+ */
+export const PLAN_WAIT_GIVE_UP_MS = 5 * 60 * 1000;
+/** Delay between two looks while waiting for the planned fan-out. */
+export const PLAN_WAIT_DELAY_SECONDS = 15;
 
 /** How long a paused intent keeps being parked before it is given up on. */
 export const PARK_GIVE_UP_MS = 24 * 60 * 60 * 1000;
