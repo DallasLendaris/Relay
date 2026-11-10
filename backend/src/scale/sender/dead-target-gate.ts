@@ -9,12 +9,18 @@ export const DEAD_TARGET_HOLD_MS = 60_000;
 
 type Recipient = SendBatch['recipients'][number];
 
+/** What a held group keeps of its source batch: everything but the recipient list. */
+export type HeldSource = Pick<
+  SendBatch,
+  'alertId' | 'sourceId' | 'relaySeverity' | 'batchKey' | 'attempt'
+>;
+
 /**
  * Dead targets held from one settled batch, with what is needed to re-queue them: the batch they
- * came from (its recipients are not used) and its retry deadline (alert end or 30 min budget).
+ * came from (without its recipients) and its retry deadline (alert end or 30 min budget).
  */
 export interface HeldGroup {
-  batch: SendBatch;
+  source: HeldSource;
   firstAttemptMs: number;
   deadlineMs: number;
   recipients: Recipient[];
@@ -62,7 +68,7 @@ export interface DeadTargetGateOptions {
  *     the recipients the open breaker turns into retries, so they are delivered once the
  *     misconfiguration is fixed, within the same 30-minute retry budget;
  *   - if `holdMs` passes first (little traffic), the gate decides on what it has: re-queue when
- *     the window looks systemic (>= 20 permanents and > 20%), otherwise release. The next dead
+ *     the window looks systemic (>= 100 results, >= 20 permanents, > 20%), otherwise release. The next dead
  *     targets start a new hold. shutdown() makes the same decision at once; settle() then waits
  *     for the re-queue writes.
  *
@@ -104,7 +110,20 @@ export class DeadTargetGate {
       this.divert('breaker_open');
       return;
     }
-    if (this.opts.breaker.samples >= this.minSamples) {
+    const breaker = this.opts.breaker;
+    if (breaker.samples >= this.minSamples) {
+      // `verdict` was computed when this batch settled; the batch then awaited its re-enqueue and
+      // markSent while other batches went on recording. Never clear on that stale verdict alone:
+      // judge the window as it is now. With >= 200 samples looksSystemic is exactly the rolling
+      // rule, i.e. the verdict the next batch would get. These dead targets were not retried by
+      // the sender (its verdict was closed), so they join the held ones and are re-queued.
+      if (breaker.looksSystemic) {
+        if (dead.recipients.length > 0) {
+          this.held.push({ ...dead, recipients: [...dead.recipients] });
+        }
+        this.divert('breaker_open_since_settled');
+        return;
+      }
       this.release('evidence');
       for (const d of dead.recipients) this.opts.queue.enqueue(d.deviceId, d.target);
       return;

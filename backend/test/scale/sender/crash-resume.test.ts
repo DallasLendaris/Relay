@@ -5,12 +5,14 @@ import {
   SENDER_CHUNK_SIZE,
   type NativePushMessage,
   type NativePushResult,
+  type SendBatch,
 } from '../../../src/scale/contracts.js';
 import {
   SENDER_LEASE_MS,
   newBatchControl,
   processBatch,
   progressByChunk,
+  recipientFingerprint,
 } from '../../../src/scale/sender/sender.js';
 import {
   FakePush,
@@ -35,6 +37,106 @@ function deliveries() {
     },
   };
 }
+
+/**
+ * Process A sends `first` with chunk 0 finished and dies in chunk 1. After the lease runs out,
+ * process B gets `second`: the same batch key, maybe another recipient list (a re-plan).
+ */
+async function crashThenReplan(n: number, replan: (b: SendBatch) => SendBatch) {
+  const d = deliveries();
+  const a = makeDeps({ chunkConcurrency: 1 });
+  await seedAlert(a.alerts);
+  let callsA = 0;
+  a.deps.push = {
+    send: async (msgs) => {
+      if (++callsA === 2) return new Promise<never>(() => {}); // dies in chunk 1
+      return msgs.map((m) => d.note(m, { ok: true }));
+    },
+  };
+  const first = makeBatch({}, n);
+  void processBatch(first, a.deps);
+  await waitFor(() => callsA === 2);
+
+  const { lines, logger } = recordingLogger();
+  const pushB = new FakePush((m) => d.note(m, { ok: true }));
+  const b = makeDeps({
+    chunkConcurrency: 1,
+    logger,
+    push: pushB,
+    idempotency: a.idempotency,
+    alerts: a.alerts,
+    clock: a.deps.clock,
+  });
+  a.state.now = new Date(a.state.now.getTime() + SENDER_LEASE_MS + 1000);
+  const second = replan(first);
+  const out = await processBatch(second, b.deps);
+  return { d, out, lines, pushB, first, second };
+}
+
+describe('sender crash: progress is bound to the recipient list (review probes)', () => {
+  it('re-plan without dev5 after a crash in chunk 1: dev100 is still sent (was: never sent)', async () => {
+    const r = await crashThenReplan(250, (b) => ({
+      ...b,
+      recipients: b.recipients.filter((x) => x.deviceId !== 'dev5'),
+    }));
+    expect(r.out).toMatchObject({ ack: true, sent: 249 });
+    // Offsets shifted by one: progress for the old list is ignored, the batch goes out in full.
+    for (const rec of r.second.recipients) {
+      const i = Number(rec.checkInToken.slice(2));
+      expect(r.d.ok.get(i) ?? 0, rec.deviceId).toBeGreaterThanOrEqual(1);
+    }
+    expect(r.d.ok.get(100)).toBeGreaterThanOrEqual(1);
+    expect(r.pushB.calls.flat()).toHaveLength(249);
+    expect(r.lines.find((l) => l.msg === 'sender.progress_ignored')?.fields).toMatchObject({
+      reason: 'recipients_changed',
+    });
+  });
+
+  it('a device added, or the same devices in another order, also ignores the progress', async () => {
+    const added = await crashThenReplan(250, (b) => ({
+      ...b,
+      recipients: [
+        { ...b.recipients[0]!, deviceId: 'new', checkInToken: 'ct999' },
+        ...b.recipients,
+      ],
+    }));
+    expect(added.pushB.calls.flat()).toHaveLength(251);
+    const reordered = await crashThenReplan(250, (b) => ({
+      ...b,
+      recipients: [...b.recipients].reverse(),
+    }));
+    expect(reordered.pushB.calls.flat()).toHaveLength(250);
+    for (let i = 0; i < 250; i++) expect(reordered.d.ok.get(i) ?? 0).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a changed push token for one device ignores the progress (no skip to a token never sent)', async () => {
+    const r = await crashThenReplan(250, (b) => ({
+      ...b,
+      recipients: b.recipients.map((x) =>
+        x.deviceId === 'dev7' ? { ...x, target: { ...x.target, token: 'rotated' } } : x,
+      ),
+    }));
+    expect(r.pushB.calls.flat()).toHaveLength(250);
+  });
+
+  it('the same list resumes as before (control)', async () => {
+    const r = await crashThenReplan(250, (b) => b);
+    expect(r.pushB.calls.flat()).toHaveLength(150); // chunk 0 skipped
+    for (let i = 0; i < 250; i++) expect(r.d.ok.get(i), `recipient ${i}`).toBe(1);
+  });
+
+  it('the fingerprint depends on order, devices, tokens and nothing else', () => {
+    const b = makeBatch({}, 5);
+    const fp = recipientFingerprint(b.recipients);
+    expect(recipientFingerprint(structuredClone(b.recipients))).toBe(fp);
+    expect(recipientFingerprint([...b.recipients].reverse())).not.toBe(fp);
+    expect(recipientFingerprint(b.recipients.slice(1))).not.toBe(fp);
+    // Language and check-in token do not move offsets: same fingerprint.
+    expect(recipientFingerprint(b.recipients.map((r) => ({ ...r, language: 'es' as const })))).toBe(
+      fp,
+    );
+  });
+});
 
 describe('sender crash: re-claim skips sub-chunks already sent', () => {
   it('a sender dies mid-batch; the redelivery after lease expiry sends only what had not gone out', async () => {
@@ -64,7 +166,8 @@ describe('sender crash: re-claim skips sub-chunks already sent', () => {
     const batch = makeBatch({}, N);
     void processBatch(batch, a.deps);
     await waitFor(() => callsA === 3);
-    expect(progressByChunk(recorded(a.idempotency, batch.batchKey))).toEqual(
+    const fp = recipientFingerprint(batch.recipients);
+    expect(progressByChunk(recorded(a.idempotency, batch.batchKey), fp)).toEqual(
       new Map([
         [0, new Set([5])],
         [1, new Set([50])], // offset 50 of chunk 1 = recipient 150

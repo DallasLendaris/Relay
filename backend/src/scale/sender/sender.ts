@@ -10,7 +10,9 @@
  *      stop starting chunks. In a batch of more than one chunk, each finished chunk is recorded
  *      on our claim (IdempotencyStore.recordChunk: what went out, which offsets must be redone).
  *      A re-claim after a crash (lease expiry) or a release skips what went out and sends only
- *      the rest, so a crashed sender duplicates at most the chunks it had in flight.
+ *      the rest, so a crashed sender duplicates at most the chunks it had in flight. Progress is
+ *      bound to the exact recipient list (recipientFingerprint): a re-plan under the same key
+ *      with other recipients ignores it and sends everything (a duplicate, never a miss).
  *   4. classify results. Permanent failures are dead targets, unless the circuit breaker is
  *      open (see breaker.ts), in which case they are retried and nothing is cleared. Retryable
  *      failures are re-queued as a NEW batch (`${base}:r${attempt + 1}`, only those recipients)
@@ -19,8 +21,9 @@
  *      the alert ends or more than 30 minutes after the batch was first processed.
  *   5. markSent(batchKey)
  *   6. only now, hand dead targets to the gate (dead-target-gate.ts): it holds them until the
- *      breaker has seen enough results, then queues them for cleanup or drops them (breaker
- *      open). Cleanup is asynchronous (dead-target-queue.ts) and never delays sending or extends
+ *      breaker has seen enough results, then queues them for cleanup, or (breaker open)
+ *      re-queues them as a retry batch `${batchKey}:h${attempt + 1}` (see retryKey and
+ *      heldRetryKey: all derived keys are distinct). Cleanup is asynchronous (dead-target-queue.ts) and never delays sending or extends
  *      a batch past its lease.
  *
  * Accepted trade-offs, all of which can mean ONE duplicate push to recipients in chunks that had
@@ -35,6 +38,7 @@
  *   - the sender process dies: the lease runs out and the redelivered message re-claims the key.
  *   - the kill switch flips while we are sending: we release and the message retries later.
  */
+import { createHash } from 'node:crypto';
 import type { Alert } from '@relay/shared';
 import { alertEndTime, claimExpiry, refusalFor } from '../../delivery/eligibility.js';
 import { PUSH_POLICY } from '../../delivery/policy.js';
@@ -261,6 +265,7 @@ async function sendAll(
   batchKey: string,
   control: BatchControl,
   done: Map<number, Set<number>>,
+  set: string,
 ): Promise<Array<NativePushResult | undefined>> {
   const chunks: NativePushMessage[][] = [];
   for (let i = 0; i < messages.length; i += SENDER_CHUNK_SIZE) {
@@ -311,7 +316,9 @@ async function sendAll(
           return !r?.ok && !(r?.kind === 'permanent' && r.scope === 'message');
         });
         try {
-          if (!(await record(batchKey, { chunk: idx, redo: again }))) control.leaseLost = true;
+          if (!(await record(batchKey, { set, chunk: idx, redo: again }))) {
+            control.leaseLost = true;
+          }
         } catch (err) {
           // Without the record a crash re-sends this chunk; nothing else is lost.
           deps.logger.warn('sender.record_chunk_failed', { batchKey, ...errorFields(err) });
@@ -364,11 +371,27 @@ function gateFor(deps: SenderDeps): Pick<DeadTargetGate, 'submit'> {
   return g;
 }
 
-/** Key of a retry of held recipients: its own `:held` base, so it never meets the batch's own `:r<n>`. */
-export const heldRetryKey = (batch: SendBatch): string => {
-  const base = baseBatchKey(batch.batchKey);
-  return `${base.endsWith(':held') ? base : `${base}:held`}:r${batch.attempt + 1}`;
-};
+/*
+ * Derived batch keys. Every batch can spawn two children, both at attempt + 1:
+ *   retry  R(K) = baseBatchKey(K) + `:r<attempt+1>`  (its failed recipients; the existing scheme)
+ *   held   H(K) = K + `:h<attempt+1>`               (recipients the dead-target gate held)
+ * They are distinct by construction:
+ *   - R(K) ends in `:r<n>` and H(K) in `:h<n>`, so a retry key never equals a held key;
+ *   - H keeps all of K, so H(K1) = H(K2) only if K1 = K2;
+ *   - R strips only a trailing `:r<n>`, so R(K1) = R(K2) needs K1 and K2 in one lineage L (L, or
+ *     L:r<n>) and at the same attempt. Within a lineage the attempt identifies the key: L itself
+ *     is a planned key (attempt 0) or ends in `:h<a>` (attempt a), and L:r<n> is at attempt n > a.
+ * Nothing ever strips or rewrites an `:h<n>` segment. test/scale/sender/derived-keys.test.ts
+ * checks this on random derivation chains.
+ */
+
+/** Key of the retry of a batch's failed recipients. */
+export const retryKey = (batch: SendBatch): string =>
+  `${baseBatchKey(batch.batchKey)}:r${batch.attempt + 1}`;
+
+/** Key of the re-queue of a batch's held recipients (see the derivation comment above). */
+export const heldRetryKey = (batch: Pick<SendBatch, 'batchKey' | 'attempt'>): string =>
+  `${batch.batchKey}:h${batch.attempt + 1}`;
 
 const REQUEUE_TRIES = 3;
 
@@ -383,7 +406,7 @@ async function requeueHeld(groups: HeldGroup[], deps: SenderDeps): Promise<numbe
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   let requeued = 0;
   for (const g of groups) {
-    const { batch } = g;
+    const batch = g.source;
     const delay = retryDelaySeconds(batch.attempt, 0, random);
     const nowMs = deps.clock.now().getTime();
     if (nowMs + delay * 1000 >= g.deadlineMs) {
@@ -428,12 +451,27 @@ async function requeueHeld(groups: HeldGroup[], deps: SenderDeps): Promise<numbe
 }
 
 /**
- * Turns progress recorded by earlier attempts into chunk -> offsets still to send. Several
- * entries for a chunk intersect: an offset is done once any attempt sent it.
+ * Fingerprint of what chunk progress offsets point at: the batch's recipients in order (device
+ * id and push target) and the chunk size. Order matters, not just the set: offsets are positions,
+ * so the same devices in another order would make an offset name a different device. The push
+ * target is in it too, so a device whose token changed is sent again rather than skipped.
  */
-export function progressByChunk(progress: ChunkProgress[]): Map<number, Set<number>> {
+export function recipientFingerprint(recipients: SendBatch['recipients']): string {
+  const h = createHash('sha256').update(`chunk=${SENDER_CHUNK_SIZE}\n`);
+  for (const r of recipients) h.update(`${r.deviceId}\t${r.target.platform}\t${r.target.token}\n`);
+  return h.digest('hex').slice(0, 24);
+}
+
+/**
+ * Turns progress recorded by earlier attempts into chunk -> offsets still to send. Only entries
+ * recorded for this exact recipient list (`set`) count; others are ignored, so a re-planned batch
+ * with the same key but different recipients is sent in full (a possible duplicate, never a
+ * miss). Several entries for a chunk intersect: an offset is done once any attempt sent it.
+ */
+export function progressByChunk(progress: ChunkProgress[], set: string): Map<number, Set<number>> {
   const done = new Map<number, Set<number>>();
   for (const p of progress) {
+    if (p.set !== set) continue;
     const prev = done.get(p.chunk);
     const redo = new Set(p.redo);
     done.set(p.chunk, prev ? new Set([...prev].filter((o) => redo.has(o))) : redo);
@@ -526,11 +564,22 @@ export async function processBatch(
     }
 
     const messages = buildMessages(batch, alert, now, deps.publicAlertBaseUrl);
-    // A re-claim after a crashed attempt skips the sub-chunks that attempt finished.
+    // A re-claim after a crashed attempt skips the sub-chunks that attempt finished, but only
+    // if it was sending this very recipient list (see recipientFingerprint).
+    const set = recipientFingerprint(batch.recipients);
     let done = new Map<number, Set<number>>();
     if (deps.idempotency.claimedProgress) {
       try {
-        done = progressByChunk(await deps.idempotency.claimedProgress(batch.batchKey));
+        const inherited = await deps.idempotency.claimedProgress(batch.batchKey);
+        done = progressByChunk(inherited, set);
+        const foreign = inherited.filter((p) => p.set !== set).length;
+        if (foreign > 0) {
+          logger.warn('sender.progress_ignored', {
+            batchKey: batch.batchKey,
+            entries: foreign,
+            reason: 'recipients_changed',
+          });
+        }
       } catch (err) {
         logger.warn('sender.progress_read_failed', {
           batchKey: batch.batchKey,
@@ -545,7 +594,7 @@ export async function processBatch(
         });
       }
     }
-    const results = await sendAll(messages, deps, batch.batchKey, control, done);
+    const results = await sendAll(messages, deps, batch.batchKey, control, done, set);
 
     // The lease went away or shutdown began while sending: settle nothing.
     if (control.leaseLost) {
@@ -637,7 +686,7 @@ export async function processBatch(
       } else {
         const retryBatch: SendBatch = {
           ...batch,
-          batchKey: `${baseBatchKey(batch.batchKey)}:r${batch.attempt + 1}`,
+          batchKey: retryKey(batch),
           recipients: failed,
           attempt: batch.attempt + 1,
           firstAttemptAt: new Date(firstAttemptMs).toISOString(),
@@ -663,7 +712,19 @@ export async function processBatch(
     // Held recipients carry their batch so the gate can re-queue them if the breaker opens.
     if (verdict) {
       gateFor(deps).submit(
-        { batch, firstAttemptMs, deadlineMs: deadline, recipients: dead },
+        {
+          // Only the batch's identity, not its recipient list: the gate may hold this a while.
+          source: {
+            alertId: batch.alertId,
+            sourceId: batch.sourceId,
+            relaySeverity: batch.relaySeverity,
+            batchKey: batch.batchKey,
+            attempt: batch.attempt,
+          },
+          firstAttemptMs,
+          deadlineMs: deadline,
+          recipients: dead,
+        },
         verdict,
       );
     }

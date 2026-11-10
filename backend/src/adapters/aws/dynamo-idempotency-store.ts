@@ -67,18 +67,21 @@ export interface ThrottleRetryOptions {
  * Items written before leases existed have no `state`; they count as sent.
  *
  * Sub-chunk progress (recordChunk) lives on the same item as a string set `sentChunks`, one
- * element per finished sub-chunk: `${chunk}:${redo offsets, comma-separated}`. A claim that takes
+ * element per finished sub-chunk: `${set}@${chunk}:${redo offsets, comma-separated}` (set: the
+ * recipient-list fingerprint the offsets refer to). A claim that takes
  * over an expired lease reads the old item back (PutItem ReturnValues ALL_OLD, so no extra read)
  * and writes its progress back onto the new lease; release() of a key with progress ends the
  * lease (leaseUntil 0) instead of deleting the item, so the next claim inherits it too.
  */
-export const encodeChunkProgress = (p: ChunkProgress): string => `${p.chunk}:${p.redo.join(',')}`;
+export const encodeChunkProgress = (p: ChunkProgress): string =>
+  `${p.set}@${p.chunk}:${p.redo.join(',')}`;
 
+/** Undefined for anything malformed, including entries without a fingerprint (never trusted). */
 export function decodeChunkProgress(s: string): ChunkProgress | undefined {
-  const m = /^(\d+):([\d,]*)$/.exec(s);
+  const m = /^([0-9a-f]+)@(\d+):([\d,]*)$/.exec(s);
   if (!m) return undefined;
-  const redo = (m[2] ?? '') === '' ? [] : (m[2] ?? '').split(',').map(Number);
-  return { chunk: Number(m[1]), redo };
+  const redo = (m[3] ?? '') === '' ? [] : (m[3] ?? '').split(',').map(Number);
+  return { set: m[1] ?? '', chunk: Number(m[2]), redo };
 }
 
 const progressOf = (raw: unknown): string[] =>
