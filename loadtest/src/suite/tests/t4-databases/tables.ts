@@ -161,7 +161,7 @@ export function makeDynamoClients(endpoint: string): {
     endpoint,
     region: 'us-east-1',
     credentials: { accessKeyId: 'local', secretAccessKey: 'local' },
-    maxAttempts: 3,
+    maxAttempts: 6, // DynamoDB Local drops sockets under heavy local concurrency; retry like AWS would
     requestHandler: new NodeHttpHandler({
       httpAgent: new Agent({ keepAlive: true, maxSockets: 256 }),
     }),

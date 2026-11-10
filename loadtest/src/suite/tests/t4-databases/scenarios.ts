@@ -143,13 +143,18 @@ export interface Sizes {
 
 export const FULL_SIZES: Sizes = {
   a: { entries: 1_000_000, putEntries: 1000, putConcurrency: 1, pageSize: 1000 },
-  b: { keys: 200_000, overlapPct: 20, crashPct: 3, leaseMs: 5000, concurrency: 24 },
+  // Lease = the sender's real 45 s. The first full run used 5 s: with DynamoDB Local's multi-second
+  // p99 under 22 processes, claim + markSent could outlast the lease, so another process re-claimed
+  // a key that was still being worked (32 duplicate sends) — a test artifact, not the 45 s lease.
+  b: { keys: 200_000, overlapPct: 20, crashPct: 3, leaseMs: 45_000, concurrency: 8 },
   c: {
     count: 500_000,
     alerts: 4,
     cells: 2000,
     dupPct: 2,
-    concurrency: 48,
+    // 48 in flight per process x 22 processes overwhelmed single-node DynamoDB Local (socket hang
+    // up in the first full run); 8 per process still means ~176 concurrent writers.
+    concurrency: 8,
     aggBatch: 100,
     aggInFlight: 4,
     redeliverPct: 5,
