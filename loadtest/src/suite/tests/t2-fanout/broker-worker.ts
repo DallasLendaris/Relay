@@ -76,7 +76,13 @@ const state = {
   generation: 0,
   idem: new Map<
     string,
-    { state: 'leased' | 'sent'; until: number; attempt: number; members?: Buffer }
+    {
+      state: 'leased' | 'sent';
+      until: number;
+      attempt: number;
+      members?: Buffer;
+      targets?: Buffer;
+    }
   >(),
   nextAttempt: 1,
   idemOps: 0,
@@ -254,12 +260,18 @@ async function handle(f: Frame): Promise<{ h: Record<string, unknown>; p?: Buffe
     }
     case 'markPlanned': {
       // G5: the shard worker's per-cell plan record. Unconditional, like the DynamoDB PutItem.
+      // G5b: the (device, target) set is kept only by the key's first plan (any stored item counts).
       state.idemOps++;
-      state.idem.set(String(h['key']), {
+      const key = String(h['key']);
+      const mLen = Number(h['mLen'] ?? 0);
+      const tLen = Number(h['tLen'] ?? 0);
+      const first = !state.idem.has(key);
+      state.idem.set(key, {
         state: 'sent',
         until: Number(h['until']),
         attempt: 0,
-        ...(h['members'] === true ? { members: Buffer.from(f.p) } : {}),
+        ...(h['members'] === true ? { members: Buffer.from(f.p.subarray(0, mLen)) } : {}),
+        ...(first && tLen > 0 ? { targets: Buffer.from(f.p.subarray(mLen, mLen + tLen)) } : {}),
       });
       return { h: {} };
     }
@@ -267,8 +279,13 @@ async function handle(f: Frame): Promise<{ h: Record<string, unknown>; p?: Buffe
       state.idemOps++;
       const e = state.idem.get(String(h['key']));
       if (!e || e.until <= Date.now()) return { h: { r: 'absent' } };
-      if (e.state === 'sent' && e.members) return { h: { r: 'sent', members: true }, p: e.members };
-      return { h: { r: e.state } };
+      if (e.state !== 'sent' || (!e.members && !e.targets)) return { h: { r: e.state } };
+      const m = e.members ?? Buffer.alloc(0);
+      const t = e.targets ?? Buffer.alloc(0);
+      return {
+        h: { r: 'sent', members: e.members !== undefined, mLen: m.length, tLen: t.length },
+        p: Buffer.concat([m, t]),
+      };
     }
     case 'release': {
       state.idemOps++;

@@ -220,19 +220,41 @@ export class RemoteIdempotencyStore implements IdempotencyStore {
     );
   }
 
-  /** The shard worker's plan record of a cell (G5); `members` null = set over its size cap. */
-  async markPlanned(key: string, members: Uint8Array | null, expiresAt: Date): Promise<void> {
-    const payload = members ? Buffer.from(members) : undefined;
+  /**
+   * The shard worker's plan record of a cell (G5); `members` null = set over its size cap.
+   * `detail.targets` (G5b): the (device, target) pair set, kept only by the key's first plan.
+   */
+  async markPlanned(
+    key: string,
+    members: Uint8Array | null,
+    expiresAt: Date,
+    detail?: { targets?: Uint8Array },
+  ): Promise<void> {
+    const m = members ? Buffer.from(members) : Buffer.alloc(0);
+    const t = detail?.targets ? Buffer.from(detail.targets) : Buffer.alloc(0);
     await this.broker.call(
-      { op: 'markPlanned', key, until: expiresAt.getTime(), members: payload !== undefined },
-      payload,
+      {
+        op: 'markPlanned',
+        key,
+        until: expiresAt.getTime(),
+        members: members !== null,
+        mLen: m.length,
+        tLen: t.length,
+      },
+      m.length + t.length > 0 ? Buffer.concat([m, t]) : undefined,
     );
   }
 
   async inspect(key: string): Promise<KeyInspection> {
     const f = await this.broker.call({ op: 'inspect', key });
     const state = f.h['r'] as 'absent' | 'leased' | 'sent';
-    return f.h['members'] === true ? { state, members: new Uint8Array(f.p) } : { state };
+    const mLen = Number(f.h['mLen'] ?? 0);
+    const tLen = Number(f.h['tLen'] ?? 0);
+    return {
+      state,
+      ...(f.h['members'] === true ? { members: new Uint8Array(f.p.subarray(0, mLen)) } : {}),
+      ...(tLen > 0 ? { targets: new Uint8Array(f.p.subarray(mLen, mLen + tLen)) } : {}),
+    };
   }
 
   async release(key: string): Promise<void> {
