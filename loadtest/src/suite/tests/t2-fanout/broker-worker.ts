@@ -74,7 +74,10 @@ const state = {
   producerWaits: 0,
   producerWaitMs: 0,
   generation: 0,
-  idem: new Map<string, { state: 'leased' | 'sent'; until: number; attempt: number }>(),
+  idem: new Map<
+    string,
+    { state: 'leased' | 'sent'; until: number; attempt: number; members?: Buffer }
+  >(),
   nextAttempt: 1,
   idemOps: 0,
 };
@@ -239,9 +242,33 @@ async function handle(f: Frame): Promise<{ h: Record<string, unknown>; p?: Buffe
       const e = state.idem.get(key);
       const live = e && e.until > Date.now() ? e : undefined;
       if (!(live?.state === 'sent' && live.attempt !== a)) {
-        state.idem.set(key, { state: 'sent', until: Number(h['until']), attempt: a });
+        // G5: the sender stores the member set of the recipients it sent (payload), like markSent's detail.
+        state.idem.set(key, {
+          state: 'sent',
+          until: Number(h['until']),
+          attempt: a,
+          ...(h['members'] === true ? { members: Buffer.from(f.p) } : {}),
+        });
       }
       return { h: {} };
+    }
+    case 'markPlanned': {
+      // G5: the shard worker's per-cell plan record. Unconditional, like the DynamoDB PutItem.
+      state.idemOps++;
+      state.idem.set(String(h['key']), {
+        state: 'sent',
+        until: Number(h['until']),
+        attempt: 0,
+        ...(h['members'] === true ? { members: Buffer.from(f.p) } : {}),
+      });
+      return { h: {} };
+    }
+    case 'inspect': {
+      state.idemOps++;
+      const e = state.idem.get(String(h['key']));
+      if (!e || e.until <= Date.now()) return { h: { r: 'absent' } };
+      if (e.state === 'sent' && e.members) return { h: { r: 'sent', members: true }, p: e.members };
+      return { h: { r: e.state } };
     }
     case 'release': {
       state.idemOps++;

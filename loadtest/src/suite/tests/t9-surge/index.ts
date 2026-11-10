@@ -15,7 +15,7 @@
  * late-join per-target claim; late-join "fails toward a duplicate" for a place newer than the alert).
  * Such "racers" may get two pushes; a device registered after the read must get exactly one.
  */
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Alert } from '@relay/shared';
@@ -163,26 +163,44 @@ interface MainOutcome {
   plannedAll: BigUint64Array;
 }
 
+interface ApiFinal {
+  overlayWithTarget: number;
+  /** Cell names; the cells file holds an index into this list per token. */
+  cells: string[];
+  files: { tokens: string; cells: string };
+}
+
 interface SurgeOutcome {
   load: LoadFinal;
   lateJoin: LateJoinFinal;
   api: ApiStats;
-  apiFinal: { overlayWithTarget: number };
-  /** Late-join pushes against the expected tokens of the new devices. */
-  lateCheck: Detailed;
+  apiFinal: ApiFinal;
   lateCount: number;
-  lateOutsideLost: number;
-  racers: number;
-  racersAfterRead: number;
-  /** Late-join push time minus first place saved, ms, split by phase. */
-  latency: { all: number[]; during: number[]; after: number[] };
-  lateTimes: Float64Array;
-  expectedTokens: BigUint64Array;
+  /** New push targets whose final holder saved a place. */
+  expected: number;
+  /** Expected tokens with no push from either path (and not answered "unregistered"). */
+  missed: number;
+  excusedDead: number;
+  /** Tokens pushed by BOTH the planned fan-out and late-join. */
+  both: number;
+  /** Same, for a push token that moved between two new devices (planned for the old holder, late-join for the new one). */
+  bothMoved: number;
+  /** Tokens late-join pushed twice. */
+  lateTwice: number;
+  /** Tokens the planned fan-out pushed twice because they moved between devices mid-read. */
+  plannedTwiceMoved: number;
+  plannedTwiceOther: number;
+  plannedOnly: number;
+  lateOnly: number;
+  movedTokens: number;
+  /** Place saved before, during or after the read of its cell (fanout.cell_planned); moved tokens left out. */
+  phases: Record<'before' | 'during' | 'after' | 'unknown', PhaseCounts>;
+  lateOutside: number;
   strayPlanned: number;
-  /** Tokens the planned fan-out sent more than once that no moved token explains. */
-  unexplainedRepeats: number;
-  /** Tokens sent twice by the planned fan-out because they moved between two devices it read at different times. */
-  plannedRepeatsFromMoves: number;
+  /** Planned pushes to non-seed tokens (new devices the shards read). */
+  plannedNew: number;
+  latency: { all: number[]; during: number[]; after: number[]; waited: number[] };
+  cellsTimed: number;
 }
 
 interface ApiStats {
@@ -248,6 +266,9 @@ async function runOnce(
         brokerPort: fleet.brokerPort,
         publicPem,
         alertsFile,
+        // Production waits 15 s between decisions for a device that may be in the planned fan-out.
+        planWaitDelayS: cfg.scale === 'smoke' ? 1 : 15,
+        outDir: dir,
       });
       load = await spawnCtl(here('load-worker.ts'), 'load', {
         heapMb: cfg.scale === 'smoke' ? 384 : 1024,
@@ -313,8 +334,25 @@ async function runOnce(
 
     const loadFinal = load && !error ? await load.req<LoadFinal>('finish', {}, 120_000) : undefined;
     const apiStats = api && !error ? await api.req<ApiStats>('stats') : undefined;
-    const apiFinal =
-      api && !error ? await api.req<{ overlayWithTarget: number }>('final') : undefined;
+    const apiFinal = api && !error ? await api.req<ApiFinal>('final', { outDir: dir }) : undefined;
+    // When each cell was read by the planned fan-out (fanout.cell_planned), merged over shard workers.
+    const cellPlans = new Map<string, { start: number; end: number }>();
+    if (api && !error) {
+      const parts = await Promise.all(
+        fleet.shards.map((w) =>
+          w.req<{ cells: Array<{ cell: string; start: number; end: number }> }>('cellPlans'),
+        ),
+      );
+      for (const part of parts) {
+        for (const c of part.cells) {
+          const old = cellPlans.get(c.cell);
+          cellPlans.set(c.cell, {
+            start: old ? Math.min(old.start, c.start) : c.start,
+            end: old ? Math.max(old.end, c.end) : c.end,
+          });
+        }
+      }
+    }
     const ljFinal = lj && !error ? await lj.req<LateJoinFinal>('finish', {}, 120_000) : undefined;
     const collected = await collect(fleet, dir);
     peakRssMb = rss.stop();
@@ -360,12 +398,14 @@ async function runOnce(
     if (loadFinal && apiStats && apiFinal && ljFinal) {
       out.surgeOut = analyseSurge(
         main,
+        expectedSeed,
         senders.map((s) => s.files),
         loadFinal,
         ljFinal,
         apiStats,
         apiFinal,
-        sortedUnique(dead.slice()),
+        cellPlans,
+        dead,
       );
     }
     return out;
@@ -376,102 +416,170 @@ async function runOnce(
   }
 }
 
+function upperBound(a: BigUint64Array, v: bigint): number {
+  let lo = 0;
+  let hi = a.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if ((a[mid] as bigint) <= v) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+const countOf = (a: BigUint64Array, v: bigint): number => upperBound(a, v) - lowerBound(a, v);
+const hasToken = (a: BigUint64Array, v: bigint): boolean => countOf(a, v) > 0;
+
+export interface PhaseCounts {
+  /** Devices whose place was saved in this phase relative to the read of their cell. */
+  n: number;
+  planned: number;
+  late: number;
+}
+
+function readU32(file: string): Uint32Array {
+  const b = readFileSync(file);
+  return new Uint32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.length));
+}
+
 function analyseSurge(
   main: MainOutcome,
+  expectedSeed: BigUint64Array,
   senderFiles: Array<{ lateTokens: string; lateTimes: string; lost: string }>,
   load: LoadFinal,
   lateJoin: LateJoinFinal,
   api: ApiStats,
-  apiFinal: { overlayWithTarget: number },
+  apiFinal: ApiFinal,
+  cellPlans: Map<string, { start: number; end: number }>,
   dead: BigUint64Array,
 ): SurgeOutcome {
-  // Expected tokens with the time their first place was saved, sorted by token.
+  // Expected tokens (the final holder saved a place) with the time their first place was saved.
   const e = sortPairs(readWords(load.files.tokens), readDoubles(load.files.firstPlaceAt));
-  // Late-join accepted pushes with their times.
-  const lateTokens = concatWords(senderFiles.map((f) => readWords(f.lateTokens)));
-  const lateTimes = new Float64Array(lateTokens.length);
+  const late0 = concatWords(senderFiles.map((f) => readWords(f.lateTokens)));
+  const lateTimes0 = new Float64Array(late0.length);
   let at = 0;
   for (const f of senderFiles) {
     const t = readDoubles(f.lateTimes);
-    lateTimes.set(t, at);
+    lateTimes0.set(t, at);
     at += t.length;
   }
+  const late = sortPairs(late0, lateTimes0);
   const lost = sortedUnique(concatWords(senderFiles.map((f) => readWords(f.lost))));
-  const late = sortPairs(lateTokens, lateTimes);
-  const lateCheck = exactlyOnceDetailed(e.tokens, late.tokens.slice(), dead);
-  // A duplicate is excused when the token's answer was lost (the sender retried an accepted push).
-  const lostSet = new Set(lost);
-  const dupNotExcused = lateCheck.duplicateHashes.filter((h) => !lostSet.has(h)).length;
-  if (dupNotExcused !== lateCheck.duplicateHashes.length) {
-    const excused = lateCheck.duplicateHashes.length - dupNotExcused;
-    lateCheck.duplicatePushes = Math.max(0, lateCheck.duplicatePushes - excused);
-    lateCheck.duplicateDevices = dupNotExcused;
-  }
+  const moved = sortedUnique(readWords(load.files.moved));
+  const waited = sortedUnique(readWords(lateJoin.deferredTokensFile));
+  // Planned pushes to tokens that are not seed devices: the new devices the shards read.
+  const extras = minusMultiset(main.plannedAll, expectedSeed);
+  // Cell of each expected token (its final holder's place), from the API's index.
+  const cellOf = sortPairs(
+    readWords(apiFinal.files.tokens),
+    Float64Array.from(readU32(apiFinal.files.cells)),
+  );
 
-  // Racers: tokens that were in the planned fan-out and also got a late-join push.
-  const plannedSorted = main.plannedAll; // sorted
-  let racers = 0;
-  let racersAfterRead = 0;
+  const out = {
+    missed: 0,
+    excusedDead: 0,
+    both: 0,
+    bothMoved: 0,
+    lateTwice: 0,
+    plannedTwiceMoved: 0,
+    plannedTwiceOther: 0,
+    plannedOnly: 0,
+    lateOnly: 0,
+    movedTokens: 0,
+  };
+  const phases = {
+    before: { n: 0, planned: 0, late: 0 } as PhaseCounts,
+    during: { n: 0, planned: 0, late: 0 } as PhaseCounts,
+    after: { n: 0, planned: 0, late: 0 } as PhaseCounts,
+    unknown: { n: 0, planned: 0, late: 0 } as PhaseCounts,
+  };
+  const deadSet = sortedUnique(dead.slice());
+  const lostSet = new Set(lost);
   for (let i = 0; i < e.tokens.length; i++) {
     const v = e.tokens[i] as bigint;
-    const p = lowerBound(plannedSorted, v);
-    if (p < plannedSorted.length && plannedSorted[p] === v) {
-      racers++;
-      // Its place was saved after the planner had finished reading cells: it cannot have been planned.
-      if ((e.values[i] as number) > main.shardDoneAt) racersAfterRead++;
+    const cp = countOf(extras, v);
+    const cl = countOf(late.tokens, v);
+    if (cp + cl === 0) {
+      if (hasToken(deadSet, v)) out.excusedDead++;
+      else out.missed++;
+      continue;
     }
+    const isMoved = hasToken(moved, v);
+    if (cp > 0 && cl > 0) {
+      if (isMoved) out.bothMoved++;
+      else out.both++;
+    } else if (cl > 1 && !lostSet.has(v)) out.lateTwice++;
+    else if (cp > 1) {
+      if (hasToken(moved, v)) out.plannedTwiceMoved++;
+      else out.plannedTwiceOther++;
+    }
+    if (cp > 0 && cl === 0) out.plannedOnly++;
+    if (cl > 0 && cp === 0) out.lateOnly++;
+    // Classify by when the place was saved against the read of its cell. Moved tokens have two
+    // holders in two cells, so they are left out.
+    if (hasToken(moved, v)) {
+      out.movedTokens++;
+      continue;
+    }
+    const ci = lowerBound(cellOf.tokens, v);
+    const cellName =
+      ci < cellOf.tokens.length && cellOf.tokens[ci] === v
+        ? apiFinal.cells[cellOf.values[ci] as number]
+        : undefined;
+    const plan = cellName ? cellPlans.get(cellName) : undefined;
+    const placeAt = e.values[i] as number;
+    const phase = !plan
+      ? phases.unknown
+      : placeAt < plan.start
+        ? phases.before
+        : placeAt <= plan.end
+          ? phases.during
+          : phases.after;
+    phase.n++;
+    if (cp > 0) phase.planned++;
+    if (cl > 0) phase.late++;
   }
-  // Planned pushes to tokens that are neither seed devices nor expected new devices.
+  // Pushes to tokens that are not expected new devices.
+  let lateOutside = 0;
+  for (let i = 0; i < late.tokens.length; i++) {
+    if (!hasToken(e.tokens, late.tokens[i] as bigint)) lateOutside++;
+  }
   let strayPlanned = 0;
-  for (const h of main.plannedExtra) {
-    const p = lowerBound(e.tokens, h);
-    if (!(p < e.tokens.length && e.tokens[p] === h)) strayPlanned++;
-  }
-
-  // Tokens the planned fan-out sent more than once. Only a moved token can explain it: the shards read
-  // the old holder's cell before the move and the new holder's cell after it, and the planned path
-  // has no per-target claim.
-  const moved = sortedUnique(readWords(load.files.moved));
-  let unexplainedRepeats = 0;
-  let plannedRepeatsFromMoves = 0;
-  for (let i = 1; i < plannedSorted.length; i++) {
-    if (plannedSorted[i] !== plannedSorted[i - 1]) continue;
-    const v = plannedSorted[i] as bigint;
-    if (i >= 2 && plannedSorted[i - 2] === v) continue; // count each token once
-    const p = lowerBound(moved, v);
-    if (p < moved.length && moved[p] === v) plannedRepeatsFromMoves++;
-    else unexplainedRepeats++;
+  for (let i = 0; i < extras.length; i++) {
+    if (!hasToken(e.tokens, extras[i] as bigint)) strayPlanned++;
   }
 
   // Latency: late-join push accepted minus the first place saved for that token.
-  const all: number[] = [];
-  const during: number[] = [];
-  const after: number[] = [];
+  const lat = {
+    all: [] as number[],
+    during: [] as number[],
+    after: [] as number[],
+    waited: [] as number[],
+  };
   for (let i = 0; i < late.tokens.length; i++) {
     const v = late.tokens[i] as bigint;
     const p = lowerBound(e.tokens, v);
     if (!(p < e.tokens.length && e.tokens[p] === v)) continue;
     const placeAt = e.values[p] as number;
     const ms = Math.max(0, (late.values[i] as number) - placeAt);
-    all.push(ms);
-    (placeAt <= main.lastAt ? during : after).push(ms);
+    lat.all.push(ms);
+    (placeAt <= main.lastAt ? lat.during : lat.after).push(ms);
+    if (hasToken(waited, v)) lat.waited.push(ms);
   }
   return {
     load,
     lateJoin,
     api,
     apiFinal,
-    lateCheck,
     lateCount: late.tokens.length,
-    lateOutsideLost: lost.length,
-    racers,
-    racersAfterRead,
-    latency: { all, during, after },
-    lateTimes: late.values,
-    expectedTokens: e.tokens,
+    expected: e.tokens.length,
+    ...out,
+    phases,
+    lateOutside,
     strayPlanned,
-    unexplainedRepeats,
-    plannedRepeatsFromMoves,
+    plannedNew: extras.length,
+    latency: lat,
+    cellsTimed: cellPlans.size,
   };
 }
 
@@ -688,22 +796,32 @@ function buildScenario(
     `index ${s.apiFinal.overlayWithTarget}, expected ${lf.expectedTokens}`,
   );
 
-  // ----- late join: exactly once -----
-  const lc = s.lateCheck;
+  // ----- every new device got the alert exactly once (planned or late-join, never both) -----
+  const ev = s.latency;
   add(
-    `late-join missed == 0 (${fmt(lc.expected)} new push targets expected)`,
-    lc.missed === 0,
-    `${lc.missed} missed${lc.excusedDead ? `, ${lc.excusedDead} excused (unregistered)` : ''}`,
+    `new devices missed == 0 (${fmt(s.expected)} new push targets expected)`,
+    s.missed === 0,
+    `${s.missed} missed${s.excusedDead ? `, ${s.excusedDead} excused (unregistered)` : ''}`,
+  );
+  add(
+    'devices sent by both paths (planned fan-out and late-join) == 0 (tokens that moved between devices are counted separately)',
+    s.both === 0,
+    `${s.both} devices`,
   );
   add(
     'late-join duplicates == 0 (no device got its late-join push twice)',
-    lc.duplicatePushes === 0,
-    `${lc.duplicatePushes}`,
+    s.lateTwice === 0,
+    `${s.lateTwice}`,
   );
   add(
-    'late-join pushes only to devices the API registered with a place in the area',
-    lc.outside === 0,
-    `${lc.outside}`,
+    'pushes only to devices the API registered with a place in the area (late-join and planned)',
+    s.lateOutside === 0 && s.strayPlanned === 0,
+    `${s.lateOutside} late-join, ${s.strayPlanned} planned`,
+  );
+  add(
+    'the planned fan-out repeated no token except one that moved between two devices mid-read',
+    s.plannedTwiceOther === 0,
+    `${s.plannedTwiceOther} unexplained, ${s.plannedTwiceMoved} from moved tokens`,
   );
   add(
     'no late-join intent was dead-lettered, and every intent the API queued was processed',
@@ -712,17 +830,33 @@ function buildScenario(
       s.lateJoin.processed === s.lateJoin.polled,
     `queued ${s.api.intents.enqueued}, processed ${s.lateJoin.processed}, dead ${s.lateJoin.deadLettered}`,
   );
-
-  // ----- planned vs late-join overlap (the documented trade-off) -----
+  const gaveUp = s.lateJoin.logEvents['latejoin.plan_wait_gave_up'] ?? 0;
   add(
-    'every device that got both a planned and a late-join push registered before the planned read finished',
-    s.racersAfterRead === 0,
-    `${s.racers} such devices, ${s.racersAfterRead} registered after the read`,
+    'late-join never gave up waiting for the plan (latejoin.plan_wait_gave_up == 0)',
+    gaveUp === 0,
+    `${gaveUp}; deferred ${s.lateJoin.logEvents['latejoin.waiting_for_plan'] ?? 0} times`,
+  );
+  // Placed against the read window of the device's cell (fanout.cell_planned).
+  const ph = s.phases;
+  add(
+    'cell read windows were recorded (fanout.cell_planned) for the cells new devices registered in',
+    s.cellsTimed > 0 && ph.unknown.n === 0,
+    `${s.cellsTimed} cells timed, ${ph.unknown.n} devices in an untimed cell`,
   );
   add(
-    'the planned fan-out sent only to seed devices and to devices the API had registered',
-    s.strayPlanned === 0 && s.unexplainedRepeats === 0,
-    `${s.strayPlanned} stray, ${s.unexplainedRepeats} repeated without a token move, ${s.plannedRepeatsFromMoves} repeated because a token moved while the shards were reading`,
+    `devices that registered before their cell was read got only the planned push (${ph.before.n} devices)`,
+    ph.before.late === 0 && ph.before.planned === ph.before.n,
+    `${ph.before.planned} planned, ${ph.before.late} late-join`,
+  );
+  add(
+    `devices that registered after their cell was read got only the late-join push (${ph.after.n} devices)`,
+    ph.after.planned === 0 && ph.after.late === ph.after.n,
+    `${ph.after.planned} planned, ${ph.after.late} late-join`,
+  );
+  add(
+    `devices that registered during the read got exactly one push (${ph.during.n} devices)`,
+    ph.during.planned + ph.during.late === ph.during.n,
+    `${ph.during.planned} planned, ${ph.during.late} late-join`,
   );
   add(
     'senders and mocks agree on accepted pushes (with surge)',
@@ -785,10 +919,15 @@ function buildScenario(
     { name: 'rapid-move groups (200,200,200,409,409)', value: lf.rapid.ok, unit: 'groups' },
     { name: 'moves refused with 409', value: lf.rapid.rejected409, unit: 'requests' },
     { name: 'late-join pushes (accepted)', value: s.lateCount, unit: 'pushes' },
-    { name: 'late-join missed', value: lc.missed, unit: 'devices', target: { op: '==', value: 0 } },
+    {
+      name: 'new devices missed',
+      value: s.missed,
+      unit: 'devices',
+      target: { op: '==', value: 0 },
+    },
     {
       name: 'late-join duplicates',
-      value: lc.duplicatePushes,
+      value: s.lateTwice,
       unit: 'pushes',
       target: { op: '==', value: 0 },
     },
@@ -830,13 +969,53 @@ function buildScenario(
     },
     {
       name: 'devices sent by both paths (planned and late-join)',
-      value: s.racers,
+      value: s.both,
       unit: 'devices',
+      target: { op: '==', value: 0 },
     },
     {
-      name: 'tokens the planned fan-out sent twice because they moved mid-read',
-      value: s.plannedRepeatsFromMoves,
+      name: 'moved push tokens pushed by both paths (old holder planned, new holder late-join)',
+      value: s.bothMoved,
       unit: 'tokens',
+    },
+    {
+      name: 'new devices pushed by the planned fan-out only',
+      value: s.plannedOnly,
+      unit: 'devices',
+    },
+    { name: 'new devices pushed by late-join only', value: s.lateOnly, unit: 'devices' },
+    {
+      name: 'tokens the planned fan-out sent twice because they moved mid-read',
+      value: s.plannedTwiceMoved,
+      unit: 'tokens',
+    },
+    { name: 'devices registered before their cell was read', value: ph.before.n, unit: 'devices' },
+    {
+      name: 'devices registered during the read of their cell',
+      value: ph.during.n,
+      unit: 'devices',
+    },
+    { name: 'devices registered after their cell was read', value: ph.after.n, unit: 'devices' },
+    {
+      name: 'late-join deferrals (latejoin.waiting_for_plan)',
+      value: s.lateJoin.logEvents['latejoin.waiting_for_plan'] ?? 0,
+      unit: 'intents',
+    },
+    {
+      name: 'late-join gave up waiting (latejoin.plan_wait_gave_up)',
+      value: gaveUp,
+      unit: 'intents',
+      target: { op: '==', value: 0 },
+    },
+    {
+      name: `late-join latency p50, devices that waited for the plan (${ev.waited.length})`,
+      value: q(ev.waited, 0.5),
+      unit: 's',
+    },
+    {
+      name: 'late-join latency p99, devices that waited for the plan',
+      value: q(ev.waited, 0.99),
+      unit: 's',
     },
     {
       name: 'main alert: time to 90%, baseline',
@@ -875,7 +1054,7 @@ function buildScenario(
   if (seed) metrics.push({ name: 'seed time', value: round(seed.seedMs / 1000, 1), unit: 's' });
   notes.push(
     'Late-join sends go onto the same urgent queue as the main alert, behind the messages already queued, so a place saved during the fan-out waits for that backlog (see the "during" and "after" latencies). The queue is first in, first out within a lane.',
-    'A device whose place was saved before the planned fan-out read its cell can be pushed by both paths: the planned sender does not take the late-join per-target claim, and late-join fails toward a duplicate for a place newer than the alert. The count is reported as "devices sent by both paths"; the check requires each of them to have registered before the read finished.',
+    'Late-join (G5) checks the planned fan-out first: the shard workers write a plan record per cell and the senders store the recipient set of each batch they send. A device in the plan is skipped; one that is not is sent at once; where the plan is not known yet the intent waits (latejoin.waiting_for_plan, 15 s in production, 1 s in smoke) and is decided again. Devices are classified by when their place was saved against the read window of their cell (fanout.cell_planned).',
     `The slowdown bound is a limit of x${SLOWDOWN_LIMIT[scale].factor} plus ${SLOWDOWN_LIMIT[scale].slackS} s over the baseline's time to last push.`,
   );
   const verdict = checks.every((c) => c.ok) ? 'pass' : 'fail';

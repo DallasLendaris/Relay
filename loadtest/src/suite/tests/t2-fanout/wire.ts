@@ -10,7 +10,7 @@
  * Message bodies travel as raw payload bytes (never re-encoded inside JSON).
  */
 import net from 'node:net';
-import type { IdempotencyStore } from '../../../../../backend/src/ports.js';
+import type { IdempotencyStore, KeyInspection } from '../../../../../backend/src/ports.js';
 
 export interface Frame {
   h: Record<string, unknown> & { id: number };
@@ -210,10 +210,29 @@ export class RemoteIdempotencyStore implements IdempotencyStore {
     return r;
   }
 
-  async markSent(key: string, expiresAt: Date): Promise<void> {
+  async markSent(key: string, expiresAt: Date, detail?: { members?: Uint8Array }): Promise<void> {
     const a = this.attempts.get(key) ?? 0;
     this.attempts.delete(key);
-    await this.broker.call({ op: 'markSent', key, until: expiresAt.getTime(), a });
+    const members = detail?.members ? Buffer.from(detail.members) : undefined;
+    await this.broker.call(
+      { op: 'markSent', key, until: expiresAt.getTime(), a, members: members !== undefined },
+      members,
+    );
+  }
+
+  /** The shard worker's plan record of a cell (G5); `members` null = set over its size cap. */
+  async markPlanned(key: string, members: Uint8Array | null, expiresAt: Date): Promise<void> {
+    const payload = members ? Buffer.from(members) : undefined;
+    await this.broker.call(
+      { op: 'markPlanned', key, until: expiresAt.getTime(), members: payload !== undefined },
+      payload,
+    );
+  }
+
+  async inspect(key: string): Promise<KeyInspection> {
+    const f = await this.broker.call({ op: 'inspect', key });
+    const state = f.h['r'] as 'absent' | 'leased' | 'sent';
+    return f.h['members'] === true ? { state, members: new Uint8Array(f.p) } : { state };
   }
 
   async release(key: string): Promise<void> {

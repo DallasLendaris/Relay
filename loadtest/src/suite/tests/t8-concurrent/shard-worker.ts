@@ -19,7 +19,7 @@ import type { AlertVerifier } from '../../../../../backend/src/signing/index.js'
 import { createCheckInToken } from '../../../../../backend/src/tokens/checkInToken.js';
 import { TOKEN_KEY, verifierFromPem } from '../t2-fanout/alert.js';
 import { DiskCellIndex, SeedReader } from '../t2-fanout/seed-data.js';
-import { BrokerClient, QUEUE_URLS, fakeSqs } from '../t2-fanout/wire.js';
+import { BrokerClient, QUEUE_URLS, RemoteIdempotencyStore, fakeSqs } from '../t2-fanout/wire.js';
 import { ctlCall, runCtlWorker } from './ctl.js';
 import { LayeredCellIndex } from './layered-index.js';
 
@@ -31,13 +31,31 @@ runCtlWorker(async () => {
   let index: LayeredCellIndex | undefined;
   const logEvents = new Map<string, number>();
   const count = (msg: string): void => void logEvents.set(msg, (logEvents.get(msg) ?? 0) + 1);
-  const logger: Logger = { info: () => undefined, warn: count, error: count };
+  // fanout.cell_planned: when each cell was read (G5), merged per cell over the jobs this process ran.
+  const cellPlans = new Map<string, { start: number; end: number }>();
+  const logger: Logger = {
+    info: (msg, fields) => {
+      if (msg !== 'fanout.cell_planned' || !fields) return;
+      const cell = String(fields['h3Cell']);
+      const start = Number(fields['readStartMs']);
+      const end = Number(fields['readEndMs']);
+      const old = cellPlans.get(cell);
+      cellPlans.set(cell, {
+        start: old ? Math.min(old.start, start) : start,
+        end: old ? Math.max(old.end, end) : end,
+      });
+    },
+    warn: count,
+    error: count,
+  };
+  let idempotency: RemoteIdempotencyStore | undefined;
   let jobs = 0;
 
   return {
     handlers: {
       init: async (p: { brokerPort: number; publicPem: string }) => {
         broker = await BrokerClient.connect(p.brokerPort);
+        idempotency = new RemoteIdempotencyStore(broker);
         verify = verifierFromPem(p.publicPem);
         return { ok: true };
       },
@@ -73,6 +91,7 @@ runCtlWorker(async () => {
             : undefined,
         );
         logEvents.clear();
+        cellPlans.clear();
         jobs = 0;
         return { ok: true };
       },
@@ -88,12 +107,17 @@ runCtlWorker(async () => {
           logger,
           cellIndex: index,
           sendQueue: new SqsSendQueue(fakeSqs(broker, 'producer'), QUEUE_URLS),
+          // Plan records (markPlanned) and dense-cell tombstones live in the broker's idempotency table.
+          ...(idempotency ? { idempotency } : {}),
           makeCheckInToken: (alertId, deviceId, h3Cell, expiresAt) =>
             createCheckInToken({ alertId, deviceId, expiresAt, h3Cell }, TOKEN_KEY),
         });
         jobs++;
         return { ...r, ms: performance.now() - t0 };
       },
+      cellPlans: () => ({
+        cells: [...cellPlans].map(([cell, w]) => ({ cell, start: w.start, end: w.end })),
+      }),
       info: () => ({
         jobs,
         overlayEntries: index?.overlayEntries ?? 0,

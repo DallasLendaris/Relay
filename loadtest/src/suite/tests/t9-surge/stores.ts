@@ -264,6 +264,13 @@ export class OverlayCellIndex implements CellIndex {
     return n;
   }
 
+  /** Every entry with a working push target: its token and cell. */
+  *targets(): Generator<{ token: string; h3Cell: string }> {
+    for (const [h3Cell, m] of this.cells) {
+      for (const e of m.values()) if (e.target) yield { token: e.target.token, h3Cell };
+    }
+  }
+
   async put(entries: CellIndexEntry[]): Promise<void> {
     for (const e of entries) {
       let cell = this.cells.get(e.h3Cell);

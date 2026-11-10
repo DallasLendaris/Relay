@@ -9,7 +9,8 @@
  * Control: init, overlay, lj_poll, lj_context, stats, stop.
  */
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Alert } from '@relay/shared';
 import { InMemoryAlertStore } from '../../../../../backend/src/adapters/memory/alert-store.js';
 import { createApi, type ApiDeps } from '../../../../../backend/src/api/index.js';
@@ -18,6 +19,7 @@ import {
   type LateJoinIntent,
   type LateJoinQueue,
 } from '../../../../../backend/src/scale/latejoin/intent.js';
+import { HashList } from '../t2-fanout/verify.js';
 import { startServer } from '../t7-soak/common.js';
 import { DEVICE_CRED_KEY, TOKEN_KEY } from '../t7-soak/keys.js';
 import { runCtlWorker } from '../t8-concurrent/ctl.js';
@@ -134,8 +136,32 @@ runCtlWorker(async () => {
             : null,
         };
       },
-      /** Heavier: scans the overlay. Read once at the end. */
-      final: () => ({ overlayWithTarget: overlay.withTarget }),
+      /**
+       * Heavier: scans the overlay. Read once at the end. Writes the token hash and cell number of
+       * every entry with a push target to files, for the planned-versus-late classification.
+       */
+      final: (p: { outDir: string }) => {
+        const list = new HashList();
+        const ids: number[] = [];
+        const cellNo = new Map<string, number>();
+        for (const t of overlay.targets()) {
+          list.add(t.token);
+          let n = cellNo.get(t.h3Cell);
+          if (n === undefined) cellNo.set(t.h3Cell, (n = cellNo.size));
+          ids.push(n);
+        }
+        const tokensFile = join(p.outDir, 'api-target-tokens.bin');
+        const cellsFile = join(p.outDir, 'api-target-cells.bin');
+        const words = list.toArray();
+        writeFileSync(tokensFile, Buffer.from(words.buffer, words.byteOffset, words.byteLength));
+        const u = Uint32Array.from(ids);
+        writeFileSync(cellsFile, Buffer.from(u.buffer, u.byteOffset, u.byteLength));
+        return {
+          overlayWithTarget: list.n,
+          cells: [...cellNo.keys()],
+          files: { tokens: tokensFile, cells: cellsFile },
+        };
+      },
       stats: () => ({
         requests,
         serverErrors,

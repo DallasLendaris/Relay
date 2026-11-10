@@ -11,7 +11,8 @@
  *
  * Control: init, start, status, finish, stop.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { SQSEvent } from 'aws-lambda';
 import type { Alert } from '@relay/shared';
 import { InMemoryAlertStore } from '../../../../../backend/src/adapters/memory/alert-store.js';
@@ -26,6 +27,7 @@ import { createCheckInToken } from '../../../../../backend/src/tokens/checkInTok
 import { TOKEN_KEY, verifierFromPem } from '../t2-fanout/alert.js';
 import { BrokerClient, QUEUE_URLS, RemoteIdempotencyStore, fakeSqs } from '../t2-fanout/wire.js';
 import { ctlCall, runCtlWorker, sleep } from '../t8-concurrent/ctl.js';
+import { HashList } from '../t2-fanout/verify.js';
 import { quantile } from '../t8-concurrent/ledger.js';
 
 interface Context {
@@ -39,6 +41,10 @@ export interface LateJoinFinal {
   processed: number;
   retried: number;
   deadLettered: number;
+  /** Times the handler put an intent back to wait for the planned fan-out (latejoin.waiting_for_plan). */
+  parked: number;
+  /** Token hashes of devices that waited (BigUint64 file). */
+  deferredTokensFile: string;
   /** Time an intent waited in the queue before it was picked up, ms. */
   waitP50: number;
   waitP99: number;
@@ -66,6 +72,18 @@ runCtlWorker(async () => {
   let inflight = 0;
   let retryWaiting = 0;
   let apiWaiting = 0;
+  /** Intents the handler put back to wait for the planned fan-out (G5), with their delay. */
+  const delayed: Array<{
+    at: number;
+    due: number;
+    intent: LateJoinIntent;
+    tries: number;
+    id: string;
+  }> = [];
+  let parkedCount = 0;
+  let planWaitDelayS = 15;
+  let outDir = '';
+  const deferredTokens = new HashList();
   const waits: number[] = [];
   const handles: number[] = [];
   const logEvents = new Map<string, number>();
@@ -86,6 +104,13 @@ runCtlWorker(async () => {
     return value;
   };
 
+  const writeDeferred = (): string => {
+    const file = join(outDir, 'latejoin-deferred-tokens.bin');
+    const w = deferredTokens.toArray();
+    writeFileSync(file, Buffer.from(w.buffer, w.byteOffset, w.byteLength));
+    return file;
+  };
+
   const sweep = setInterval(() => {
     const cutoff = Date.now() - 2_000;
     for (const [k, v] of contexts) if (v.at < cutoff) contexts.delete(k);
@@ -101,12 +126,16 @@ runCtlWorker(async () => {
       id: string;
     }> = [];
     let seq = 0;
-    while (running || retries.length > 0) {
+    while (running || retries.length > 0 || delayed.length > 0) {
       let records: Array<{ at: number; intent: LateJoinIntent; tries: number; id: string }> = [];
       const now = Date.now();
       const due = retries.filter((r) => r.due <= now).slice(0, batchSize);
       for (const r of due) retries.splice(retries.indexOf(r), 1);
       records = due;
+      for (const d of delayed.filter((x) => x.due <= now).slice(0, batchSize - records.length)) {
+        delayed.splice(delayed.indexOf(d), 1);
+        records.push(d);
+      }
       if (running && records.length < batchSize) {
         const r = await ctlCall<{
           items: Array<{ intent: LateJoinIntent; at: number }>;
@@ -119,7 +148,7 @@ runCtlWorker(async () => {
           records.push({ at: it.at, intent: it.intent, tries: 0, id: `m${process.pid}-${seq++}` });
         }
       }
-      retryWaiting = retries.length;
+      retryWaiting = retries.length + delayed.length;
       if (records.length === 0) {
         await sleep(20);
         continue;
@@ -156,7 +185,7 @@ runCtlWorker(async () => {
         retries.push({ ...r, tries: r.tries + 1, due: Date.now() + 500 });
       }
       inflight -= records.length;
-      retryWaiting = retries.length;
+      retryWaiting = retries.length + delayed.length;
     }
   };
 
@@ -167,6 +196,9 @@ runCtlWorker(async () => {
         brokerPort: number;
         publicPem: string;
         alertsFile: string;
+        /** Seconds a deferred intent waits before it is decided again (production: 15). */
+        planWaitDelayS: number;
+        outDir: string;
       }) => {
         api = p.apiCtl;
         broker = await BrokerClient.connect(p.brokerPort);
@@ -195,7 +227,29 @@ runCtlWorker(async () => {
           clock: { now: () => new Date() },
           logger,
         };
-        handler = buildLateJoinHandler(deps);
+        planWaitDelayS = p.planWaitDelayS;
+        outDir = p.outDir;
+        // The queue the handler parks intents on while it waits for the planned fan-out: back after
+        // the delay, like SQS DelaySeconds. Parking is also where we note which tokens waited.
+        const parkQueue = {
+          enqueue: async (intent: LateJoinIntent, opts?: { delaySeconds?: number }) => {
+            parkedCount++;
+            const ctx = await fetchContext(intent.deviceId, false).catch(() => undefined);
+            const token = ctx?.device?.pushToken;
+            if (token) deferredTokens.add(token);
+            delayed.push({
+              at: Date.now(),
+              due: Date.now() + (opts?.delaySeconds ?? planWaitDelayS) * 1000,
+              intent,
+              tries: 0,
+              id: `p${process.pid}-${parkedCount}`,
+            });
+          },
+        };
+        handler = buildLateJoinHandler(deps, undefined, {
+          queue: parkQueue,
+          planWait: { delaySeconds: planWaitDelayS },
+        });
         return { ok: true };
       },
       start: (p: { concurrency: number; batchSize: number }) => {
@@ -204,13 +258,22 @@ runCtlWorker(async () => {
         loops = Array.from({ length: p.concurrency }, () => loop(p.batchSize));
         return { ok: true };
       },
-      status: () => ({ polled, processed, inflight, retryWaiting, apiWaiting, dead }),
+      status: () => ({
+        polled,
+        processed: processed - parkedCount,
+        inflight,
+        retryWaiting,
+        apiWaiting,
+        dead,
+      }),
       finish: async (): Promise<LateJoinFinal> => {
         running = false;
         await Promise.all(loops);
         return {
           polled,
-          processed,
+          processed: processed - parkedCount,
+          parked: parkedCount,
+          deferredTokensFile: writeDeferred(),
           retried,
           deadLettered: dead,
           waitP50: quantile(waits, 0.5),
