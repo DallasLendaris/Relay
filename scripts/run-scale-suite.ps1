@@ -97,7 +97,8 @@ try {
   if ($Tests) { $suiteArgs += @('--tests', ($Tests -replace '\s', '')) }
   if ($Workers -gt 0) { $suiteArgs += @('--workers', "$Workers") }
 
-  & npm run suite --workspace loadtest -- @suiteArgs
+  # Windows PowerShell 5.1 transcripts miss native program output, so tee it into the log too.
+  & npm run suite --workspace loadtest -- @suiteArgs 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath (Join-Path $OutDir 'suite-output.txt') -Append
   $exit = $LASTEXITCODE
 }
 catch {
@@ -110,7 +111,7 @@ finally {
   Write-Host ""
   Write-Host ("Total time: {0:hh\:mm\:ss}" -f $sw.Elapsed)
   Write-Host "Results:    $OutDir  (open SUMMARY.md)"
-  Write-Host "Log:        $(Join-Path $OutDir 'suite-log.txt')"
+  Write-Host "Log:        $(Join-Path $OutDir 'suite-output.txt')"
   Write-Host "Exit code:  $exit  ($(if ($exit -eq 0) { 'all tests passed or were skipped' } else { 'at least one test FAILED, see SUMMARY.md' }))"
   try { Stop-Transcript | Out-Null } catch { }
 }
