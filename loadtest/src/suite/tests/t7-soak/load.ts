@@ -142,6 +142,22 @@ runWorkerMain(async () => {
   });
   const hex64 = (): string => randomBytes(32).toString('hex');
 
+  /**
+   * POST /places at a random point in `box`, retrying with a new point when the API answers 422
+   * outside_california: the rough boxes touch the ocean (Monterey Bay, Santa Monica Bay), and the
+   * API rightly refuses a home in the sea. The first full run died on that during setup.
+   */
+  async function addPlaceIn(
+    cred: string,
+    label: string,
+    box: Parameters<typeof randomPoint>[0],
+  ): Promise<Awaited<ReturnType<typeof api>>> {
+    for (let i = 0; ; i++) {
+      const r = await api('POST', '/places', cred, { label, ...randomPoint(box) });
+      if (r.status !== 422 || i >= 20) return r;
+    }
+  }
+
   async function createDevice(kind: Kind): Promise<void> {
     const created = await api('POST', '/devices');
     if (created.status !== 201 || !created.json) throw new Error(`create device ${created.status}`);
@@ -156,17 +172,11 @@ runWorkerMain(async () => {
     });
     if (put.status !== 204) throw new Error(`push token ${put.status}`);
     if (kind !== 'Q') {
-      const place = await api('POST', '/places', cred, {
-        label: 'Home',
-        ...randomPoint(COUNTY_BOUNDS),
-      });
+      const place = await addPlaceIn(cred, 'Home', COUNTY_BOUNDS);
       if (place.status !== 201 || !place.json) throw new Error(`anchor place ${place.status}`);
       m.cell = String(place.json['h3Cell']);
     } else {
-      const place = await api('POST', '/places', cred, {
-        label: 'Away',
-        ...randomPoint(QUIET_BOX),
-      });
+      const place = await addPlaceIn(cred, 'Away', QUIET_BOX);
       if (place.status !== 201 || !place.json) throw new Error(`quiet place ${place.status}`);
       m.quiet.push(String(place.json['id']));
     }
@@ -297,10 +307,7 @@ runWorkerMain(async () => {
       const add = m.quiet.length === 0 || (m.quiet.length < 4 && rng() < 0.5);
       const t0 = performance.now();
       if (add) {
-        const r = await api('POST', '/places', m.cred, {
-          label: 'Away',
-          ...randomPoint(QUIET_BOX),
-        });
+        const r = await addPlaceIn(m.cred, 'Away', QUIET_BOX);
         lat.placeAdd.add(performance.now() - t0);
         if (r.status !== 201 || !r.json) throw new Error(`place add ${r.status}`);
         m.quiet.push(String(r.json['id']));

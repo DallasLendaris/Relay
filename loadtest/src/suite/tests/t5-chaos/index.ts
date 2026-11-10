@@ -156,6 +156,7 @@ interface PlannerStatus {
   jobsStarted: number;
   parkedNow: number;
   parkedTotal: number;
+  parkedJobs: number;
   planParkedTotal: number;
   unparkedJobs: number;
   jobErrors: number;
@@ -539,8 +540,10 @@ function buildDefs(sizes: Sizes): Def[] {
       }
       checks.push({
         name: 'every parked shard job was resumed',
-        ok: r.planner.unparkedJobs === r.planner.parkedTotal,
-        detail: `${r.planner.parkedTotal} parked, ${r.planner.unparkedJobs} resumed`,
+        // A job still paused when its 60 s park delay ends is parked again, so park events
+        // (parkedTotal) exceed distinct jobs; each distinct job must be resumed exactly once.
+        ok: r.planner.unparkedJobs === r.planner.parkedJobs,
+        detail: `${r.planner.parkedJobs} jobs parked (${r.planner.parkedTotal} park events), ${r.planner.unparkedJobs} resumed`,
       });
       return {
         metrics: [

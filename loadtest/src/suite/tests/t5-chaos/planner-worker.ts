@@ -122,6 +122,8 @@ runWorkerMain(async () => {
     jobsStarted: 0,
     jobErrors: 0,
     parkedTotal: 0,
+    /** Distinct shard jobs parked at least once (a job parked again while still paused counts once). */
+    parkedJobs: 0,
     planParkedTotal: 0,
     unparkedJobs: 0,
     planRuns: 0,
@@ -138,6 +140,7 @@ runWorkerMain(async () => {
   const shardIds = new Set<string>();
   const completed = new Set<string>();
   const parkedThisRun = new Set<string>();
+  const everParked = new Set<string>();
   let parkedList: Array<{ message: ParkedMessage; dueAt: number; id: string }> = [];
   let pending: ResumableShardJob[] = [];
   let active = 0;
@@ -224,6 +227,10 @@ runWorkerMain(async () => {
       if (message.kind === 'shard') {
         parkedThisRun.add(message.job.shardId);
         stats.parkedTotal++;
+        if (!everParked.has(message.job.shardId)) {
+          everParked.add(message.job.shardId);
+          stats.parkedJobs++;
+        }
       } else stats.planParkedTotal++;
       parkedList.push({
         message: structuredClone(message),
@@ -260,6 +267,7 @@ runWorkerMain(async () => {
       shardIds.clear();
       completed.clear();
       parkedThisRun.clear();
+      everParked.clear();
       parkedList = [];
       pending = [];
       active = 0;
