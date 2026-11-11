@@ -124,7 +124,24 @@ if (
   throw new Error(`apiOriginCertificateArn must be an ACM certificate in ${env.region}`);
 }
 
+// Agency side (DRAFT): -c agencyAuditRetentionDays (prod 365, dev 30), -c agencyAuditObjectLockDays
+// (prod 365, dev 1), -c agencyMinCellCount (default 10), -c agencyDeniedAlarmThreshold (default 20).
+const agency = Object.fromEntries(
+  (
+    [
+      ['agencyAuditRetentionDays', 'auditRetentionDays'],
+      ['agencyAuditObjectLockDays', 'auditObjectLockDays'],
+      ['agencyMinCellCount', 'minCellCount'],
+      ['agencyDeniedAlarmThreshold', 'deniedAlarmThreshold'],
+    ] as const
+  ).flatMap(([ctx, key]) => {
+    const v = numberCtx(ctx);
+    return v === undefined ? [] : [[key, v]];
+  }),
+);
+
 const stacks = buildRelayApp(app, {
+  agency,
   capacity,
   monitoring,
   stage,

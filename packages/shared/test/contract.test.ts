@@ -38,8 +38,8 @@ describe('OpenAPI spec', () => {
     };
     expect(Object.keys(api.paths).sort()).toEqual(
       [
-        '/agency/alerts',
-        '/agency/alerts/{alertId}/response',
+        '/agency/alerts/{alertId}/summary',
+        '/agency/me',
         '/alerts',
         '/alerts/{alertId}',
         '/alerts/{alertId}/checkins',

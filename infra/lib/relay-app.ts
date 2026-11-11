@@ -1,4 +1,5 @@
 import type { App, Environment } from 'aws-cdk-lib';
+import { AgencyStack, type AgencyOptions } from './agency-stack.js';
 import { ApiStack } from './api-stack.js';
 import { APIGW_BURST, DEFAULT_APIGW_RPS_QUOTA, planConcurrency } from './capacity.js';
 import { ConfigStack } from './config-stack.js';
@@ -76,13 +77,15 @@ export interface RelayAppOptions {
    * default execute-api endpoint is disabled and CloudFront reaches the API by this name.
    */
   apiOriginDomain?: { domainName: string; certificateArn: string };
+  /** Agency side (DRAFT, agency-stack.ts): audit retention, small-cell threshold, alarm level. */
+  agency?: AgencyOptions;
 }
 
 /**
  * Builds every stack. bin/relay.ts and the infra tests both call it, so the tests exercise the
  * real wiring. Values flow between stacks as plain props (ARNs, names, URLs).
  *
- * Dependency order (acyclic): config -> monitoring -> data -> delivery -> fanout -> latejoin -> api, and sender, ingest -> edge.
+ * Dependency order (acyclic): config -> monitoring -> data -> delivery -> fanout -> latejoin -> api, and sender, ingest -> agency -> edge.
  * Delivery needs config and data only; fanout reads its idempotency table (dense-cell tombstones). Nothing depends back on edge: ingest names
  * the public-alerts bucket deterministically instead of referencing it.
  */
@@ -240,10 +243,25 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     ...killSwitch,
     ...(o.publicAlertBaseUrl ? { publicAlertBaseUrl: o.publicAlertBaseUrl } : {}),
   });
+  // DRAFT agency side: Cognito login, read-only agency API, audit trail (docs/agency-auth.md).
+  const agency = new AgencyStack(app, id('agency'), {
+    env,
+    stage,
+    checkinTotals: { tableName: api.checkinTotalsTableName, tableArn: api.checkinTotalsTableArn },
+    zonePack: {
+      bucketName: ingest.zonePackBucket.bucketName,
+      bucketArn: ingest.zonePackBucket.bucketArn,
+    },
+    originVerifySecretArn: config.originVerifySecretArn,
+    alertsTopic: monitoring.topic,
+    ...o.agency,
+    crossRegionReferences: true,
+  });
   const edge = new EdgeStack(app, id('edge'), {
     env: edgeEnv,
     stage,
     apiDomainName: api.apiDomainName,
+    agencyApiDomainName: agency.apiDomainName,
     originVerifySecretName: config.originVerifySecretName,
     ...(o.monitoring?.alarmEmail ? { alarmEmail: o.monitoring.alarmEmail } : {}),
     ...(o.edgeCustomDomain ? { customDomain: o.edgeCustomDomain } : {}),
@@ -266,7 +284,7 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
   // Edge (us-east-1) has one alarm (WAF) that notifies the edge stack's own SNS topic, because an
   // alarm cannot notify a topic in another region, so the shared aspect is not applied to it.
   // Config is retention-only: monitoring reads its kill-switch name, so config must not depend on it.
-  for (const stack of [data, delivery, fanout, latejoin, api, ingest, sender, monitoring]) {
+  for (const stack of [data, delivery, fanout, latejoin, api, ingest, sender, agency, monitoring]) {
     applyMonitoring(stack, monitoring, { alarms: true });
   }
   applyMonitoring(config, monitoring, { alarms: false });
@@ -274,16 +292,27 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
 
   // Customer-managed KMS keys on every table, cluster, bucket, secret, queue, topic, log group and
   // trail (encryption.ts). us-west-2 stacks use the config stack's keys; edge has its own key.
-  const regional = [config, monitoring, data, delivery, fanout, latejoin, api, ingest, sender];
+  const regional = [
+    config,
+    monitoring,
+    data,
+    delivery,
+    fanout,
+    latejoin,
+    api,
+    ingest,
+    sender,
+    agency,
+  ];
   // Declared log groups for CDK's provider Lambdas (provider-logs.ts), before the keys are set so
   // they get the logs key. The API host name crosses from us-west-2 to the edge region unless
-  // the API has an origin domain (a plain string), so only then do the export providers exist.
-  const late: Map<object, string[]> = o.apiOriginDomain
-    ? new Map()
-    : new Map<object, string[]>([
-        [api, [CROSS_REGION_WRITER]],
-        [edge, [CROSS_REGION_READER]],
-      ]);
+  // the API has an origin domain (a plain string), so only then does the API's export provider
+  // exist. The agency API host name always crosses, so agency and edge always have one.
+  const late = new Map<object, string[]>([
+    [agency, [CROSS_REGION_WRITER]],
+    [edge, [CROSS_REGION_READER]],
+    ...(o.apiOriginDomain ? [] : ([[api, [CROSS_REGION_WRITER]]] as [object, string[]][])),
+  ]);
   for (const stack of [...regional, edge]) {
     declareProviderLogs(stack, { isProd: stage === 'prod', late: late.get(stack) ?? [] });
   }
@@ -293,5 +322,17 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     for (const stack of regional) useFipsEndpoints(stack);
   }
 
-  return { config, monitoring, data, delivery, fanout, latejoin, api, ingest, sender, edge };
+  return {
+    config,
+    monitoring,
+    data,
+    delivery,
+    fanout,
+    latejoin,
+    api,
+    ingest,
+    sender,
+    agency,
+    edge,
+  };
 }

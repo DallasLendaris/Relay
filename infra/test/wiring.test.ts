@@ -533,7 +533,8 @@ describe('stack dependency order', () => {
     sender: 4,
     ingest: 4,
     api: 5,
-    edge: 6,
+    agency: 6, // reads the API's totals table and ingest's zone pack; edge fronts its API
+    edge: 7,
   };
 
   for (const stage of ['dev', 'prod'] as const) {

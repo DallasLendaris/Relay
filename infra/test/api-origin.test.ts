@@ -15,8 +15,11 @@ const ORIGIN = {
 
 const apiOrigin = (edge: ReturnType<typeof synthApp>['templates']['edge']) => {
   const dist = Object.values(edge.findResources('AWS::CloudFront::Distribution'))[0] as any;
-  const origins = dist.Properties.DistributionConfig.Origins as any[];
-  const api = origins.filter((o) => o.CustomOriginConfig);
+  const cfg = dist.Properties.DistributionConfig;
+  // The public API is the default behavior; /agency/* is a second API origin (b2-agency).
+  const api = (cfg.Origins as any[]).filter(
+    (o) => o.CustomOriginConfig && o.Id === cfg.DefaultCacheBehavior.TargetOriginId,
+  );
   expect(api).toHaveLength(1);
   return api[0];
 };

@@ -237,44 +237,74 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /agency/alerts:
+  /agency/me:
     get:
       tags: [agency]
-      operationId: listAgencyAlerts
-      summary: Alerts for the signed-in agency's county.
+      operationId: getAgencyMe
+      summary: The signed-in agency user, as the server sees them (DRAFT).
+      description: |
+        Identity, roles and jurisdiction come only from the Cognito access token (verified by the
+        API Gateway JWT authorizer, then re-checked server side). Every call, allowed or not, writes
+        an audit record; if that write fails the call returns 503. See docs/agency-auth.md.
       security:
         - agencyAuth: []
       responses:
         '200':
-          description: Alerts
+          description: The caller
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AlertSummaryList'
+                $ref: '#/components/schemas/AgencyMe'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 
-  /agency/alerts/{alertId}/response:
+  /agency/alerts/{alertId}/summary:
     get:
       tags: [agency]
-      operationId: getAgencyAlertResponse
-      summary: Anonymous per-H3-cell check-in totals.
-      description: 'Cells with fewer than minimumCellSize recipients are returned with hidden set to true and zeroed counts.'
+      operationId: getAgencyAlertSummary
+      summary: Per-county check-in totals for an alert, inside the caller's jurisdiction only (DRAFT).
+      description: |
+        Read-only. Totals come from the per-H3-cell check-in totals; each cell is placed in the
+        county that contains its center. Only counties in the caller's jurisdiction are returned.
+        Asking for any county outside it is refused (403 `area_outside_jurisdiction`) and audited.
+
+        Small-cell suppression (default pending the team's privacy-floor decision): any count
+        below `minCellCount` (default 10) is withheld (`checkedIn: null`, `suppressed: true`), plus
+        enough further cells that the area total cannot reveal a withheld count. An area below
+        the threshold is withheld whole. Roles: agency-viewer, agency-operator.
       security:
         - agencyAuth: []
       parameters:
         - $ref: '#/components/parameters/AlertId'
+        - name: areas
+          in: query
+          required: false
+          description: |
+            Comma-separated California county FIPS codes (e.g. `06085,06081`) to narrow the result.
+            Default: the whole jurisdiction. It can only narrow, never widen.
+          schema:
+            type: string
+            pattern: '^06[0-9]{3}(,06[0-9]{3})*$'
+            maxLength: 400
       responses:
         '200':
-          description: Response totals
+          description: Totals by county
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AgencyAlertResponse'
+                $ref: '#/components/schemas/AgencyAlertSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 
 components:
   securitySchemes:
@@ -319,6 +349,18 @@ components:
             $ref: '#/components/schemas/Error'
     NotFound:
       description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Authenticated, but the role or jurisdiction does not allow it
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unavailable:
+      description: Temporarily unavailable (for agency calls, also when the audit record cannot be written)
       content:
         application/json:
           schema:
@@ -526,9 +568,35 @@ components:
           type: string
           format: date-time
 
-    AgencyAlertResponse:
+    AgencyRole:
+      type: string
+      enum: [agency-viewer, agency-operator, relay-admin]
+
+    AgencyMe:
       type: object
-      required: [alertId, asOf, minimumCellSize, cells]
+      required: [sub, agencyId, roles, jurisdiction]
+      additionalProperties: false
+      properties:
+        sub:
+          type: string
+        agencyId:
+          type: [string, 'null']
+          description: Null only for users without an agency role (e.g. a relay-admin).
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgencyRole'
+        jurisdiction:
+          type: array
+          description: California county FIPS codes.
+          items:
+            type: string
+            pattern: '^06[0-9]{3}$'
+
+    AgencyAlertSummary:
+      type: object
+      required: [alertId, asOf, minCellCount, complete, areas]
+      additionalProperties: false
       properties:
         alertId:
           type: string
@@ -536,9 +604,32 @@ components:
         asOf:
           type: string
           format: date-time
-        minimumCellSize:
+        minCellCount:
           type: integer
-          const: 20
+          minimum: 1
+          description: Small-cell threshold in force (default 10, pending the privacy-floor decision).
+        complete:
+          type: boolean
+          description: False when the alert had more cells than one summary reads.
+        areas:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgencyArea'
+
+    AgencyArea:
+      type: object
+      required: [countyFips, checkedIn, suppressed, cells]
+      additionalProperties: false
+      properties:
+        countyFips:
+          type: string
+          pattern: '^06[0-9]{3}$'
+        checkedIn:
+          type: [integer, 'null']
+          minimum: 0
+          description: Devices that checked in "I'm okay" in this county; null when withheld.
+        suppressed:
+          type: boolean
         cells:
           type: array
           items:
@@ -546,19 +637,17 @@ components:
 
     AgencyCell:
       type: object
-      required: [h3Cell, recipients, checkedIn, hidden]
+      required: [h3Cell, checkedIn, suppressed]
+      additionalProperties: false
       properties:
         h3Cell:
           type: string
-        recipients:
-          type: integer
-          minimum: 0
         checkedIn:
-          type: integer
+          type: [integer, 'null']
           minimum: 0
-        hidden:
+          description: Null when withheld (small-cell suppression).
+        suppressed:
           type: boolean
-          description: True when the cell has fewer than minimumCellSize recipients.
 
     RelaySeverity:
       type: string
