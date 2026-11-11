@@ -82,12 +82,15 @@ const enableGuardDuty = boolCtx('enableGuardDuty');
 const allowNoAlarmEmail = boolCtx('allowNoAlarmEmail');
 const logRetentionDays = numberCtx('logRetentionDays');
 const monthlyBudgetUsd = numberCtx('monthlyBudgetUsd');
+// Object Lock retention (governance) of CloudTrail objects: -c trailObjectLockDays (prod 365, dev 1).
+const trailObjectLockDays = numberCtx('trailObjectLockDays');
 const monitoring = {
   ...(alarmEmail ? { alarmEmail: String(alarmEmail) } : {}),
   ...(allowNoAlarmEmail !== undefined ? { allowNoAlarmEmail } : {}),
   ...(enableGuardDuty !== undefined ? { enableGuardDuty } : {}),
   ...(logRetentionDays !== undefined ? { logRetentionDays } : {}),
   ...(monthlyBudgetUsd !== undefined ? { monthlyBudgetUsd } : {}),
+  ...(trailObjectLockDays !== undefined ? { trailObjectLockDays } : {}),
 };
 
 // FIPS endpoints for AWS SDK calls: -c fips=true|false (default prod on, dev off).
