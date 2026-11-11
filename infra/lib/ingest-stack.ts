@@ -9,6 +9,7 @@ import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { BlockPublicAccess, Bucket, BucketEncryption, StorageClass } from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
+import { accessLogsBucket, logAccessTo, noncurrentVersionRule } from './buckets.js';
 import { INGEST_RESERVED_CONCURRENCY } from './capacity.js';
 import {
   alertSignEnv,
@@ -74,12 +75,17 @@ export class IngestStack extends Stack {
     super(scope, id, props);
     const isProd = props.stage === 'prod';
 
+    // S3 server access logs of both buckets below (NIST AU-12).
+    const accessLogs = accessLogsBucket(this, isProd);
+
     // Raw NWS responses, kept for audit/replay. Prod data survives a stack teardown.
     const rawBucket = new Bucket(this, 'RawBucket', {
       blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,
       encryption: BucketEncryption.S3_MANAGED,
+      versioned: true,
       lifecycleRules: [
+        noncurrentVersionRule,
         {
           transitions: [
             { storageClass: StorageClass.INFREQUENT_ACCESS, transitionAfter: Duration.days(30) },
@@ -96,10 +102,15 @@ export class IngestStack extends Stack {
       blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,
       encryption: BucketEncryption.S3_MANAGED,
+      // Versioned: a bad pack upload can be rolled back to the previous object version.
+      versioned: true,
+      lifecycleRules: [noncurrentVersionRule],
       removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
       autoDeleteObjects: !isProd,
     });
     this.zonePackBucketName = this.zonePackBucket.bucketName;
+    logAccessTo(rawBucket, accessLogs, 'raw/');
+    logAccessTo(this.zonePackBucket, accessLogs, 'zone-pack/');
 
     // Dedupe state only: what ingest has already seen. The full alert record
     // goes to Aurora later (ticket S-07).

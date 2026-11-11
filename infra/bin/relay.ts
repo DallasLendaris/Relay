@@ -1,4 +1,5 @@
 import { App } from 'aws-cdk-lib';
+import { applyCompliance } from '../lib/compliance.js';
 import { buildRelayApp } from '../lib/relay-app.js';
 
 const app = new App();
@@ -89,7 +90,7 @@ const monitoring = {
   ...(monthlyBudgetUsd !== undefined ? { monthlyBudgetUsd } : {}),
 };
 
-buildRelayApp(app, {
+const stacks = buildRelayApp(app, {
   capacity,
   monitoring,
   stage,
@@ -102,3 +103,9 @@ buildRelayApp(app, {
     : {}),
   ...(modeCtx ? { fanoutMode: modeCtx as 'queue' | 'inline' } : {}),
 });
+
+// cdk-nag NIST 800-53 rev 5 checks on every stack: an unsuppressed finding is an error and fails
+// synth. `-c nag=off` skips them (faster local iteration; CI and the infra tests keep them on).
+if (String(app.node.tryGetContext('nag') ?? 'on') !== 'off') {
+  applyCompliance(app, stacks, { stage });
+}

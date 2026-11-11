@@ -1,4 +1,5 @@
 import {
+  ArnFormat,
   Aws,
   CfnOutput,
   Duration,
@@ -24,8 +25,10 @@ import { SnsAction } from 'aws-cdk-lib/aws-cloudwatch-actions';
 import { Topic } from 'aws-cdk-lib/aws-sns';
 import { EmailSubscription } from 'aws-cdk-lib/aws-sns-subscriptions';
 import { BlockPublicAccess, Bucket, BucketEncryption } from 'aws-cdk-lib/aws-s3';
-import { CfnWebACL } from 'aws-cdk-lib/aws-wafv2';
+import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
+import { CfnLoggingConfiguration, CfnWebACL } from 'aws-cdk-lib/aws-wafv2';
 import { Construct } from 'constructs';
+import { accessLogsBucket, logAccessTo, noncurrentVersionRule } from './buckets.js';
 
 /** URL prefix of the public alert objects (must match backend/src/scale/publish/paths.ts). */
 export const PUBLIC_ALERTS_PATH_PATTERN = '/alerts/v1/*';
@@ -83,6 +86,9 @@ export interface EdgeStackProps extends StackProps {
   wafBlockedThreshold?: number;
 }
 
+/** WAF log group (WAF requires the aws-waf-logs- prefix). */
+export const wafLogGroupName = (stage: string): string => `aws-waf-logs-relay-${stage}`;
+
 /** Name of the web ACL (also the WebACL metric dimension). */
 export const webAclName = (stage: string): string => `relay-${stage}-web-acl`;
 
@@ -119,11 +125,18 @@ export class EdgeStack extends Stack {
       blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,
       encryption: BucketEncryption.S3_MANAGED,
+      // Versioned (NIST CP-9): an overwritten or recalled alert document can be recovered.
+      versioned: true,
+      lifecycleRules: [noncurrentVersionRule],
       removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
       autoDeleteObjects: !isProd,
     });
 
+    // S3 server access logs of the bucket (NIST AU-12).
+    logAccessTo(this.publicAlertsBucket, accessLogsBucket(this, isProd), 'public-alerts/');
+
     this.webAcl = this.buildWebAcl(props.stage);
+    this.addWafLogging(props.stage, isProd);
 
     // Honor the origin's Cache-Control (max-age=15, stale-while-revalidate=60). TTLs only clamp:
     // min 0 so the origin may go as low as it likes, default 15 s when the header is missing.
@@ -230,6 +243,48 @@ export class EdgeStack extends Stack {
 
     Tags.of(this).add('project', 'relay');
     Tags.of(this).add('stage', props.stage);
+  }
+
+  /**
+   * WAF logs (NIST AU-2 / AU-12 / SI-4): only requests a rule blocked or counted, so a flood of
+   * normal traffic costs nothing to log. The Authorization header (device credentials) is redacted.
+   * WAF requires the log group name to start with aws-waf-logs-; CloudFormation's deploy role
+   * creates the log group resource policy that lets WAF write to it.
+   */
+  private addWafLogging(stage: string, isProd: boolean): void {
+    const name = wafLogGroupName(stage);
+    const logs = new LogGroup(this, 'WafLogs', {
+      logGroupName: name,
+      retention: RetentionDays.ONE_MONTH,
+      removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+    });
+    const logging = new CfnLoggingConfiguration(this, 'WafLogging', {
+      resourceArn: this.webAcl.attrArn,
+      // WAF wants the bare log group ARN (no trailing ":*").
+      logDestinationConfigs: [
+        this.formatArn({
+          service: 'logs',
+          resource: 'log-group',
+          resourceName: name,
+          arnFormat: ArnFormat.COLON_RESOURCE_NAME,
+        }),
+      ],
+      redactedFields: [{ singleHeader: { Name: 'authorization' } }],
+      loggingFilter: {
+        DefaultBehavior: 'DROP',
+        Filters: [
+          {
+            Behavior: 'KEEP',
+            Requirement: 'MEETS_ANY',
+            Conditions: [
+              { ActionCondition: { Action: 'BLOCK' } },
+              { ActionCondition: { Action: 'COUNT' } },
+            ],
+          },
+        ],
+      },
+    });
+    logging.node.addDependency(logs);
   }
 
   private buildWebAcl(stage: string): CfnWebACL {

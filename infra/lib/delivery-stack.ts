@@ -72,6 +72,8 @@ export class DeliveryStack extends Stack {
       partitionKey: { name: 'pk', type: AttributeType.STRING },
       billingMode: BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: 'ttl',
+      // Point-in-time recovery on prod, like every other table (NIST CP-9). Dev is disposable.
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: isProd },
       // A new on-demand table starts at 4,000 writes/s and doubles gradually; warm throughput
       // provisions the headroom up front for a statewide send (prod only).
       ...(isProd ? { warmThroughput: { writeUnitsPerSecond: IDEMPOTENCY_WARM_WRITES_PROD } } : {}),
