@@ -365,6 +365,25 @@ describe('FanoutStack', () => {
           ) && !(f as Res).Properties.Handler.includes('shardHandler'),
       ) as Res;
 
+    // Review B1: the LambdaDLQ exception says retries are off; Lambda's async default is 2.
+    it('has no Lambda async retries and drops events older than one schedule period', () => {
+      for (const [stage, seconds] of [
+        ['dev', 300],
+        ['prod', 60],
+      ] as const) {
+        const { stack, t: tt } = synth(stage);
+        const fn = stack.node.findChild('OutboxDrainerFunction').node.defaultChild as any;
+        const configs = Object.values(tt.findResources('AWS::Lambda::EventInvokeConfig')).filter(
+          (c) => (c as Res).Properties.FunctionName.Ref === stack.getLogicalId(fn),
+        ) as Res[];
+        expect(configs, stage).toHaveLength(1);
+        expect(configs[0]!.Properties).toMatchObject({
+          MaximumRetryAttempts: 0,
+          MaximumEventAgeInSeconds: seconds,
+        });
+      }
+    }, 60_000);
+
     it('runs every 5 minutes on dev and every minute on prod (PERF-5)', () => {
       t.hasResourceProperties('AWS::Events::Rule', { ScheduleExpression: 'rate(5 minutes)' });
       synth('prod').t.hasResourceProperties('AWS::Events::Rule', {

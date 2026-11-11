@@ -386,6 +386,13 @@ export class FanoutStack extends Stack {
       handler: 'handler',
       timeout: Duration.seconds(OUTBOX_DRAINER_TIMEOUT_SECONDS),
       memorySize: 256,
+      // No Lambda async retries (the default would retry a failed run twice): the drainer is
+      // idempotent (it rewrites the index from Aurora's truth) and the next scheduled run re-claims
+      // whatever a failed run left. A retry a minute later would mostly find the failed run's rows
+      // still under their lease and only add an `attempts` increment. A run that waited longer
+      // than one schedule period is superseded by the next.
+      retryAttempts: 0,
+      maxEventAge: Duration.minutes(DRAINER_MINUTES[props.stage]),
       logGroup: logs('OutboxDrainerLogs'),
       environment: {
         ...dbEnv(props.db, 'ops'),

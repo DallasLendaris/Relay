@@ -75,13 +75,15 @@ const DLQ: Record<string, string> = {
     'legacy DeadLetterConfig; destinations carry the full request and response. cdk-nag only ' +
     'recognizes DeadLetterConfig.',
   OutboxDrainerFunction:
-    'Scheduled every minute (5 on dev) by EventBridge with no payload. A failed run is redone ' +
-    'by the next run from the Aurora outbox, and DrainerNotRunningAlarm fires when runs stop, so a ' +
-    'DLQ of empty schedule events would hold nothing actionable.',
+    'Scheduled every minute (5 on dev) by EventBridge with no payload; Lambda async retries are ' +
+    'off (retryAttempts 0, events older than one period dropped). A failed run is redone by the ' +
+    'next run from the Aurora outbox, and DrainerNotRunningAlarm fires when runs stop, so a DLQ of ' +
+    'empty schedule events would hold nothing actionable.',
   IngestFunction:
-    'Scheduled every minute by EventBridge with retries off on purpose (the next run catches up). ' +
-    'Failures raise IngestErrorsAlarm and the feed-stale alarm; a DLQ of empty schedule events ' +
-    'would hold nothing actionable.',
+    'Scheduled every minute by EventBridge with retries off on purpose, both on the rule target ' +
+    'and in Lambda (retryAttempts 0, events older than 60 s dropped): ingest is idempotent and the ' +
+    'next run catches up. Failures raise IngestErrorsAlarm and the feed-stale alarm; a DLQ of ' +
+    'empty schedule events would hold nothing actionable.',
   RedriveFunction:
     'Operator tool, invoked synchronously by a person (aws lambda invoke); the caller sees the error.',
   SendRedriveFunction:

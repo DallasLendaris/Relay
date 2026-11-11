@@ -46,6 +46,15 @@ describe('IngestStack', () => {
     });
   });
 
+  // Review B1: EventBridge invokes asynchronously, so Lambda's own retries (default 2) apply too.
+  it('has no Lambda async retries either, and drops events older than one minute', () => {
+    t.resourceCountIs('AWS::Lambda::EventInvokeConfig', 1);
+    t.hasResourceProperties('AWS::Lambda::EventInvokeConfig', {
+      MaximumRetryAttempts: 0,
+      MaximumEventAgeInSeconds: 60,
+    });
+  });
+
   it('does not grant s3:* or dynamodb:* (or any wildcard action)', () => {
     const policies = t.findResources('AWS::IAM::Policy');
     const actions: string[] = Object.values(policies)
