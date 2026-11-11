@@ -38,7 +38,7 @@ The engine went through three independent safety reviews. Every confirmed findin
 
 Added 2026-11-10 on branch `compliance-foundation`, reviewed 2026-11-11 ([review](./compliance/review-2026-11.md)). Drafts for the agency ISO, not a compliance claim; nothing is deployed.
 
-- **NIST 800-53 Rev. 5 moderate gap map:** [control-map.md](./compliance/control-map.md) and its [summary](./compliance/control-map-summary.md): 14 Built, 71 Partial, 48 Missing engineering rows; `node docs/compliance/check-evidence.mjs` checks every citation.
+- **NIST 800-53 Rev. 5 moderate gap map:** [control-map.md](./compliance/control-map.md) and its [summary](./compliance/control-map-summary.md): 14 Built, 73 Partial, 46 Missing engineering rows; `node docs/compliance/check-evidence.mjs` checks every citation.
 - **cdk-nag NIST 800-53 R5** on every stack. An unsuppressed finding fails `cdk synth` and `npm test`; dev and prod have none. Every exception is per resource: [cdk-nag-exceptions.md](./compliance/cdk-nag-exceptions.md).
 - **Customer-managed KMS keys** (data, messaging, logs; edge in us-east-1), yearly rotation, on every table, cluster, data bucket, secret, queue, topic, log group and the trail; key-state changes alert the alerts topic. TLS 1.2+ on S3, SQS and CloudFront-to-API; viewer TLS 1.2+ needs `-c edgeDomainName -c edgeCertificateArn`. FIPS endpoints on prod (`-c fips`), except the API Lambda (Amazon Location).
 - **Logs added:** WAF, S3 access, VPC flow, Postgres. Buckets versioned.

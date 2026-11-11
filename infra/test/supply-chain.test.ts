@@ -30,16 +30,118 @@ describe('GitHub Actions workflows', () => {
   it.each(workflows)('%s: top-level permissions are read-only', (f) => {
     const text = read(`.github/workflows/${f}`);
     expect(text).toMatch(/^permissions:\n\s+contents: read\s*$/m);
-    // No job may ask for write access without this test being updated on purpose.
-    // Allowed on purpose: CodeQL's analyze job uploads SARIF results (SA-11, RA-5), which needs
-    // security-events: write. Nothing else may write, and that permission may not be top-level.
-    const allowedWrites: Record<string, string[]> = { 'codeql.yml': ['security-events'] };
-    const writes = [...text.matchAll(/^\s*([\w-]+):\s*write\b/gm)].map((m) => m[1]);
-    expect(writes).toEqual(allowedWrites[f] ?? []);
-    if (writes.length > 0) {
-      const topLevel = text.split(/^jobs:/m)[0];
-      expect(topLevel).not.toMatch(/:\s*write\b/);
+    // No job may ask for write access without this test being updated on purpose, and no write
+    // permission may be top-level. Allowed on purpose, per job:
+    // - codeql.yml analyze: uploads SARIF results (SA-11, RA-5), needs security-events: write.
+    // - deploy.yml diff and deploy: GitHub OIDC token for the AWS role (S-06, CM-5), needs
+    //   id-token: write. Only those two jobs, never build.
+    const allowedWrites: Record<string, Record<string, string[]>> = {
+      'codeql.yml': { analyze: ['security-events'] },
+      'deploy.yml': { diff: ['id-token'], deploy: ['id-token'] },
+    };
+    const topLevel = text.split(/^jobs:/m)[0] ?? '';
+    expect(topLevel).not.toMatch(/:\s*write\b/);
+    const writesByJob = Object.fromEntries(
+      Object.entries(jobBlocks(text))
+        .map(([job, body]) => [
+          job,
+          [...body.matchAll(/^\s*([\w-]+):\s*write\b/gm)].map((m) => m[1]),
+        ])
+        .filter(([, writes]) => writes!.length > 0),
+    );
+    expect(writesByJob).toEqual(allowedWrites[f] ?? {});
+  });
+});
+
+/** Splits a workflow's `jobs:` section into each job's text, keyed by job id. */
+function jobBlocks(text: string): Record<string, string> {
+  const jobs = text.split(/^jobs:\n/m)[1] ?? '';
+  const out: Record<string, string> = {};
+  let current: string | undefined;
+  for (const line of jobs.split('\n')) {
+    const m = /^ {2}([\w-]+):\s*$/.exec(line);
+    if (m) current = m[1]!;
+    else if (current) out[current] = `${out[current] ?? ''}${line}\n`;
+  }
+  return out;
+}
+
+describe('deploy workflow (S-06, CM-5, SEC-C-10)', () => {
+  const text = read('.github/workflows/deploy.yml');
+  const jobs = jobBlocks(text);
+  // The `on:` section, without comments (the header comment mentions pull_request on purpose).
+  const triggers = (text.split(/^permissions:/m)[0] ?? '').replace(/^\s*#.*$/gm, '');
+
+  it('has the build -> diff -> deploy jobs, in that order', () => {
+    expect(Object.keys(jobs)).toEqual(['build', 'diff', 'deploy']);
+    expect(jobs.diff).toMatch(/^ {4}needs: build$/m);
+    expect(jobs.deploy).toMatch(/^ {4}needs: diff$/m);
+  });
+
+  it('runs only on manual dispatch (dev|prod) and on push to main, never on pull requests', () => {
+    expect(triggers).toMatch(/^ {2}workflow_dispatch:$/m);
+    expect(triggers).toMatch(/options: \[dev, prod\]/);
+    expect(triggers).toMatch(/^ {2}push:\n {4}branches: \[main\]$/m);
+    expect(triggers).not.toMatch(/pull_request|workflow_run|issue_comment|repository_dispatch/);
+  });
+
+  it.each(['build', 'diff', 'deploy'])('%s is inert until AWS_DEPLOY_ENABLED is true', (job) => {
+    expect(jobs[job]).toMatch(/^ {4}if: vars\.AWS_DEPLOY_ENABLED == 'true' && /m);
+  });
+
+  it('push deploys dev only: the stage falls back to dev when there is no dispatch input', () => {
+    expect(text).toContain("STAGE: ${{ inputs.stage || 'dev' }}");
+    expect(text).toContain("group: deploy-${{ inputs.stage || 'dev' }}");
+    expect(text).toMatch(/cancel-in-progress: false/);
+    expect(jobs.build).toMatch(/if: env\.STAGE == 'prod' && github\.ref != 'refs\/heads\/main'/);
+  });
+
+  it('diff runs in <stage>-diff and deploy in <stage>, the environments the roles trust', () => {
+    expect(jobs.build).not.toMatch(/environment:/);
+    expect(jobs.diff).toContain("environment: ${{ inputs.stage || 'dev' }}-diff");
+    expect(jobs.deploy).toContain("environment: ${{ inputs.stage || 'dev' }}\n");
+    expect(jobs.diff).toContain('role-to-assume: ${{ vars.AWS_DIFF_ROLE_ARN }}');
+    expect(jobs.deploy).toContain('role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}');
+    expect(jobs.build).not.toMatch(/configure-aws-credentials/);
+  });
+
+  it('uses OIDC only: no access keys, no secrets', () => {
+    expect(text).not.toMatch(/aws-access-key-id|aws-secret-access-key|aws-session-token/);
+    expect(text).not.toMatch(/secrets\./);
+    for (const job of ['diff', 'deploy']) {
+      expect(jobs[job]).toContain('allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}');
     }
+  });
+
+  it('never persists the checkout token', () => {
+    const checkouts = text.match(/uses: actions\/checkout@/g) ?? [];
+    expect(checkouts).toHaveLength(3);
+    expect(text.match(/persist-credentials: false/g)).toHaveLength(checkouts.length);
+  });
+
+  it('synthesizes with cdk-nag on and deploys exactly the diffed cloud assembly', () => {
+    expect(text).not.toMatch(/nag=off/);
+    expect(jobs.diff).toMatch(/npx cdk synth .*--output cdk\.out/);
+    expect(jobs.diff).toMatch(/npx cdk diff --app cdk\.out --all --method=template/);
+    expect(jobs.diff).toContain('GITHUB_STEP_SUMMARY');
+    expect(jobs.deploy).toMatch(/npx cdk deploy --app cdk\.out --all/);
+    expect(jobs.deploy).not.toMatch(/cdk synth/);
+  });
+
+  it('takes prod context from environment variables, never hard-coded values', () => {
+    for (const [ctx, v] of [
+      ['publicAlertBaseUrl', 'PUBLIC_ALERT_BASE_URL'],
+      ['alarmEmail', 'ALARM_EMAIL'],
+      ['edgeDomainName', 'EDGE_DOMAIN_NAME'],
+      ['edgeCertificateArn', 'EDGE_CERTIFICATE_ARN'],
+    ]) {
+      expect(jobs.diff).toContain(`${v}: \${{ vars.${v} }}`);
+      expect(jobs.diff).toContain(`-c "${ctx}=$${v}"`);
+    }
+    expect(text).not.toMatch(/https:\/\/alerts\.|@example\.|arn:aws:acm:|\b\d{12}\b/);
+    // No ${{ }} expression is interpolated into a shell script (script injection).
+    const scripts = text.split(/^\s+run: \|?/m).slice(1);
+    for (const s of scripts) expect(s.split(/^\s+- (uses|name|run):/m)[0]).not.toContain('${{');
   });
 });
 
