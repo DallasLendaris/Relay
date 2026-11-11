@@ -5,6 +5,7 @@ import { Match, Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
 import { ConfigStack } from '../lib/config-stack.js';
 import { DataStack } from '../lib/data-stack.js';
+import { PAUSED_CONSUMER_MAX_CONCURRENCY } from '../lib/capacity.js';
 import { FanoutStack, SHARD_MEMORY_MB } from '../lib/fanout-stack.js';
 
 const IDEM_ARN = 'arn:aws:dynamodb:us-west-2:111111111111:table/idem';
@@ -341,6 +342,8 @@ describe('FanoutStack', () => {
       t.hasResourceProperties('AWS::Lambda::EventSourceMapping', {
         BatchSize: 10,
         FunctionResponseTypes: ['ReportBatchItemFailures'],
+        // Review B2: bounded by its trigger, as the LambdaConcurrency exception says.
+        ScalingConfig: { MaximumConcurrency: PAUSED_CONSUMER_MAX_CONCURRENCY },
       });
       const consumer = Object.values(t.findResources('AWS::Lambda::Function')).find((f) =>
         JSON.stringify((f as Res).Properties.Environment?.Variables ?? {}).includes(
@@ -364,6 +367,25 @@ describe('FanoutStack', () => {
             'CELL_INDEX_TABLE',
           ) && !(f as Res).Properties.Handler.includes('shardHandler'),
       ) as Res;
+
+    // Review B1: the LambdaDLQ exception says retries are off; Lambda's async default is 2.
+    it('has no Lambda async retries and drops events older than one schedule period', () => {
+      for (const [stage, seconds] of [
+        ['dev', 300],
+        ['prod', 60],
+      ] as const) {
+        const { stack, t: tt } = synth(stage);
+        const fn = stack.node.findChild('OutboxDrainerFunction').node.defaultChild as any;
+        const configs = Object.values(tt.findResources('AWS::Lambda::EventInvokeConfig')).filter(
+          (c) => (c as Res).Properties.FunctionName.Ref === stack.getLogicalId(fn),
+        ) as Res[];
+        expect(configs, stage).toHaveLength(1);
+        expect(configs[0]!.Properties).toMatchObject({
+          MaximumRetryAttempts: 0,
+          MaximumEventAgeInSeconds: seconds,
+        });
+      }
+    }, 60_000);
 
     it('runs every 5 minutes on dev and every minute on prod (PERF-5)', () => {
       t.hasResourceProperties('AWS::Events::Rule', { ScheduleExpression: 'rate(5 minutes)' });

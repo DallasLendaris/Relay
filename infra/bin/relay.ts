@@ -82,12 +82,15 @@ const enableGuardDuty = boolCtx('enableGuardDuty');
 const allowNoAlarmEmail = boolCtx('allowNoAlarmEmail');
 const logRetentionDays = numberCtx('logRetentionDays');
 const monthlyBudgetUsd = numberCtx('monthlyBudgetUsd');
+// Object Lock retention (governance) of CloudTrail objects: -c trailObjectLockDays (prod 365, dev 1).
+const trailObjectLockDays = numberCtx('trailObjectLockDays');
 const monitoring = {
   ...(alarmEmail ? { alarmEmail: String(alarmEmail) } : {}),
   ...(allowNoAlarmEmail !== undefined ? { allowNoAlarmEmail } : {}),
   ...(enableGuardDuty !== undefined ? { enableGuardDuty } : {}),
   ...(logRetentionDays !== undefined ? { logRetentionDays } : {}),
   ...(monthlyBudgetUsd !== undefined ? { monthlyBudgetUsd } : {}),
+  ...(trailObjectLockDays !== undefined ? { trailObjectLockDays } : {}),
 };
 
 // FIPS endpoints for AWS SDK calls: -c fips=true|false (default prod on, dev off).
@@ -107,7 +110,38 @@ if (
   );
 }
 
+// API origin custom domain (disables the default execute-api endpoint): both or neither. The
+// certificate is regional, so it lives in the API's region.
+const apiOriginDomainName = app.node.tryGetContext('apiOriginDomainName');
+const apiOriginCertificateArn = app.node.tryGetContext('apiOriginCertificateArn');
+if ((apiOriginDomainName === undefined) !== (apiOriginCertificateArn === undefined)) {
+  throw new Error('pass both -c apiOriginDomainName and -c apiOriginCertificateArn, or neither');
+}
+if (
+  apiOriginCertificateArn !== undefined &&
+  !new RegExp(`^arn:[\\w-]+:acm:${env.region}:`).test(String(apiOriginCertificateArn))
+) {
+  throw new Error(`apiOriginCertificateArn must be an ACM certificate in ${env.region}`);
+}
+
+// Agency side (DRAFT): -c agencyAuditRetentionDays (prod 365, dev 30), -c agencyAuditObjectLockDays
+// (prod 365, dev 1), -c agencyMinCellCount (default 10), -c agencyDeniedAlarmThreshold (default 20).
+const agency = Object.fromEntries(
+  (
+    [
+      ['agencyAuditRetentionDays', 'auditRetentionDays'],
+      ['agencyAuditObjectLockDays', 'auditObjectLockDays'],
+      ['agencyMinCellCount', 'minCellCount'],
+      ['agencyDeniedAlarmThreshold', 'deniedAlarmThreshold'],
+    ] as const
+  ).flatMap(([ctx, key]) => {
+    const v = numberCtx(ctx);
+    return v === undefined ? [] : [[key, v]];
+  }),
+);
+
 const stacks = buildRelayApp(app, {
+  agency,
   capacity,
   monitoring,
   stage,
@@ -125,6 +159,14 @@ const stacks = buildRelayApp(app, {
         edgeCustomDomain: {
           domainName: String(edgeDomainName),
           certificateArn: String(edgeCertificateArn),
+        },
+      }
+    : {}),
+  ...(apiOriginDomainName !== undefined
+    ? {
+        apiOriginDomain: {
+          domainName: String(apiOriginDomainName),
+          certificateArn: String(apiOriginCertificateArn),
         },
       }
     : {}),

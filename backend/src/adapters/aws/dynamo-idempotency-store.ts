@@ -246,10 +246,12 @@ export class DynamoIdempotencyStore implements IdempotencyStore {
     if (state !== 'sent') return { state };
     const members: unknown = Item?.['members'];
     const targets: unknown = Item?.['targets'];
+    const version: unknown = Item?.['sentVersion'];
     return {
       state,
       ...(members instanceof Uint8Array ? { members } : {}),
       ...(targets instanceof Uint8Array ? { targets } : {}),
+      ...(typeof version === 'string' ? { version } : {}),
     };
   }
 
@@ -287,11 +289,16 @@ export class DynamoIdempotencyStore implements IdempotencyStore {
     await this.send(() => this.doc.send(new PutCommand({ TableName: this.tableName, Item: item })));
   }
 
-  async markSent(key: string, expiresAt: Date, detail?: { members?: Uint8Array }): Promise<void> {
+  async markSent(
+    key: string,
+    expiresAt: Date,
+    detail?: { members?: Uint8Array; version?: string },
+  ): Promise<void> {
     const attemptId = this.attempts.get(key);
     this.attempts.delete(key);
     this.progress.delete(key);
     const members = detail?.members;
+    const version = detail?.version;
     try {
       await this.doc.send(
         new UpdateCommand({
@@ -300,6 +307,7 @@ export class DynamoIdempotencyStore implements IdempotencyStore {
           UpdateExpression:
             'SET #state = :sent, #ttl = :ttl' +
             (members ? ', members = :members' : '') +
+            (version ? ', sentVersion = :version' : '') +
             ' REMOVE leaseUntil',
           // Don't overwrite a key that a different attempt already marked sent.
           ConditionExpression:
@@ -311,6 +319,7 @@ export class DynamoIdempotencyStore implements IdempotencyStore {
             ':ttl': Math.floor(expiresAt.getTime() / 1000),
             ...(attemptId ? { ':attempt': attemptId } : {}),
             ...(members ? { ':members': members } : {}),
+            ...(version ? { ':version': version } : {}),
           },
         }),
       );

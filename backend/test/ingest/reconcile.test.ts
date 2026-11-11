@@ -420,7 +420,10 @@ describe('feed reconciliation: restore an alert that comes back', () => {
     };
     await poll(t, 3, 3 * MIN);
     expect(await state(t)).toBe('cancelled');
-    expect(t.applied).toHaveLength(0);
+    // The real Cancel is applied on top of the feed-absence end (it is pushed, quietly, to the
+    // devices that were sent the alert: docs/cancellation.md), and the alert is never restored.
+    expect(t.applied.map((r) => r.action)).toEqual(['cancelled']);
+    expect(t.applied[0]?.alert.messageType).toBe('Cancel');
   });
 
   it('a failed re-plan puts it back to ended and retries on the next full read', async () => {

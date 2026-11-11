@@ -20,7 +20,7 @@ import { ACCESS_LOGS_BUCKET_ID } from './buckets.js';
  *
  *   us-west-2 (ConfigStack):  data      DynamoDB tables, Aurora storage, S3 data buckets, secrets
  *                             messaging SQS queues, SNS topics
- *                             logs      CloudWatch log groups, CloudTrail, the trail bucket
+ *                             logs      CloudWatch log groups, CloudTrail, the trail and agency audit buckets
  *   us-east-1 (EdgeStack):    edge      public-alerts bucket, edge SNS topic, WAF log group
  *
  * All four are symmetric, rotate yearly (KMS automatic rotation) and are retained on prod.
@@ -206,6 +206,8 @@ export function createEdgeKey(scope: Stack, stage: 'dev' | 'prod'): Key {
   allowViaServices(key, ['s3', 'sns'], region);
   allowLogs(key, region, account);
   allowPublishers(key, 'AllowCloudWatchAlarms', ['cloudwatch.amazonaws.com'], account);
+  // The edge stack's EventBridge rule (edge key changes) publishes to the edge topic.
+  allowPublishers(key, 'AllowEventBridgeRules', ['events.amazonaws.com'], account);
   key.addToResourcePolicy(
     new PolicyStatement({
       sid: 'AllowCloudFrontOacDecrypt',
@@ -259,9 +261,9 @@ export function encryptResources(stack: Stack, keys: EncryptionKeys): void {
       node.kmsKeyId = need(keys.data, 'data', node).keyArn;
     } else if (node instanceof CfnBucket) {
       if (node.node.scope?.node.id === ACCESS_LOGS_BUCKET_ID) continue;
-      // The trail bucket holds logs; everything else is data.
-      const isTrail = node.node.scope?.node.id === 'TrailBucket';
-      const key = isTrail ? need(keys.logs, 'logs', node) : need(keys.data, 'data', node);
+      // Audit buckets (the trail, the agency audit trail) hold logs; everything else is data.
+      const isLog = LOG_BUCKET_IDS.has(node.node.scope?.node.id ?? '');
+      const key = isLog ? need(keys.logs, 'logs', node) : need(keys.data, 'data', node);
       node.bucketEncryption = {
         serverSideEncryptionConfiguration: [
           {
@@ -309,6 +311,9 @@ export function encryptResources(stack: Stack, keys: EncryptionKeys): void {
     }
   }
 }
+
+/** Construct ids of buckets that hold audit logs and so use the logs key. */
+export const LOG_BUCKET_IDS: ReadonlySet<string> = new Set(['TrailBucket', 'AgencyAuditBucket']);
 
 /** Env var the AWS SDK for JavaScript v3 reads to use FIPS 140 validated endpoints. */
 export const FIPS_ENV = 'AWS_USE_FIPS_ENDPOINT';

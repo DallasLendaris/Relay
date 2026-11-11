@@ -38,13 +38,25 @@ The engine went through three independent safety reviews. Every confirmed findin
 
 Added 2026-11-10 on branch `compliance-foundation`, reviewed 2026-11-11 ([review](./compliance/review-2026-11.md)). Drafts for the agency ISO, not a compliance claim; nothing is deployed.
 
-- **NIST 800-53 Rev. 5 moderate gap map:** [control-map.md](./compliance/control-map.md) and its [summary](./compliance/control-map-summary.md): 14 Built, 71 Partial, 48 Missing engineering rows; `node docs/compliance/check-evidence.mjs` checks every citation.
+- **NIST 800-53 Rev. 5 moderate gap map:** [control-map.md](./compliance/control-map.md) and its [summary](./compliance/control-map-summary.md): 16 Built, 76 Partial, 41 Missing engineering rows after batch 2; `node docs/compliance/check-evidence.mjs` checks every citation.
 - **cdk-nag NIST 800-53 R5** on every stack. An unsuppressed finding fails `cdk synth` and `npm test`; dev and prod have none. Every exception is per resource: [cdk-nag-exceptions.md](./compliance/cdk-nag-exceptions.md).
 - **Customer-managed KMS keys** (data, messaging, logs; edge in us-east-1), yearly rotation, on every table, cluster, data bucket, secret, queue, topic, log group and the trail; key-state changes alert the alerts topic. TLS 1.2+ on S3, SQS and CloudFront-to-API; viewer TLS 1.2+ needs `-c edgeDomainName -c edgeCertificateArn`. FIPS endpoints on prod (`-c fips`), except the API Lambda (Amazon Location).
 - **Logs added:** WAF, S3 access, VPC flow, Postgres. Buckets versioned.
 - **CI scanning, warn-only:** npm audit, CycloneDX SBOM, gitleaks, CodeQL (`.github/workflows/security.yml`, `codeql.yml`; [ci-security-scanning.md](./compliance/ci-security-scanning.md)).
 - **Runbooks:** [key rotation](./runbooks/key-rotation.md), [push credential rotation](./runbooks/push-credential-rotation.md).
 - **Open:** ISO acceptance of the exceptions, an edge domain and certificate, AWS Config / Security Hub after S-06, and the owner items in the [review](./compliance/review-2026-11.md#left-for-the-owner).
+
+## Batch 2 (`hardening-and-features`, 2026-11-11)
+
+Five merged pieces, reviewed independently in [review-2026-11-batch2.md](./review-2026-11-batch2.md). Offline only, like everything else.
+
+- **Hardening (`b2-hardening`):** `-c apiOriginDomainName` / `-c apiOriginCertificateArn` disable the default execute-api endpoint; delivery worker logs errors by class and code only; declared log groups for CDK provider Lambdas; edge key change alerts in us-east-1; CloudTrail bucket Object Lock (governance); no Lambda async retries on ingest and the outbox drainer; PausedConsumer capped at 10.
+- **zod 4.6.7 (`b2-zod4`):** clears GHSA-mrhx-c7xc-m3w5 (DEP-1). Date-times must be RFC 3339 with seconds and a colon offset, which is what NWS CAP emits.
+- **Deploy pipeline (`b2-deploy`):** `.github/workflows/deploy.yml` with GitHub OIDC roles (`infra/bootstrap/`), inert until `AWS_DEPLOY_ENABLED=true`; [runbook](./runbooks/deploy.md).
+- **Agency side DRAFT (`b2-agency`):** Cognito with required TOTP, read-only agency API with role and jurisdiction checks, small-cell suppression, fail-closed Object Lock audit trail ([agency-auth.md](./agency-auth.md)).
+- **Cancellation and update pushes (`b2-cancel`):** see "Known gaps and decisions" below and [cancellation.md](./cancellation.md).
+
+Owner decisions from the review: loudness of same-severity Update follow-ups, the small-cell privacy floor, and the follow-up gaps listed in the review.
 
 ## How an alert flows
 
@@ -63,8 +75,8 @@ Push policy: emergencies and warnings are loud and high-priority, watches and ad
 
 ## Before the first deploy (in order)
 
-1. **S-06:** create the dev/prod AWS accounts and the GitHub OIDC deploy role.
-2. `cd infra && npx cdk deploy --all -c stage=dev`.
+1. **S-06:** create the dev/prod AWS accounts, then the one-time setup in the [deploy runbook](./runbooks/deploy.md) (CDK bootstrap, the GitHub OIDC roles, the GitHub environments).
+2. Deploy through the pipeline (Actions > Deploy > `dev`), not from a laptop.
 3. `npm run seed-keys -- dev` (in `infra/`) to replace the placeholder token and device-credential keys (alert signing uses a KMS key, nothing to seed).
 4. Run the migrations against Aurora (see `infra/README.md`).
 5. Put the Expo access token in its secret, or leave it empty.
@@ -73,8 +85,8 @@ Push policy: emergencies and warnings are loud and high-priority, watches and ad
 ## Known gaps and decisions
 
 - **NWS fixtures are constructed**, not recorded, because api.weather.gov was unreachable from the build environment.
-- **Cancellations aren't pushed yet.** A cancelled alert stops further pushes and shows as cancelled in the app.
-- **NWS Updates re-notify only on a severity increase** or for newly covered devices.
+- **Cancellation and update pushes** (branch `b2-cancel`, [design](./cancellation.md)): a device that was sent an alert gets one follow-up when NWS cancels it (quiet), updates it (the new severity's loudness; quiet "no longer includes your area" for dropped cells), both through the inline and the scale path. Feed absence is not pushed (in-app only). New: `Alert.supersedes`, push `data.followUp`, migration 0015 (`alert_dropped_cells`). The Spanish follow-up templates need the native-speaker read.
+- **NWS Updates re-notify** in full only on a severity change or for newly covered devices; a same-severity Update sends the "Updated" follow-up.
 - **A Lambda killed after Expo accepted a push but before it was marked sent** re-sends that one push once, after the 45-second lease. This is an accepted trade-off: a rare duplicate rather than a missed alert.
 - **Push-token reassignment:** a device that knows another phone's Expo token could take it over. Tokens are never logged or returned, so the risk is low, but it should be revisited before the Pilot.
 - **The OpenAPI spec changed tonight** (check-in 403 responses, and the once-per-device rule). It needs all-three approval like the other shared formats.

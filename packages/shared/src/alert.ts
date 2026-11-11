@@ -19,7 +19,7 @@ export type CapSeverity = z.infer<typeof CapSeveritySchema>;
 export const AlertStateSchema = z.enum(['active', 'updated', 'cancelled', 'expired']);
 
 /** ISO 8601 date-time string. */
-const dateTime = z.string().datetime({ offset: true });
+const dateTime = z.iso.datetime({ offset: true });
 
 // Every array and string below takes external (NWS) input, so each has a bound; see limits.ts.
 const short = z.string().max(LIMITS.alertShortMax);
@@ -35,7 +35,7 @@ const GeoMultiPolygonSchema = z.object({
 });
 
 export const AlertSchema = z.object({
-  id: z.string().uuid(),
+  id: z.guid(),
   source: z.enum(['nws', 'usgs', 'ipaws']),
   sourceId: short,
   event: short,
@@ -86,6 +86,12 @@ export const AlertSchema = z.object({
    * (not false) when it does not apply, so alerts signed before this field existed are unchanged.
    */
   pds: z.boolean().optional(),
+  /**
+   * The version this Update or Cancel replaced: its NWS message id and its Relay severity. Set by
+   * the lifecycle step on every Update and Cancel (docs/cancellation.md); follow-up pushes read the
+   * previous severity from it. Omitted on a first Alert, so alerts signed before it are unchanged.
+   */
+  supersedes: z.object({ sourceId: short, relaySeverity: RelaySeveritySchema }).optional(),
 });
 export type Alert = z.infer<typeof AlertSchema>;
 

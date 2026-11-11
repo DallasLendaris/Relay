@@ -53,6 +53,13 @@ import { createHash } from 'node:crypto';
 import type { Alert } from '@relay/shared';
 import { alertEndTime, claimExpiry, refusalFor } from '../../delivery/eligibility.js';
 import { PUSH_POLICY } from '../../delivery/policy.js';
+import {
+  followUpPolicy,
+  followUpPushText,
+  followUpRefusal,
+  parseFollowUpKey,
+  versionTag,
+} from '../../delivery/follow-up.js';
 import { alertPushText } from '../../delivery/send-jobs.js';
 import type { Logger } from '../../delivery/types.js';
 import type { AlertStore, ChunkProgress, Clock, IdempotencyStore } from '../../ports.js';
@@ -86,10 +93,14 @@ import { consoleMetricWriter, emfLine, type MetricWriter } from './metrics.js';
  * would fail from late join too). Undefined for retries and late-join batches, and over the cap.
  */
 export function sentDetail(
-  batch: Pick<SendBatch, 'batchKey' | 'attempt' | 'recipients'>,
+  batch: Pick<SendBatch, 'batchKey' | 'attempt' | 'recipients'> & { sourceId?: string },
   logger: Logger,
-): { members: Uint8Array } | undefined {
-  if (batch.attempt !== 0 || batch.batchKey.includes(':late:')) return undefined;
+): { members?: Uint8Array; version?: string } | undefined {
+  // Which alert version this key's batch carried (follow-ups skip devices that already have the
+  // current version, docs/cancellation.md). On every key; keys written before it have none.
+  const version = batch.sourceId ? { version: versionTag(batch.sourceId) } : {};
+  const none = batch.sourceId ? version : undefined;
+  if (batch.attempt !== 0 || batch.batchKey.includes(':late:')) return none;
   const members = encodeMemberSet(
     batch.recipients.map((r) => r.deviceId),
     SENT_HASH_BYTES,
@@ -99,9 +110,9 @@ export function sentDetail(
       batchKey: batch.batchKey,
       recipients: batch.recipients.length,
     });
-    return undefined;
+    return none;
   }
-  return { members };
+  return { members, ...version };
 }
 
 /** How long a claim holds. Must outlast a slow batch; the consumer extends it while the batch runs. */
@@ -266,6 +277,8 @@ export type BatchReason =
   | 'expired'
   | 'informational'
   | 'stale_severity'
+  /** A follow-up for an alert version that is no longer current (or no longer in its state). */
+  | 'stale_version'
   | 'lease_lost'
   | 'shutdown';
 
@@ -315,20 +328,28 @@ type Loaded = { alert: Alert } | { fail: BatchReason };
 
 async function loadEligible(batch: SendBatch, deps: SenderDeps, now: Date): Promise<Loaded> {
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  // A follow-up batch (its key says so, so a retry or re-check of it does too) is checked against
+  // its own rules: current version, cancelled or live state (delivery/follow-up.ts).
+  const followUp = parseFollowUpKey(batch.batchKey);
+  const check = (a: Alert): BatchReason | null =>
+    followUp
+      ? followUpRefusal(a, followUp.kind, followUp.version, now, deps.verifyAlert)
+      : refusalFor(a, now, deps.verifyAlert);
   let alert = await deps.alerts.get(batch.alertId);
   if (!alert) return { fail: 'alert_missing' }; // maybe read lag: retry
-  let refusal = refusalFor(alert, now, deps.verifyAlert);
-  if (refusal === 'unsigned') {
-    // Torn read: an update may have committed between our reads. Look once more.
+  let refusal = check(alert);
+  if (refusal === 'unsigned' || (followUp && refusal === 'stale_version')) {
+    // Torn read: an update may have committed between our reads (or, for a follow-up, our cached
+    // copy may predate the version it is for). Look once more.
     await sleep(REREAD_DELAY_MS);
     deps.invalidateAlert?.(batch.alertId);
     alert = (await deps.alerts.get(batch.alertId)) ?? alert;
-    refusal = refusalFor(alert, now, deps.verifyAlert);
+    refusal = check(alert);
   }
   if (refusal === 'unsigned' && deps.refreshKeys) {
     // Maybe our cached keyring lacks a newly rotated key. Reload once and check again.
     await deps.refreshKeys();
-    refusal = refusalFor(alert, now, deps.verifyAlert);
+    refusal = check(alert);
   }
   // A signature failure is never acked: a real alert signed with a key we don't know yet must
   // not be lost. SQS retries, and a truly tampered row ends up in the DLQ for a human.
@@ -342,10 +363,16 @@ export function buildMessages(
   now: Date,
   publicAlertBaseUrl?: string,
 ): NativePushMessage[] {
-  const policy = PUSH_POLICY[alert.relaySeverity];
+  const followUp = parseFollowUpKey(batch.batchKey);
+  const policy = followUp ? followUpPolicy(followUp.kind, alert) : PUSH_POLICY[alert.relaySeverity];
   const end = alertEndTime(alert);
   const ttlSeconds = Math.max(1, Math.floor((end.getTime() - now.getTime()) / 1000));
-  const text = { en: alertPushText(alert, 'en'), es: alertPushText(alert, 'es') };
+  const text = followUp
+    ? {
+        en: followUpPushText(alert, followUp.kind, 'en'),
+        es: followUpPushText(alert, followUp.kind, 'es'),
+      }
+    : { en: alertPushText(alert, 'en'), es: alertPushText(alert, 'es') };
   const alertUrl = publicAlertDocUrl(publicAlertBaseUrl, alert);
   return batch.recipients.map((r) => ({
     target: r.target,
@@ -356,6 +383,7 @@ export function buildMessages(
       checkInToken: r.checkInToken,
       expiresAt: end.toISOString(),
       ...(alertUrl ? { alertUrl } : {}),
+      ...(followUp ? { followUp: followUp.kind } : {}),
     },
     priority: policy.priority,
     sound: policy.sound !== null,
@@ -784,7 +812,11 @@ export async function processBatch(
     if ('fail' in loaded) {
       await release();
       const reason = loaded.fail;
-      const final = reason === 'not_actual' || reason === 'inactive' || reason === 'expired';
+      const final =
+        reason === 'not_actual' ||
+        reason === 'inactive' ||
+        reason === 'expired' ||
+        reason === 'stale_version';
       logger.error(final ? 'sender.alert_refused' : 'sender.alert_unavailable', {
         alertId: batch.alertId,
         batchKey: batch.batchKey,
@@ -793,7 +825,8 @@ export async function processBatch(
       return outcome(final, reason);
     }
     const { alert } = loaded;
-    if (!PUSH_POLICY[alert.relaySeverity].push) {
+    // Follow-ups are always pushed (quietly at least, delivery/follow-up.ts followUpPolicy).
+    if (!PUSH_POLICY[alert.relaySeverity].push && !parseFollowUpKey(batch.batchKey)) {
       await release();
       return outcome(true, 'informational');
     }
@@ -1055,9 +1088,16 @@ export async function processBatch(
     // ack anyway (failing the message would re-send once the lease runs out).
     // A planned batch also records whom it carried (G5), so late join can tell whether a device that
     // registered during the fan-out was in it (latejoin.ts). Retries and late-join batches are
-    // never asked about.
+    // never asked about. The version tag is the version whose text was actually sent (the alert
+    // loaded above), not the one the batch was planned for: an original batch planned for v1 but
+    // sent after a same-severity Update v2 committed carried v2's text, so v2's follow-up must
+    // read it as current, not send a second (loud) "Updated" push (review-2026-11-batch2 C-1).
     await idempotency
-      .markSent(batch.batchKey, claimExpiry(alert), sentDetail(batch, logger))
+      .markSent(
+        batch.batchKey,
+        claimExpiry(alert),
+        sentDetail({ ...batch, sourceId: alert.sourceId }, logger),
+      )
       .catch((err: unknown) => {
         logger.error('sender.mark_sent_failed', { batchKey: batch.batchKey, ...errorFields(err) });
       });

@@ -1,6 +1,24 @@
 import { fileURLToPath } from 'node:url';
-import { CfnOutput, Duration, RemovalPolicy, Stack, StackProps, Tags } from 'aws-cdk-lib';
-import { HttpApi, HttpMethod, HttpStage } from 'aws-cdk-lib/aws-apigatewayv2';
+import {
+  Annotations,
+  CfnOutput,
+  Duration,
+  Fn,
+  RemovalPolicy,
+  Stack,
+  StackProps,
+  Tags,
+} from 'aws-cdk-lib';
+import {
+  ApiMapping,
+  DomainName,
+  EndpointType,
+  HttpApi,
+  HttpMethod,
+  HttpStage,
+  SecurityPolicy,
+} from 'aws-cdk-lib/aws-apigatewayv2';
+import { Certificate } from 'aws-cdk-lib/aws-certificatemanager';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import { Alarm, ComparisonOperator, TreatMissingData } from 'aws-cdk-lib/aws-cloudwatch';
 import {
@@ -56,6 +74,16 @@ export interface ApiStackProps extends StackProps {
    * (10,000 rps, burst 5,000). A stage limit above the account quota never applied anyway.
    */
   throttle?: { rateLimit: number; burstLimit: number };
+  /**
+   * Custom domain CloudFront uses as the API origin (bin/relay.ts: `-c apiOriginDomainName=
+   * api-origin.example.org -c apiOriginCertificateArn=arn:aws:acm:us-west-2:...`). With it the
+   * default execute-api endpoint is disabled (NIST SC-7), so no request reaches the API function
+   * without passing CloudFront and the WAF. The certificate must be a regional ACM certificate in
+   * this stack's region, and a DNS CNAME from the domain to the `ApiOriginTarget` output must
+   * exist before CloudFront can connect (no hosted zone is managed here). Without it the default
+   * endpoint stays on and the origin-verify header is the only guard (infra/README.md).
+   */
+  originDomain?: { domainName: string; certificateArn: string };
 }
 
 export const AGGREGATOR_TIMEOUT_SECONDS = 60;
@@ -82,8 +110,9 @@ export const DEFAULT_THROTTLE = {
 } as const;
 
 /**
- * Every path in packages/shared/openapi/relay.yaml except /agency/*, which belongs
- * to the Cognito-protected agency API (added later). Keep in sync with the spec.
+ * Every path in packages/shared/openapi/relay.yaml except /agency/*, which belongs to the
+ * Cognito-protected agency API: its own HTTP API in AgencyStack (agency-stack.ts AGENCY_ROUTES),
+ * behind the same CloudFront distribution and WAF. Keep in sync with the spec.
  */
 export const API_ROUTES: ReadonlyArray<{ method: HttpMethod; path: string }> = [
   { method: HttpMethod.POST, path: '/devices' },
@@ -102,6 +131,9 @@ export class ApiStack extends Stack {
   readonly apiDomainName: string;
   /** Check-ins table (exposed so the delivery owner can size its own warm throughput to match). */
   readonly checkinsTableName: string;
+  /** Per-cell check-in totals; the agency API (AgencyStack) queries its byAlert index only. */
+  readonly checkinTotalsTableName: string;
+  readonly checkinTotalsTableArn: string;
 
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
@@ -342,6 +374,8 @@ export class ApiStack extends Stack {
     const api = new HttpApi(this, 'HttpApi', {
       apiName: `relay-${props.stage}-api`,
       createDefaultStage: false,
+      // Only CloudFront may reach the API; possible only once it has a custom domain to use.
+      disableExecuteApiEndpoint: props.originDomain !== undefined,
     });
     const stage = new HttpStage(this, 'DefaultStage', {
       httpApi: api,
@@ -355,10 +389,41 @@ export class ApiStack extends Stack {
       api.addRoutes({ path, methods: [method], integration });
     }
 
-    this.apiDomainName = api.apiEndpoint;
+    if (props.originDomain) {
+      const domain = new DomainName(this, 'ApiOriginDomain', {
+        domainName: props.originDomain.domainName,
+        certificate: Certificate.fromCertificateArn(
+          this,
+          'ApiOriginCertificate',
+          props.originDomain.certificateArn,
+        ),
+        endpointType: EndpointType.REGIONAL,
+        securityPolicy: SecurityPolicy.TLS_1_2,
+      });
+      new ApiMapping(this, 'ApiOriginMapping', { api, domainName: domain, stage });
+      // A plain string: the edge stack needs no cross-region reference for it.
+      this.apiDomainName = props.originDomain.domainName;
+      new CfnOutput(this, 'ApiOriginTarget', {
+        description: `CNAME ${props.originDomain.domainName} to this name before deploying the edge stack`,
+        value: domain.regionalDomainName,
+      });
+    } else {
+      // ApiEndpoint is a URL (https://<id>.execute-api.<region>.amazonaws.com); CloudFront wants
+      // the bare host name.
+      this.apiDomainName = Fn.select(2, Fn.split('/', api.apiEndpoint));
+      new CfnOutput(this, 'ApiUrl', { value: stage.url });
+      if (isProd) {
+        Annotations.of(this).addWarningV2(
+          'relay:apiDefaultEndpoint',
+          'prod API keeps its default execute-api endpoint, so callers can skip CloudFront and the ' +
+            'WAF (the origin-verify header still refuses them). Pass -c apiOriginDomainName and ' +
+            '-c apiOriginCertificateArn to disable it.',
+        );
+      }
+    }
     this.checkinsTableName = checkins.tableName;
-
-    new CfnOutput(this, 'ApiUrl', { value: stage.url });
+    this.checkinTotalsTableName = checkinTotals.tableName;
+    this.checkinTotalsTableArn = checkinTotals.tableArn;
 
     Tags.of(this).add('project', 'relay');
     Tags.of(this).add('stage', props.stage);

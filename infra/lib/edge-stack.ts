@@ -26,6 +26,8 @@ import {
 import { HttpOrigin, S3BucketOrigin } from 'aws-cdk-lib/aws-cloudfront-origins';
 import { Alarm, ComparisonOperator, Metric, TreatMissingData } from 'aws-cdk-lib/aws-cloudwatch';
 import { SnsAction } from 'aws-cdk-lib/aws-cloudwatch-actions';
+import { EventField, Rule, RuleTargetInput } from 'aws-cdk-lib/aws-events';
+import { SnsTopic } from 'aws-cdk-lib/aws-events-targets';
 import { Topic } from 'aws-cdk-lib/aws-sns';
 import { EmailSubscription } from 'aws-cdk-lib/aws-sns-subscriptions';
 import { BlockPublicAccess, Bucket, BucketEncryption } from 'aws-cdk-lib/aws-s3';
@@ -35,7 +37,8 @@ import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { CfnLoggingConfiguration, CfnWebACL } from 'aws-cdk-lib/aws-wafv2';
 import { Construct } from 'constructs';
 import { accessLogsBucket, logAccessTo, noncurrentVersionRule } from './buckets.js';
-import { createEdgeKey } from './encryption.js';
+import { createEdgeKey, keyAlias } from './encryption.js';
+import { DATA_KEY_EVENTS, KMS_ALIAS_EVENTS } from './monitoring-stack.js';
 
 /** URL prefix of the public alert objects (must match backend/src/scale/publish/paths.ts). */
 export const PUBLIC_ALERTS_PATH_PATTERN = '/alerts/v1/*';
@@ -62,6 +65,8 @@ export const RATE_LIMITS = {
   PUBLIC_READ: 20_000,
 } as const;
 
+/** The agency API (AgencyStack). */
+export const AGENCY_PATH_PATTERN = '/agency/*';
 /** Check-in is POST /alerts/{alertId}/checkins. */
 export const CHECKIN_PATH_REGEX = '^/alerts/[^/]+/checkins$';
 
@@ -77,6 +82,11 @@ export interface EdgeStackProps extends StackProps {
   stage: 'dev' | 'prod';
   /** Host name of the HTTP API (no scheme, no path), e.g. abc.execute-api.us-west-2.amazonaws.com. */
   apiDomainName: string;
+  /**
+   * Host name of the agency HTTP API (AgencyStack). When set, /agency/* goes there through the
+   * same distribution, so the same web ACL (and the origin-verify header) covers it.
+   */
+  agencyApiDomainName?: string;
   /**
    * Name of the origin-verify secret (ConfigStack, replicated to this region). CloudFront sends
    * its value as x-relay-origin-verify so the API can refuse requests that skipped the WAF.
@@ -176,6 +186,29 @@ export class EdgeStack extends Stack {
       enableAcceptEncodingBrotli: true,
     });
 
+    // An API Gateway origin: never cached, every viewer header forwarded except Host (API Gateway
+    // needs its own host name), HTTPS only, and the origin-verify header when configured.
+    const apiBehavior = (domainName: string) => ({
+      origin: new HttpOrigin(domainName, {
+        protocolPolicy: OriginProtocolPolicy.HTTPS_ONLY,
+        // CloudFront to API Gateway: TLS 1.2 only (API Gateway accepts nothing older).
+        originSslProtocols: [OriginSslPolicy.TLS_V1_2],
+        ...(props.originVerifySecretName
+          ? {
+              customHeaders: {
+                [ORIGIN_VERIFY_HEADER]: SecretValue.secretsManager(
+                  props.originVerifySecretName,
+                ).unsafeUnwrap(),
+              },
+            }
+          : {}),
+      }),
+      allowedMethods: AllowedMethods.ALLOW_ALL,
+      cachePolicy: CachePolicy.CACHING_DISABLED,
+      originRequestPolicy: OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+      viewerProtocolPolicy: ViewerProtocolPolicy.HTTPS_ONLY,
+    });
+
     // One origin object for both behaviors, so there is one Origin Access Control.
     const publicAlertsOrigin = S3BucketOrigin.withOriginAccessControl(this.publicAlertsBucket);
 
@@ -199,28 +232,13 @@ export class EdgeStack extends Stack {
         : {}),
       // Everything not matched below is the API: never cached, every viewer header forwarded
       // except Host (API Gateway needs its own host name).
-      defaultBehavior: {
-        origin: new HttpOrigin(props.apiDomainName, {
-          protocolPolicy: OriginProtocolPolicy.HTTPS_ONLY,
-          // CloudFront to API Gateway: TLS 1.2 only (API Gateway accepts nothing older).
-          originSslProtocols: [OriginSslPolicy.TLS_V1_2],
-          ...(props.originVerifySecretName
-            ? {
-                customHeaders: {
-                  [ORIGIN_VERIFY_HEADER]: SecretValue.secretsManager(
-                    props.originVerifySecretName,
-                  ).unsafeUnwrap(),
-                },
-              }
-            : {}),
-        }),
-        allowedMethods: AllowedMethods.ALLOW_ALL,
-        cachePolicy: CachePolicy.CACHING_DISABLED,
-        originRequestPolicy: OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
-        viewerProtocolPolicy: ViewerProtocolPolicy.HTTPS_ONLY,
-      },
+      defaultBehavior: apiBehavior(props.apiDomainName),
       // CloudFront matches behaviors in this order, so the specific doc path goes first.
       additionalBehaviors: {
+        // The agency API (Cognito JWT): never cached, same WAF, same origin-verify header.
+        ...(props.agencyApiDomainName
+          ? { [AGENCY_PATH_PATTERN]: apiBehavior(props.agencyApiDomainName) }
+          : {}),
         [PUBLIC_ALERT_DOCS_PATH_PATTERN]: {
           origin: publicAlertsOrigin,
           allowedMethods: AllowedMethods.ALLOW_GET_HEAD,
@@ -267,6 +285,7 @@ export class EdgeStack extends Stack {
     });
     wafBlocked.addAlarmAction(new SnsAction(edgeTopic));
     wafBlocked.addOkAction(new SnsAction(edgeTopic));
+    this.addEdgeKeyRules(props.stage, edgeTopic);
 
     if (isProd && !props.customDomain) {
       Annotations.of(this).addWarningV2(
@@ -283,6 +302,55 @@ export class EdgeStack extends Stack {
 
     Tags.of(this).add('project', 'relay');
     Tags.of(this).add('stage', props.stage);
+  }
+
+  /**
+   * Reports disabling, deleting, re-enabling or re-policying the edge key, and changes to its alias
+   * (NIST SI-4, SC-12), like DataKeyChangedRule in the monitoring stack does for the us-west-2
+   * keys. EventBridge rules only see their own region's CloudTrail events, so the rule lives here
+   * (the multi-region trail delivers us-east-1 management events to this region's bus) and
+   * notifies the edge topic. Disabling the key makes the public-alerts bucket unreadable to
+   * CloudFront and stops WAF logging. CreateGrant is left out, as for the data keys.
+   */
+  private addEdgeKeyRules(stage: string, topic: Topic): void {
+    const alias = { wildcard: `*${keyAlias(stage, 'edge')}` };
+    const notify = (headline: string) =>
+      new SnsTopic(topic, {
+        message: RuleTargetInput.fromText(
+          `Relay ${stage} ${headline}: ${EventField.fromPath('$.detail.eventName')} ` +
+            `by ${EventField.fromPath('$.detail.userIdentity.arn')} ` +
+            `at ${EventField.fromPath('$.detail.eventTime')} ` +
+            `from ${EventField.fromPath('$.detail.sourceIPAddress')}`,
+        ),
+      });
+    new Rule(this, 'EdgeKeyChangedRule', {
+      description:
+        'The Relay edge KMS key (us-east-1) was disabled, scheduled for deletion, re-enabled or had its key policy changed',
+      eventPattern: {
+        source: ['aws.kms'],
+        detailType: ['AWS API Call via CloudTrail'],
+        detail: {
+          eventSource: ['kms.amazonaws.com'],
+          eventName: [...DATA_KEY_EVENTS],
+          // keyId is whatever the caller passed: the id, the ARN or the alias.
+          requestParameters: { keyId: [{ wildcard: `*${this.key.keyId}` }, alias] },
+        },
+      },
+      targets: [notify('EDGE KEY event')],
+    });
+    new Rule(this, 'EdgeKeyAliasChangedRule', {
+      description: 'The Relay edge KMS key alias was created, repointed or deleted',
+      eventPattern: {
+        source: ['aws.kms'],
+        detailType: ['AWS API Call via CloudTrail'],
+        detail: {
+          eventSource: ['kms.amazonaws.com'],
+          eventName: [...KMS_ALIAS_EVENTS],
+          requestParameters: { aliasName: [alias] },
+        },
+      },
+      targets: [notify('EDGE KEY ALIAS event')],
+    });
   }
 
   /**

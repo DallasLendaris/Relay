@@ -34,7 +34,12 @@ import {
   MetricFilter,
   RetentionDays,
 } from 'aws-cdk-lib/aws-logs';
-import { BlockPublicAccess, Bucket, BucketEncryption } from 'aws-cdk-lib/aws-s3';
+import {
+  BlockPublicAccess,
+  Bucket,
+  BucketEncryption,
+  ObjectLockRetention,
+} from 'aws-cdk-lib/aws-s3';
 import { Topic, ITopic } from 'aws-cdk-lib/aws-sns';
 import { EmailSubscription } from 'aws-cdk-lib/aws-sns-subscriptions';
 import { Construct, IConstruct } from 'constructs';
@@ -52,12 +57,19 @@ export interface MonitoringOptions {
   logRetentionDays?: number;
   /** Context `monthlyBudgetUsd`: default 600 on prod, 50 on dev. */
   monthlyBudgetUsd?: number;
+  /**
+   * Context `trailObjectLockDays`: default Object Lock retention (governance mode) of every trail
+   * log object. Default 365 on prod, 1 on dev (so test evidence does not pile up undeletable).
+   */
+  trailObjectLockDays?: number;
 }
 
 export const DEFAULT_LOG_RETENTION_DAYS = { dev: 30, prod: 365 } as const;
 export const DEFAULT_MONTHLY_BUDGET_USD = { dev: 50, prod: 600 } as const;
 /** CloudTrail log files are kept for a year. */
 export const TRAIL_RETENTION_DAYS = 365;
+/** Default Object Lock retention of trail objects (governance mode), by stage. */
+export const DEFAULT_TRAIL_OBJECT_LOCK_DAYS = { dev: 1, prod: 365 } as const;
 
 /** Values CloudWatch Logs accepts for `retentionInDays`. */
 const VALID_RETENTION = new Set<number>(
@@ -183,9 +195,19 @@ export class MonitoringStack extends Stack {
     this.topicArn = topic.topicArn;
 
     // ---- Audit trail ----
+    const lockDays = props.trailObjectLockDays ?? DEFAULT_TRAIL_OBJECT_LOCK_DAYS[stage];
+    if (!Number.isInteger(lockDays) || lockDays < 1 || lockDays > 36_500) {
+      throw new Error(`trailObjectLockDays ${lockDays} must be a whole number of days, 1 to 36500`);
+    }
     const trailBucket = new Bucket(this, 'TrailBucket', {
       encryption: BucketEncryption.S3_MANAGED,
       versioned: true,
+      // NIST AU-9: no trail object version can be overwritten or deleted for `lockDays` unless the
+      // caller has s3:BypassGovernanceRetention and asks for it explicitly (governance mode; an
+      // account administrator still can, and that call is itself in the trail). Object Lock can
+      // only be switched on for a new bucket here (and never off), so set it before first deploy.
+      objectLockEnabled: true,
+      objectLockDefaultRetention: ObjectLockRetention.governance(Duration.days(lockDays)),
       enforceSSL: true,
       blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
       lifecycleRules: [

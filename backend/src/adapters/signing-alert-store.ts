@@ -24,6 +24,10 @@ export class SigningAlertStore implements AlertStore {
   listActiveForCells(cells: string[], now: Date) {
     return this.inner.listActiveForCells(cells, now);
   }
+  /** Cells a version dropped (follow-ups). Empty when the inner store does not record them. */
+  async listDroppedCells(alertId: string, sourceId: string): Promise<string[]> {
+    return (await this.inner.listDroppedCells?.(alertId, sourceId)) ?? [];
+  }
   /** Feed reconciliation: every active alert of one source. Needs an inner store that has it. */
   async listActiveBySource(source: Alert['source'], now: Date): Promise<Alert[]> {
     const inner = this.inner as Partial<ActiveAlertLister>;

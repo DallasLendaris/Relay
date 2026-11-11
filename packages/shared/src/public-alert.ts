@@ -20,50 +20,49 @@ import { AlertSchema, AlertStateSchema } from './alert.js';
  * signature is symmetric, so a phone cannot verify it; a phone trusts the document because it came
  * from the Relay CDN origin over TLS, and the bucket is writable only by the publisher.
  */
-export const PublicAlertDocumentSchema = AlertSchema.omit({ area: true })
-  .extend({
-    version: z.literal(1),
-    area: z
-      .object({
-        description: z.string(),
-        /** Number of H3 cells in the full alert. */
-        cellCount: z.number().int().nonnegative(),
-        /** Hex SHA-256 of the alert's sorted cell ids joined with "\n". */
-        cellsSha256: z.string().regex(/^[0-9a-f]{64}$/),
-      })
-      .strict(),
-  })
-  .strict();
+export const PublicAlertDocumentSchema = z.strictObject({
+  ...AlertSchema.omit({ area: true }).shape,
+  version: z.literal(1),
+  area: z.strictObject({
+    description: z.string(),
+    /** Number of H3 cells in the full alert. */
+    cellCount: z.int().nonnegative(),
+    /** Hex SHA-256 of the alert's sorted cell ids joined with "\n". */
+    cellsSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  }),
+});
 export type PublicAlertDocument = z.infer<typeof PublicAlertDocumentSchema>;
 
 /**
  * Short-TTL pointer to the current document of one alert. Phones that opened a document from a
  * push re-read the pointer to learn about updates and cancellations.
  */
-export const AlertPointerSchema = z
-  .object({
-    version: z.literal(1),
-    alertId: z.string().uuid(),
-    sourceId: z.string(),
-    state: AlertStateSchema,
-    expires: z.string().datetime({ offset: true }),
-    /** Path (with leading slash, relative to the CDN base URL) of the current document. */
-    doc: z.string().startsWith('/alerts/v1/doc/'),
-  })
-  .strict();
+export const AlertPointerSchema = z.strictObject({
+  version: z.literal(1),
+  alertId: z.guid(),
+  sourceId: z.string(),
+  state: AlertStateSchema,
+  expires: z.iso.datetime({ offset: true }),
+  /** Path (with leading slash, relative to the CDN base URL) of the current document. */
+  doc: z.string().startsWith('/alerts/v1/doc/'),
+});
 export type AlertPointer = z.infer<typeof AlertPointerSchema>;
 
 /** The `data` map of a push notification. Every value is a string on the wire. */
-export const PushDataSchema = z
-  .object({
-    alertId: z.string().uuid(),
-    checkInToken: z.string(),
-    expiresAt: z.string().datetime({ offset: true }),
-    /**
-     * Absolute URL of this alert's PublicAlertDocument on the CDN. Absent when the sender has no
-     * CDN base configured, or when the payload had to be trimmed: then read GET /alerts/{alertId}.
-     */
-    alertUrl: z.string().url().optional(),
-  })
-  .passthrough();
+export const PushDataSchema = z.looseObject({
+  alertId: z.guid(),
+  checkInToken: z.string(),
+  expiresAt: z.iso.datetime({ offset: true }),
+  /**
+   * Absolute URL of this alert's PublicAlertDocument on the CDN. Absent when the sender has no
+   * CDN base configured, or when the payload had to be trimmed: then read GET /alerts/{alertId}.
+   */
+  alertUrl: z.url().optional(),
+  /**
+   * Set only on a follow-up push (docs/cancellation.md): `cancel` (the alert was cancelled),
+   * `update` (it changed and still covers this device), `removed` (it changed and no longer covers
+   * this device). The app should not offer "I'm okay" for `cancel` and `removed`.
+   */
+  followUp: z.enum(['cancel', 'update', 'removed']).optional(),
+});
 export type PushData = z.infer<typeof PushDataSchema>;

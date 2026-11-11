@@ -3,8 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_LAMBDA_CONCURRENCY_QUOTA,
   LAMBDA_MIN_UNRESERVED,
+  PAUSED_CONSUMER_MAX_CONCURRENCY,
   planConcurrency,
 } from '../lib/capacity.js';
+import { LATEJOIN_DEFAULT_CONCURRENCY } from '../lib/latejoin-stack.js';
 import { synthAll } from './helpers.js';
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -138,6 +140,20 @@ describe('Lambda reserved concurrency and the account quota (SEC-C-2 / RED-4)', 
     // Exactly full is fine.
     expect(() => planConcurrency({ apiReservedConcurrency: 324 })).not.toThrow();
     expect(() => planConcurrency({ apiReservedConcurrency: 325 })).toThrow(/does not fit/);
+  });
+
+  // Review B2: late-join and the paused consumer are capped by their SQS triggers, and together
+  // with the drainer (schedule, one run at a time) they must leave room in the unreserved 100.
+  it('the capped unreserved functions fit in what AWS keeps unreserved', () => {
+    const drainer = 1;
+    const capped = LATEJOIN_DEFAULT_CONCURRENCY + PAUSED_CONSUMER_MAX_CONCURRENCY + drainer;
+    expect(capped).toBeLessThanOrEqual(LAMBDA_MIN_UNRESERVED / 2);
+    for (const t of [dev, prod]) {
+      const caps = Object.values(t.fanout.findResources('AWS::Lambda::EventSourceMapping')).map(
+        (m) => (m as Res).Properties.ScalingConfig?.MaximumConcurrency,
+      );
+      expect(caps).toContain(PAUSED_CONSUMER_MAX_CONCURRENCY);
+    }
   });
 
   it('prod stage throttle never exceeds the HTTP API account quota', () => {

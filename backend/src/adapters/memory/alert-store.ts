@@ -4,6 +4,8 @@ import type { AlertStore } from '../../ports.js';
 /** In-memory AlertStore for tests and local runs. Stores copies so callers can't mutate it. */
 export class InMemoryAlertStore implements AlertStore {
   private readonly alerts = new Map<string, Alert>();
+  /** `${alertId}\n${sourceId}` -> cells that version dropped (Postgres: alert_dropped_cells). */
+  private readonly dropped = new Map<string, Set<string>>();
 
   async get(id: string): Promise<Alert | null> {
     const alert = this.alerts.get(id);
@@ -21,7 +23,23 @@ export class InMemoryAlertStore implements AlertStore {
   }
 
   async save(alert: Alert): Promise<void> {
+    const before = this.alerts.get(alert.id);
+    if (before && before.sourceId !== alert.sourceId) {
+      // Same rule as the Postgres store: a new version records the cells it no longer covers.
+      const now = new Set(alert.area.h3Cells);
+      const gone = before.area.h3Cells.filter((c) => !now.has(c));
+      if (gone.length > 0) {
+        const key = `${alert.id}\n${alert.sourceId}`;
+        const set = this.dropped.get(key) ?? new Set<string>();
+        for (const c of gone) set.add(c);
+        this.dropped.set(key, set);
+      }
+    }
     this.alerts.set(alert.id, structuredClone(alert));
+  }
+
+  async listDroppedCells(alertId: string, sourceId: string): Promise<string[]> {
+    return [...(this.dropped.get(`${alertId}\n${sourceId}`) ?? [])].sort();
   }
 
   async listActiveForCells(cells: string[], now: Date): Promise<Alert[]> {

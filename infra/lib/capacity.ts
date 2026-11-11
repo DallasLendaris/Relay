@@ -41,6 +41,18 @@ export const DEFAULT_AGGREGATOR_CONCURRENCY = 50;
 /** The cell-index repair consumer (SQS, small batches). */
 export const DEFAULT_REPAIR_CONCURRENCY = 5;
 
+// ---- Caps on functions that share the unreserved LAMBDA_MIN_UNRESERVED ----
+/**
+ * Paused-queue consumer: SQS event source maxConcurrency (review B2). Unbounded, an SQS trigger
+ * scales out to hundreds of invokes when a long pause ends with a big backlog, which would take
+ * the whole unreserved pool from late-join and the drainer, both on the alert path. Ten
+ * consumers, each re-dispatching a batch of 10 parked jobs with async shard invokes (well under a
+ * second per batch), drain on the order of 100+ messages per second, so a statewide backlog of a
+ * few thousand jobs is re-dispatched within a minute; the shard workers that do the sending have
+ * their own 500 reservation.
+ */
+export const PAUSED_CONSUMER_MAX_CONCURRENCY = 10;
+
 export interface ConcurrencyPlan {
   quota: number;
   api: number;
