@@ -5,6 +5,7 @@ import { Match, Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
 import { ConfigStack } from '../lib/config-stack.js';
 import { DataStack } from '../lib/data-stack.js';
+import { PAUSED_CONSUMER_MAX_CONCURRENCY } from '../lib/capacity.js';
 import { FanoutStack, SHARD_MEMORY_MB } from '../lib/fanout-stack.js';
 
 const IDEM_ARN = 'arn:aws:dynamodb:us-west-2:111111111111:table/idem';
@@ -341,6 +342,8 @@ describe('FanoutStack', () => {
       t.hasResourceProperties('AWS::Lambda::EventSourceMapping', {
         BatchSize: 10,
         FunctionResponseTypes: ['ReportBatchItemFailures'],
+        // Review B2: bounded by its trigger, as the LambdaConcurrency exception says.
+        ScalingConfig: { MaximumConcurrency: PAUSED_CONSUMER_MAX_CONCURRENCY },
       });
       const consumer = Object.values(t.findResources('AWS::Lambda::Function')).find((f) =>
         JSON.stringify((f as Res).Properties.Environment?.Variables ?? {}).includes(

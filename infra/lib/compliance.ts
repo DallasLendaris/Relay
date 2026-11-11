@@ -115,8 +115,9 @@ const LAMBDAS: Partial<Record<StackKey, string[]>> = {
 };
 
 const CONCURRENCY_OPS =
-  'Low-volume function bounded by its trigger (an SQS event source with batch size 10, a schedule, ' +
-  'or a person). Reserving concurrency would take capacity from the account quota that ' +
+  'Low-volume function bounded by its trigger: an SQS event source with a maxConcurrency cap ' +
+  '(late-join 20, paused consumer 10), a schedule whose run fits its period (outbox drainer), or a ' +
+  'person (redrive tools). Reserving concurrency would take capacity from the account quota that ' +
   'capacity.ts divides between the send path and the API (docs/scale-quotas.md); the send path ' +
   'functions all have reservations on prod.';
 const CONCURRENCY_DEV =

@@ -19,7 +19,11 @@ import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { Queue, QueueEncryption } from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
-import { DEFAULT_SHARD_CONCURRENCY, PLANNER_RESERVED_CONCURRENCY } from './capacity.js';
+import {
+  DEFAULT_SHARD_CONCURRENCY,
+  PAUSED_CONSUMER_MAX_CONCURRENCY,
+  PLANNER_RESERVED_CONCURRENCY,
+} from './capacity.js';
 import { latejoinQueueName } from './latejoin-stack.js';
 import {
   alertVerifyEnv,
@@ -363,7 +367,12 @@ export class FanoutStack extends Stack {
       },
     });
     pausedConsumer.addEventSource(
-      new SqsEventSource(paused, { batchSize: 10, reportBatchItemFailures: true }),
+      new SqsEventSource(paused, {
+        batchSize: 10,
+        reportBatchItemFailures: true,
+        // Bounded so a drained backlog cannot take the unreserved pool (capacity.ts).
+        maxConcurrency: PAUSED_CONSUMER_MAX_CONCURRENCY,
+      }),
     );
     allow(pausedConsumer, ['ssm:GetParameter'], [props.killSwitchParamArn]);
     allow(pausedConsumer, ['sqs:SendMessage'], [paused.queueArn, plan.queue.queueArn]);
