@@ -24,7 +24,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "zod": "^3.25.0"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@apidevtools/swagger-parser": "^13.1.0",

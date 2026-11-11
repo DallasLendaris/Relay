@@ -19,7 +19,7 @@ export type CapSeverity = z.infer<typeof CapSeveritySchema>;
 export const AlertStateSchema = z.enum(['active', 'updated', 'cancelled', 'expired']);
 
 /** ISO 8601 date-time string. */
-const dateTime = z.string().datetime({ offset: true });
+const dateTime = z.iso.datetime({ offset: true });
 
 // Every array and string below takes external (NWS) input, so each has a bound; see limits.ts.
 const short = z.string().max(LIMITS.alertShortMax);
@@ -35,7 +35,7 @@ const GeoMultiPolygonSchema = z.object({
 });
 
 export const AlertSchema = z.object({
-  id: z.string().uuid(),
+  id: z.guid(),
   source: z.enum(['nws', 'usgs', 'ipaws']),
   sourceId: short,
   event: short,
