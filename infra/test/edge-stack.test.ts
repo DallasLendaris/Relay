@@ -238,3 +238,58 @@ describe('IngestStack public alert wiring', () => {
     expect(JSON.stringify(t.toJSON().Resources)).toContain('/alerts/v1/*');
   });
 });
+
+// Review C3 (NIST SI-4, SC-12): EventBridge rules are regional, so the us-west-2 DataKeyChangedRule
+// cannot see the edge key in us-east-1. The edge stack has its own rule to the edge topic.
+describe('EdgeStack: edge key change alerts', () => {
+  const resources = edge.toJSON().Resources as Record<string, any>;
+  const ruleOf = (prefix: string) => {
+    const found = Object.entries(resources).filter(
+      ([id, r]) => r.Type === 'AWS::Events::Rule' && id.startsWith(prefix),
+    );
+    expect(found, prefix).toHaveLength(1);
+    return found[0]![1];
+  };
+  const keyId = Object.entries(resources).find(([, r]) => r.Type === 'AWS::KMS::Key')![0];
+  const topicId = Object.entries(resources).find(
+    ([, r]) => r.Type === 'AWS::SNS::Topic' && r.Properties.TopicName === 'relay-dev-edge-alerts',
+  )![0];
+
+  it('reports disabling, deleting, re-enabling or re-policying the edge key (not grants)', () => {
+    const r = ruleOf('EdgeKeyChangedRule');
+    const detail = r.Properties.EventPattern.detail;
+    expect(r.Properties.EventPattern.source).toEqual(['aws.kms']);
+    expect(detail.eventName).toEqual(
+      expect.arrayContaining(['ScheduleKeyDeletion', 'DisableKey', 'EnableKey', 'PutKeyPolicy']),
+    );
+    expect(detail.eventName).not.toContain('CreateGrant');
+    const ids = JSON.stringify(detail.requestParameters.keyId);
+    expect(ids).toContain(`{"Ref":"${keyId}"}`);
+    expect(ids).toContain('alias/relay/dev/edge');
+    expect(r.Properties.Targets).toHaveLength(1);
+    expect(r.Properties.Targets[0].Arn).toEqual({ Ref: topicId });
+  });
+
+  it('reports changes to the edge key alias', () => {
+    const r = ruleOf('EdgeKeyAliasChangedRule');
+    const detail = r.Properties.EventPattern.detail;
+    expect(detail.eventName).toEqual(['CreateAlias', 'UpdateAlias', 'DeleteAlias']);
+    expect(JSON.stringify(detail.requestParameters.aliasName)).toContain('alias/relay/dev/edge');
+    expect(r.Properties.Targets[0].Arn).toEqual({ Ref: topicId });
+  });
+
+  it('lets EventBridge publish to the encrypted edge topic (topic policy and key policy)', () => {
+    const policies = Object.values(resources).filter((r) => r.Type === 'AWS::SNS::TopicPolicy');
+    const statements = policies.flatMap((p) => p.Properties.PolicyDocument.Statement);
+    expect(
+      statements.some(
+        (s) => s.Effect === 'Allow' && s.Principal?.Service === 'events.amazonaws.com',
+      ),
+    ).toBe(true);
+    const key = resources[keyId].Properties.KeyPolicy.Statement as any[];
+    const events = key.find((s) => s.Sid === 'AllowEventBridgeRules');
+    expect(events.Principal).toEqual({ Service: 'events.amazonaws.com' });
+    expect(events.Action).toEqual(['kms:Decrypt', 'kms:GenerateDataKey*']);
+    expect(events.Condition.StringEquals['aws:SourceAccount']).toBeDefined();
+  });
+});
