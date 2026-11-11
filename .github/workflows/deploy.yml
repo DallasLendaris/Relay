@@ -1,0 +1,170 @@
+name: Deploy
+
+# S-06 / CM-3 / CM-5 / SA-10 / SEC-C-10: the only supported way to deploy Relay.
+# Runbook: docs/runbooks/deploy.md. Roles: infra/bootstrap/github-deploy-stack.ts.
+#
+# Inert until the owner sets the repository variable AWS_DEPLOY_ENABLED=true (after the AWS
+# accounts exist and the one-time setup in the runbook is done). Every job checks it.
+#
+# Never runs on pull_request, so no fork or PR branch ever gets an OIDC token or an environment.
+# No long-lived AWS keys: each AWS job exchanges a GitHub OIDC token for short-lived credentials.
+#
+#   build   no AWS access: lint, typecheck, all tests (cdk-nag on dev and prod included)
+#   diff    environment <stage>-diff, read-only role (CDK lookup role only): synth with the
+#           stage's real context and cdk-nag on, cdk diff to the job summary, upload cdk.out
+#   deploy  environment <stage> (prod: required reviewers approve after reading the diff),
+#           deploy role: cdk deploy of exactly the cloud assembly the diff job synthesized
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Stage to deploy
+        type: choice
+        options: [dev, prod]
+        default: dev
+        required: true
+  # dev only (inputs.stage is empty on push), and only when AWS_DEPLOY_DEV_ON_PUSH is also true.
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One deploy per stage at a time; a queued run waits instead of cancelling a running deploy.
+concurrency:
+  group: deploy-${{ inputs.stage || 'dev' }}
+  cancel-in-progress: false
+
+env:
+  STAGE: ${{ inputs.stage || 'dev' }}
+  CDK_DISABLE_CLI_TELEMETRY: 'true'
+
+jobs:
+  build:
+    if: vars.AWS_DEPLOY_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || vars.AWS_DEPLOY_DEV_ON_PUSH == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Prod deploys only from main
+        if: env.STAGE == 'prod' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::prod deploys run from main only (got $GITHUB_REF)"
+          exit 1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:shared
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+
+  diff:
+    needs: build
+    if: vars.AWS_DEPLOY_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || vars.AWS_DEPLOY_DEV_ON_PUSH == 'true')
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.stage || 'dev' }}-diff
+    permissions:
+      contents: read
+      # OIDC token for the read-only diff role (CDK lookup role only). Allowed on purpose in
+      # infra/test/supply-chain.test.ts.
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:shared
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DIFF_ROLE_ARN }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          aws-region: us-west-2
+          role-session-name: relay-diff-${{ github.run_id }}
+          role-duration-seconds: 3600
+          mask-aws-account-id: true
+      - name: Synth with the stage's context (cdk-nag on; an unsuppressed finding fails here)
+        working-directory: infra
+        # Values come from the GitHub environment's variables, never from this file. bin/relay.ts
+        # refuses prod without publicAlertBaseUrl and alarmEmail, and the edge pair as all-or-none.
+        env:
+          PUBLIC_ALERT_BASE_URL: ${{ vars.PUBLIC_ALERT_BASE_URL }}
+          ALARM_EMAIL: ${{ vars.ALARM_EMAIL }}
+          EDGE_DOMAIN_NAME: ${{ vars.EDGE_DOMAIN_NAME }}
+          EDGE_CERTIFICATE_ARN: ${{ vars.EDGE_CERTIFICATE_ARN }}
+        run: |
+          ctx=(-c "stage=$STAGE")
+          if [ -n "$PUBLIC_ALERT_BASE_URL" ]; then ctx+=(-c "publicAlertBaseUrl=$PUBLIC_ALERT_BASE_URL"); fi
+          if [ -n "$ALARM_EMAIL" ]; then ctx+=(-c "alarmEmail=$ALARM_EMAIL"); fi
+          if [ -n "$EDGE_DOMAIN_NAME" ]; then ctx+=(-c "edgeDomainName=$EDGE_DOMAIN_NAME"); fi
+          if [ -n "$EDGE_CERTIFICATE_ARN" ]; then ctx+=(-c "edgeCertificateArn=$EDGE_CERTIFICATE_ARN"); fi
+          npx cdk synth --quiet --no-color --output cdk.out "${ctx[@]}"
+      - name: cdk diff to the job summary
+        working-directory: infra
+        run: |
+          set -o pipefail
+          npx cdk diff --app cdk.out --all --method=template --no-color 2>&1 | tee diff.txt
+          {
+            echo "## cdk diff: relay-$STAGE at \`$GITHUB_SHA\`"
+            echo
+            echo "Template diff against what is deployed (read-only lookup role). The deploy job"
+            echo "deploys exactly this cloud assembly; CloudFormation computes the change set."
+            echo
+            echo '```'
+            head -c 900000 diff.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cdk-out-${{ inputs.stage || 'dev' }}
+          path: infra/cdk.out
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    needs: diff
+    if: vars.AWS_DEPLOY_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || vars.AWS_DEPLOY_DEV_ON_PUSH == 'true')
+    runs-on: ubuntu-latest
+    # prod: required reviewers (GitHub settings, see the runbook) approve this job after reading
+    # the diff job's summary. The deploy role trusts only this environment.
+    environment: ${{ inputs.stage || 'dev' }}
+    permissions:
+      contents: read
+      # OIDC token for the deploy role. Allowed on purpose in infra/test/supply-chain.test.ts.
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      # Only for the pinned aws-cdk CLI from package-lock.json.
+      - run: npm ci
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cdk-out-${{ inputs.stage || 'dev' }}
+          path: infra/cdk.out
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          aws-region: us-west-2
+          role-session-name: relay-deploy-${{ github.run_id }}
+          # A first deploy (Aurora, CloudFront) can take over an hour.
+          role-duration-seconds: 7200
+          mask-aws-account-id: true
+      - name: cdk deploy (CloudFormation change sets; stacks in dependency order)
+        working-directory: infra
+        run: npx cdk deploy --app cdk.out --all --require-approval never --concurrency 1 --no-color
