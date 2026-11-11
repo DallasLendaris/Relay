@@ -1,4 +1,6 @@
 import {
+  Annotations,
+  ArnFormat,
   Aws,
   CfnOutput,
   Duration,
@@ -15,7 +17,10 @@ import {
   HttpVersion,
   OriginProtocolPolicy,
   OriginRequestPolicy,
+  OriginSslPolicy,
   PriceClass,
+  SecurityPolicyProtocol,
+  SSLMethod,
   ViewerProtocolPolicy,
 } from 'aws-cdk-lib/aws-cloudfront';
 import { HttpOrigin, S3BucketOrigin } from 'aws-cdk-lib/aws-cloudfront-origins';
@@ -24,8 +29,13 @@ import { SnsAction } from 'aws-cdk-lib/aws-cloudwatch-actions';
 import { Topic } from 'aws-cdk-lib/aws-sns';
 import { EmailSubscription } from 'aws-cdk-lib/aws-sns-subscriptions';
 import { BlockPublicAccess, Bucket, BucketEncryption } from 'aws-cdk-lib/aws-s3';
-import { CfnWebACL } from 'aws-cdk-lib/aws-wafv2';
+import { Certificate } from 'aws-cdk-lib/aws-certificatemanager';
+import { Key } from 'aws-cdk-lib/aws-kms';
+import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
+import { CfnLoggingConfiguration, CfnWebACL } from 'aws-cdk-lib/aws-wafv2';
 import { Construct } from 'constructs';
+import { accessLogsBucket, logAccessTo, noncurrentVersionRule } from './buckets.js';
+import { createEdgeKey } from './encryption.js';
 
 /** URL prefix of the public alert objects (must match backend/src/scale/publish/paths.ts). */
 export const PUBLIC_ALERTS_PATH_PATTERN = '/alerts/v1/*';
@@ -81,7 +91,17 @@ export interface EdgeStackProps extends StackProps {
   alarmEmail?: string;
   /** Requests blocked by the web ACL in 5 minutes that raise the alarm (default 1,000). */
   wafBlockedThreshold?: number;
+  /**
+   * Custom domain for the distribution (bin/relay.ts: `-c edgeDomainName=alerts.example.org
+   * -c edgeCertificateArn=arn:aws:acm:us-east-1:...`). With it, viewers must use TLS 1.2 or later
+   * (TLSv1.2_2021). Without it CloudFront serves *.cloudfront.net, whose security policy AWS fixes
+   * at TLSv1 and does not let us change.
+   */
+  customDomain?: { domainName: string; certificateArn: string };
 }
+
+/** WAF log group (WAF requires the aws-waf-logs- prefix). */
+export const wafLogGroupName = (stage: string): string => `aws-waf-logs-relay-${stage}`;
 
 /** Name of the web ACL (also the WebACL metric dimension). */
 export const webAclName = (stage: string): string => `relay-${stage}-web-acl`;
@@ -108,10 +128,13 @@ export class EdgeStack extends Stack {
   readonly publicAlertsBucket: Bucket;
   readonly distribution: Distribution;
   readonly webAcl: CfnWebACL;
+  /** Customer-managed KMS key of this region (bucket, topic, WAF logs); see encryption.ts. */
+  readonly key: Key;
 
   constructor(scope: Construct, id: string, props: EdgeStackProps) {
     super(scope, id, props);
     const isProd = props.stage === 'prod';
+    this.key = createEdgeKey(this, props.stage);
 
     this.publicAlertsBucket = new Bucket(this, 'PublicAlertsBucket', {
       bucketName: publicAlertsBucketName(props.stage),
@@ -119,11 +142,18 @@ export class EdgeStack extends Stack {
       blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,
       encryption: BucketEncryption.S3_MANAGED,
+      // Versioned (NIST CP-9): an overwritten or recalled alert document can be recovered.
+      versioned: true,
+      lifecycleRules: [noncurrentVersionRule],
       removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
       autoDeleteObjects: !isProd,
     });
 
+    // S3 server access logs of the bucket (NIST AU-12).
+    logAccessTo(this.publicAlertsBucket, accessLogsBucket(this, isProd), 'public-alerts/');
+
     this.webAcl = this.buildWebAcl(props.stage);
+    this.addWafLogging(props.stage, isProd);
 
     // Honor the origin's Cache-Control (max-age=15, stale-while-revalidate=60). TTLs only clamp:
     // min 0 so the origin may go as low as it likes, default 15 s when the header is missing.
@@ -154,11 +184,26 @@ export class EdgeStack extends Stack {
       webAclId: this.webAcl.attrArn,
       priceClass: PriceClass.PRICE_CLASS_100,
       httpVersion: HttpVersion.HTTP2_AND_3,
+      ...(props.customDomain
+        ? {
+            domainNames: [props.customDomain.domainName],
+            certificate: Certificate.fromCertificateArn(
+              this,
+              'EdgeCertificate',
+              props.customDomain.certificateArn,
+            ),
+            // NIST SC-8 / SC-13: TLS 1.2+ with the 2021 cipher list for every viewer.
+            minimumProtocolVersion: SecurityPolicyProtocol.TLS_V1_2_2021,
+            sslSupportMethod: SSLMethod.SNI,
+          }
+        : {}),
       // Everything not matched below is the API: never cached, every viewer header forwarded
       // except Host (API Gateway needs its own host name).
       defaultBehavior: {
         origin: new HttpOrigin(props.apiDomainName, {
           protocolPolicy: OriginProtocolPolicy.HTTPS_ONLY,
+          // CloudFront to API Gateway: TLS 1.2 only (API Gateway accepts nothing older).
+          originSslProtocols: [OriginSslPolicy.TLS_V1_2],
           ...(props.originVerifySecretName
             ? {
                 customHeaders: {
@@ -223,6 +268,14 @@ export class EdgeStack extends Stack {
     wafBlocked.addAlarmAction(new SnsAction(edgeTopic));
     wafBlocked.addOkAction(new SnsAction(edgeTopic));
 
+    if (isProd && !props.customDomain) {
+      Annotations.of(this).addWarningV2(
+        'relay:edgeTlsPolicy',
+        'prod edge has no custom domain: viewers of *.cloudfront.net may negotiate TLS 1.0/1.1 ' +
+          '(AWS fixes that policy). Pass -c edgeDomainName and -c edgeCertificateArn for TLS 1.2+.',
+      );
+    }
+
     new CfnOutput(this, 'DistributionDomainName', {
       value: this.distribution.distributionDomainName,
     });
@@ -230,6 +283,48 @@ export class EdgeStack extends Stack {
 
     Tags.of(this).add('project', 'relay');
     Tags.of(this).add('stage', props.stage);
+  }
+
+  /**
+   * WAF logs (NIST AU-2 / AU-12 / SI-4): only requests a rule blocked or counted, so a flood of
+   * normal traffic costs nothing to log. The Authorization header (device credentials) is redacted.
+   * WAF requires the log group name to start with aws-waf-logs-; CloudFormation's deploy role
+   * creates the log group resource policy that lets WAF write to it.
+   */
+  private addWafLogging(stage: string, isProd: boolean): void {
+    const name = wafLogGroupName(stage);
+    const logs = new LogGroup(this, 'WafLogs', {
+      logGroupName: name,
+      retention: RetentionDays.ONE_MONTH,
+      removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+    });
+    const logging = new CfnLoggingConfiguration(this, 'WafLogging', {
+      resourceArn: this.webAcl.attrArn,
+      // WAF wants the bare log group ARN (no trailing ":*").
+      logDestinationConfigs: [
+        this.formatArn({
+          service: 'logs',
+          resource: 'log-group',
+          resourceName: name,
+          arnFormat: ArnFormat.COLON_RESOURCE_NAME,
+        }),
+      ],
+      redactedFields: [{ singleHeader: { Name: 'authorization' } }],
+      loggingFilter: {
+        DefaultBehavior: 'DROP',
+        Filters: [
+          {
+            Behavior: 'KEEP',
+            Requirement: 'MEETS_ANY',
+            Conditions: [
+              { ActionCondition: { Action: 'BLOCK' } },
+              { ActionCondition: { Action: 'COUNT' } },
+            ],
+          },
+        ],
+      },
+    });
+    logging.node.addDependency(logs);
   }
 
   private buildWebAcl(stage: string): CfnWebACL {

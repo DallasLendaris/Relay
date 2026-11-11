@@ -1,0 +1,26 @@
+# gitleaks configuration (RA-5, SA-11). Used by .github/workflows/security.yml and for local runs:
+#   gitleaks git --config .gitleaks.toml --redact .
+# Start from the default rule set and allowlist only proven test fixtures. Each entry is narrowed to
+# one file AND one value shape (condition = "AND"), so a real secret pasted into the same file is
+# still reported. Triage: docs/compliance/ci-security-scanning.md.
+
+[extend]
+useDefault = true
+
+# backend/dev-data/checkins.json is generated fake data (backend/scripts/generate-fake-data.ts,
+# seed 42; see backend/dev-data/README.md). generic-api-key fires on each check-in's
+# "idempotencyKey", which is a random v4 UUID, not a credential. Only UUID-shaped values are
+# allowed here; the fake "token" fields are not allowlisted.
+[[allowlists]]
+description = "Fake dev data: check-in idempotency keys are random UUIDs"
+condition = "AND"
+paths = ['''^backend/dev-data/checkins\.json$''']
+regexes = ['''^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$''']
+
+# loadtest/test/report.test.ts uses a made-up 32-hex-character token to prove the report
+# truncates tokens ("prints and logs without leaking full tokens"). It is a literal test value.
+[[allowlists]]
+description = "Load-test report unit test: literal fake token"
+condition = "AND"
+paths = ['''^loadtest/test/report\.test\.ts$''']
+regexes = ['''^abcdef0123456789abcdef0123456789$''']

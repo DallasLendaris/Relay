@@ -1,6 +1,8 @@
 # Relay system security plan (outline)
 
 > **Draft, pending review by SJSU counsel / the agency ISO.** This document describes Relay as built at commit `74acc5c` plus the fixes planned in the audit-fix round. It does not claim compliance with SAM 5300, SIMM 5315-B or any other standard. Where a control is missing it says so.
+>
+> **Partly refreshed 2026-11-11** on branch `compliance-foundation` after the compliance-foundation work (customer-managed keys, cdk-nag, CI scanning). Rows changed then end with "(compliance-foundation)"; the [review](./review-2026-11.md) lists them. Other rows still describe `74acc5c`; the [control gap map](./control-map.md) is the more current per-control view.
 
 Prepared for the California Cloud Services Assessment (CCSA). The CCSA asks for a "Cloud System Security Plan (CSSP)" among its uploaded artifacts ([CDT CCSA page](https://cdt.ca.gov/services/ccsa), verified 2026-11-09). This outline is the starting point for that CSSP. The CCSA page lists SIMM 5315-B (Cloud Security Standard), SIMM 140 (Cloud Security Guide) and SAM 5305.7 (Security Risk Assessment) as the standards the assessment validates. Those documents were **not** retrieved for this draft, so the control families below follow common practice and still have to be mapped to the SIMM controls by the agency ISO.
 
@@ -154,24 +156,25 @@ Families follow the list requested for the CCSA package. IDs in the last column 
 
 ### 4.2 Audit and accountability (AU)
 
-| Control                                         | Status    | Notes                                                                                        | Findings        |
-| ----------------------------------------------- | --------- | -------------------------------------------------------------------------------------------- | --------------- |
-| Structured JSON application logs, no tokens     | Built     | Leaks found: a deviceId in one log line, raw error strings, token redaction misses APNs/FCM. | PRIV-10         |
-| CloudTrail, GuardDuty, Config, Security Hub     | Not built | No audit trail of who flipped the kill switch or changed a secret.                           | GOV-10, SEC-C-4 |
-| CloudFront, WAF, API and S3 access logs         | Not built |                                                                                              | SEC-C-4         |
-| Log retention                                   | Partial   | One month on all log groups. A state audit window is likely longer; agency ISO to set.       | GOV-10          |
-| Alert-send audit record (who sent what to whom) | Partial   | Dedupe and sent markers exist per batch; no operator-action log.                             | OPS-3           |
+| Control                                         | Status    | Notes                                                                                                                                                                                                        | Findings        |
+| ----------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------- |
+| Structured JSON application logs, no tokens     | Built     | Leaks found: a deviceId in one log line, raw error strings, token redaction misses APNs/FCM.                                                                                                                 | PRIV-10         |
+| CloudTrail, GuardDuty, Config, Security Hub     | Not built | No audit trail of who flipped the kill switch or changed a secret.                                                                                                                                           | GOV-10, SEC-C-4 |
+| CloudFront, WAF, API and S3 access logs         | Partial   | WAF logs (blocked and counted requests, `authorization` redacted), S3 server access logs, VPC flow logs and Postgres logs are built. CloudFront and API Gateway access logs are not. (compliance-foundation) | SEC-C-4         |
+| Log retention                                   | Partial   | One month on all log groups. A state audit window is likely longer; agency ISO to set.                                                                                                                       | GOV-10          |
+| Alert-send audit record (who sent what to whom) | Partial   | Dedupe and sent markers exist per batch; no operator-action log.                                                                                                                                             | OPS-3           |
 
 ### 4.3 Configuration management (CM)
 
-| Control                                  | Status      | Notes                                                                        | Findings        |
-| ---------------------------------------- | ----------- | ---------------------------------------------------------------------------- | --------------- |
-| Infrastructure as code (CDK, TypeScript) | Built       | Synth is tested for dev and prod. Tags `project` and `stage`.                | -               |
-| CI: lint, typecheck, tests               | Built       | GitHub Actions, no `permissions` block, actions tag-pinned not SHA-pinned.   | DEP-4, SEC-C-10 |
-| Deploy pipeline with approvals           | Not built   | Deploys are manual. OIDC deploy role is ticket S-06.                         | SEC-C-10        |
-| Safe prod defaults                       | Fix planned | A prod deploy without `-c senderEnabled=true` sets the sender fleet to zero. | OPS-4, RED-8    |
-| Database migrations                      | Partial     | Plain SQL files; autocommit per statement, no lock, half-apply possible.     | OPS-9           |
-| Image pinning, `.dockerignore`           | Not built   | `node:22-slim` not digest pinned; source maps shipped.                       | DEP-2, 3, 7     |
+| Control                                          | Status      | Notes                                                                                                                                                                                                                                                                                       | Findings        |
+| ------------------------------------------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| Infrastructure as code (CDK, TypeScript)         | Built       | Synth is tested for dev and prod. Tags `project` and `stage`.                                                                                                                                                                                                                               | -               |
+| CI: lint, typecheck, tests                       | Built       | GitHub Actions with `permissions: contents: read` and SHA-pinned actions (DEP-4 fixed before compliance-foundation; verified 2026-11-11).                                                                                                                                                   | DEP-4, SEC-C-10 |
+| Configuration checks (cdk-nag NIST 800-53 rev 5) | Built       | Pack applied to every stack (`infra/lib/compliance.ts`); an unsuppressed finding fails `cdk synth` and `npm test` in CI. Per-resource exceptions, pending ISO acceptance: [cdk-nag-exceptions.md](./cdk-nag-exceptions.md). No AWS Config for the deployed account. (compliance-foundation) | -               |
+| Deploy pipeline with approvals                   | Not built   | Deploys are manual. OIDC deploy role is ticket S-06.                                                                                                                                                                                                                                        | SEC-C-10        |
+| Safe prod defaults                               | Fix planned | A prod deploy without `-c senderEnabled=true` sets the sender fleet to zero.                                                                                                                                                                                                                | OPS-4, RED-8    |
+| Database migrations                              | Partial     | Plain SQL files; autocommit per statement, no lock, half-apply possible.                                                                                                                                                                                                                    | OPS-9           |
+| Image pinning, `.dockerignore`                   | Not built   | `node:22-slim` not digest pinned; source maps shipped.                                                                                                                                                                                                                                      | DEP-2, 3, 7     |
 
 ### 4.4 Contingency planning (CP)
 
@@ -190,16 +193,16 @@ The CCSA page says the Technology Recovery Plan is validated during the assessme
 
 ### 4.5 Identification and authentication (IA)
 
-| Control                                                         | Status            | Findings                                                                         |
-| --------------------------------------------------------------- | ----------------- | -------------------------------------------------------------------------------- |
-| Device credential: random, HMAC-derived, stateless, hash stored | Built             | PRIV-9 (cannot be revoked)                                                       |
-| Check-in token: HMAC, binds alert, device, cell, expiry         | Built             | REL-6 (expiry fixed at fan-out end)                                              |
-| Constant-time compare, strict token formats                     | Partial           | SEC-A-9 (lenient base64url), SEC-A-10 (all-zero key accepted)                    |
-| Origin verification header between CloudFront and API           | Built, bypassable | SEC-C-2, SEC-A-7                                                                 |
-| Attestation (App Attest, Play Integrity)                        | Not built         | SEC-A-1                                                                          |
-| Agency identity (SSO, MFA)                                      | Not built         | GOV-6                                                                            |
-| Alert signing key: KMS asymmetric; only ingest has kms:Sign     | Built             | SEC-C-7, RED-2 fixed; verifiers hold the public key only                         |
-| Key rotation tooling                                            | Partial           | Monotonic kids, no overwrite (SEC-C-5 fixed); no APNs/FCM rotation steps (OPS-8) |
+| Control                                                         | Status            | Findings                                                                                                                                                                                                                                          |
+| --------------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Device credential: random, HMAC-derived, stateless, hash stored | Built             | PRIV-9 (cannot be revoked)                                                                                                                                                                                                                        |
+| Check-in token: HMAC, binds alert, device, cell, expiry         | Built             | REL-6 (expiry fixed at fan-out end)                                                                                                                                                                                                               |
+| Constant-time compare, strict token formats                     | Partial           | SEC-A-9 (lenient base64url), SEC-A-10 (all-zero key accepted)                                                                                                                                                                                     |
+| Origin verification header between CloudFront and API           | Built, bypassable | SEC-C-2, SEC-A-7                                                                                                                                                                                                                                  |
+| Attestation (App Attest, Play Integrity)                        | Not built         | SEC-A-1                                                                                                                                                                                                                                           |
+| Agency identity (SSO, MFA)                                      | Not built         | GOV-6                                                                                                                                                                                                                                             |
+| Alert signing key: KMS asymmetric; only ingest has kms:Sign     | Built             | SEC-C-7, RED-2 fixed; verifiers hold the public key only                                                                                                                                                                                          |
+| Key rotation tooling                                            | Partial           | Monotonic kids, no overwrite (SEC-C-5 fixed); runbooks with a cadence for every key and secret, APNs/FCM included (`docs/runbooks/key-rotation.md`, `docs/runbooks/push-credential-rotation.md`). All rotation is manual. (compliance-foundation) |
 
 ### 4.6 Incident response (IR)
 
@@ -207,37 +210,37 @@ See [incident response](./incident-response.md). Detection is the weakest part: 
 
 ### 4.7 Media protection (MP)
 
-| Control                              | Status    | Notes                                                                                                                                  | Findings |
-| ------------------------------------ | --------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| Encryption at rest                   | Built     | Aurora storage encrypted; S3-managed keys; SQS-managed keys; DynamoDB default AWS-owned key. Customer-managed KMS keys are not used.   | PRIV-6   |
-| Encryption in transit                | Built     | S3 `enforceSSL`; HTTPS to CloudFront; Data API over HTTPS. CloudFront default certificate allows TLS 1.0 and sets no security headers. | SEC-C-9  |
-| Bucket public access blocked         | Built     | The public bucket is served through CloudFront.                                                                                        | -        |
-| Bucket versioning                    | Not built | Zone pack and public alerts are unsigned and unversioned.                                                                              | SEC-C-11 |
-| Removable media, device sanitization | N/A       | Managed AWS services. Backup purge after a delete request is undefined.                                                                | PRIV-11  |
-| Data on phones                       | Open      | The app stores place data and the credential on the device; to be described by the app team.                                           | -        |
+| Control                              | Status  | Notes                                                                                                                                                                                                                                                                                            | Findings |
+| ------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------- |
+| Encryption at rest                   | Built   | Customer-managed KMS keys (data, messaging, logs in us-west-2; edge in us-east-1), yearly rotation, on every table, cluster, data bucket, secret, queue, topic, log group and the trail (`infra/lib/encryption.ts`). S3 access log buckets stay SSE-S3 (S3 requires it). (compliance-foundation) | PRIV-6   |
+| Encryption in transit                | Partial | Buckets deny TLS below 1.2, queues deny non-TLS, CloudFront to API TLS 1.2 only; Data API over HTTPS. Viewers get TLS 1.2+ only with a custom domain and certificate, which do not exist yet, so the default certificate still allows TLS 1.0; no security headers. (compliance-foundation)      | SEC-C-9  |
+| Bucket public access blocked         | Built   | The public bucket is served through CloudFront.                                                                                                                                                                                                                                                  | -        |
+| Bucket versioning                    | Built   | Raw, zone-pack, public-alerts and trail buckets versioned; noncurrent versions expire after 30 days (trail bucket: 365). The zone pack is still unsigned. (compliance-foundation)                                                                                                                | SEC-C-11 |
+| Removable media, device sanitization | N/A     | Managed AWS services. Backup purge after a delete request is undefined.                                                                                                                                                                                                                          | PRIV-11  |
+| Data on phones                       | Open    | The app stores place data and the credential on the device; to be described by the app team.                                                                                                                                                                                                     | -        |
 
 ### 4.8 System and communications protection (SC)
 
-| Control                                    | Status       | Notes                                                                                                | Findings       |
-| ------------------------------------------ | ------------ | ---------------------------------------------------------------------------------------------------- | -------------- |
-| WAF with managed rules and per-IP rates    | Built        | Per 5 minutes per IP: register 300, general 2,000, check-in 20,000, public read 20,000.              | SEC-C-12       |
-| Default API endpoint bypasses WAF          | Fix planned  | Origin guard rejects, but the Lambda still runs. Needs reserved concurrency and a disabled endpoint. | SEC-C-2, RED-4 |
-| No VPC for Lambdas; DB in isolated subnets | Built        | Data API only; avoids NAT cost. Trade-off: no network egress control for Lambdas.                    | RED-7          |
-| Capacity isolation                         | Partial      | API throttle (20,000 rps prod) exceeds the account quota (10,000). No reserved concurrency default.  | SEC-C-2        |
-| Alert integrity                            | Partial      | Sender re-verifies the signature. Public read path, GET /alerts and late-join do not.                | SEC-A-5        |
-| Cryptographic module validation (FIPS 140) | Not assessed | Not examined; the ISO decides whether it is needed.                                                  | -              |
+| Control                                    | Status      | Notes                                                                                                                                                                                                                                | Findings       |
+| ------------------------------------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------- |
+| WAF with managed rules and per-IP rates    | Built       | Per 5 minutes per IP: register 300, general 2,000, check-in 20,000, public read 20,000.                                                                                                                                              | SEC-C-12       |
+| Default API endpoint bypasses WAF          | Fix planned | Origin guard rejects, but the Lambda still runs. Needs reserved concurrency and a disabled endpoint.                                                                                                                                 | SEC-C-2, RED-4 |
+| No VPC for Lambdas; DB in isolated subnets | Built       | Data API only; avoids NAT cost. Trade-off: no network egress control for Lambdas.                                                                                                                                                    | RED-7          |
+| Capacity isolation                         | Partial     | API throttle (20,000 rps prod) exceeds the account quota (10,000). No reserved concurrency default.                                                                                                                                  | SEC-C-2        |
+| Alert integrity                            | Partial     | Sender re-verifies the signature. Public read path, GET /alerts and late-join do not.                                                                                                                                                | SEC-A-5        |
+| Cryptographic module validation (FIPS 140) | Partial     | Prod SDK calls use FIPS endpoints except the API function (Amazon Location has none outside GovCloud). In-process crypto (Node, OpenSSL) not in FIPS mode or assessed; the ISO decides whether it is needed. (compliance-foundation) | -              |
 
 ### 4.9 Supply chain risk management (SR)
 
-| Control                            | Status    | Notes                                                                                       | Findings     |
-| ---------------------------------- | --------- | ------------------------------------------------------------------------------------------- | ------------ |
-| Lockfile, `npm ci`, license review | Built     | The dependency audit found no git dependencies and clean licenses.                          | DEP clean    |
-| Dependency advisories              | Partial   | zod 3 advisory on the ingest path (bounds missing); dev-only advisories in vitest and CDK.  | DEP-1, 5, 6  |
-| CI actions pinned by SHA           | Not built | Tag-pinned.                                                                                 | DEP-4, RED-7 |
-| Container base image pinned        | Not built | Not digest pinned; runs as non-root.                                                        | DEP-3        |
-| SBOM, vulnerability scanning in CI | Not built |                                                                                             | -            |
-| Third-party processors review      | Not built | AWS, Apple, Google, geocoder, NWS. Terms, DPAs and data location to be reviewed by counsel. | -            |
-| Fixtures from real NWS captures    | Not built | Current NWS fixtures are constructed.                                                       | -            |
+| Control                            | Status            | Notes                                                                                                                                                                                              | Findings     |
+| ---------------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| Lockfile, `npm ci`, license review | Built             | The dependency audit found no git dependencies and clean licenses.                                                                                                                                 | DEP clean    |
+| Dependency advisories              | Partial           | zod 3 advisory on the ingest path (bounds missing); dev-only advisories in vitest and CDK.                                                                                                         | DEP-1, 5, 6  |
+| CI actions pinned by SHA           | Built             | Every action pinned to a full commit SHA with a version comment (verified 2026-11-11).                                                                                                             | DEP-4, RED-7 |
+| Container base image pinned        | Not built         | Not digest pinned; runs as non-root.                                                                                                                                                               | DEP-3        |
+| SBOM, vulnerability scanning in CI | Built (warn-only) | CycloneDX SBOMs, npm audit, gitleaks and CodeQL on every PR, push to main and weekly; no finding fails a build yet ([ci-security-scanning.md](./ci-security-scanning.md)). (compliance-foundation) | -            |
+| Third-party processors review      | Not built         | AWS, Apple, Google, geocoder, NWS. Terms, DPAs and data location to be reviewed by counsel.                                                                                                        | -            |
+| Fixtures from real NWS captures    | Not built         | Current NWS fixtures are constructed.                                                                                                                                                              | -            |
 
 ## 5. Known gaps
 

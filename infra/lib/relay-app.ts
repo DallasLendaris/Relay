@@ -5,6 +5,7 @@ import { ConfigStack } from './config-stack.js';
 import { DataStack } from './data-stack.js';
 import { DeliveryStack } from './delivery-stack.js';
 import { EdgeStack, publicAlertsBucketName } from './edge-stack.js';
+import { encryptResources, useFipsEndpoints } from './encryption.js';
 import { FanoutStack } from './fanout-stack.js';
 import { IngestStack, type FanoutMode } from './ingest-stack.js';
 import { LateJoinStack } from './latejoin-stack.js';
@@ -62,6 +63,13 @@ export interface RelayAppOptions {
   monitoring?: MonitoringOptions;
   /** Prefix of every stack id. Default `relay-${stage}`. */
   prefix?: string;
+  /**
+   * AWS_USE_FIPS_ENDPOINT=true on Lambdas and the sender container (encryption.ts lists the
+   * exclusions). bin/relay.ts reads `-c fips=true|false`. Default: prod on, dev off.
+   */
+  fips?: boolean;
+  /** Custom CloudFront domain and its us-east-1 ACM certificate (TLS 1.2+ for viewers). */
+  edgeCustomDomain?: { domainName: string; certificateArn: string };
 }
 
 /**
@@ -94,6 +102,7 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     stage,
     killSwitchParamName: config.killSwitchParamName,
     alertSigningKeyArns: config.alertSigning.verify.map((k) => k.keyArn),
+    dataKeyArns: [config.keys.data, config.keys.messaging, config.keys.logs].map((k) => k.keyArn),
     ...o.monitoring,
   });
   const data = new DataStack(app, id('data'), {
@@ -230,6 +239,7 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     apiDomainName: api.apiDomainName,
     originVerifySecretName: config.originVerifySecretName,
     ...(o.monitoring?.alarmEmail ? { alarmEmail: o.monitoring.alarmEmail } : {}),
+    ...(o.edgeCustomDomain ? { customDomain: o.edgeCustomDomain } : {}),
     crossRegionReferences: true,
   });
   // The origin-verify secret must have been replicated to the edge region first.
@@ -254,6 +264,15 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
   }
   applyMonitoring(config, monitoring, { alarms: false });
   applyMonitoring(edge, monitoring, { alarms: false });
+
+  // Customer-managed KMS keys on every table, cluster, bucket, secret, queue, topic, log group and
+  // trail (encryption.ts). us-west-2 stacks use the config stack's keys; edge has its own key.
+  const regional = [config, monitoring, data, delivery, fanout, latejoin, api, ingest, sender];
+  for (const stack of regional) encryptResources(stack, config.keys);
+  encryptResources(edge, { data: edge.key, messaging: edge.key, logs: edge.key });
+  if (o.fips ?? stage === 'prod') {
+    for (const stack of regional) useFipsEndpoints(stack);
+  }
 
   return { config, monitoring, data, delivery, fanout, latejoin, api, ingest, sender, edge };
 }

@@ -34,6 +34,18 @@ The engine went through three independent safety reviews. Every confirmed findin
 | AG-09 | Check-in endpoint (agency area) | Done; one check-in per device per alert           | `backend/src/api/`, `backend/src/adapters/aws/dynamo-checkin-store.ts`             |
 | AG-10 | Kill switch (agency area)       | Engine side done                                  | SSM `/relay/<stage>/delivery-kill-switch`                                          |
 
+## Compliance foundation
+
+Added 2026-11-10 on branch `compliance-foundation`, reviewed 2026-11-11 ([review](./compliance/review-2026-11.md)). Drafts for the agency ISO, not a compliance claim; nothing is deployed.
+
+- **NIST 800-53 Rev. 5 moderate gap map:** [control-map.md](./compliance/control-map.md) and its [summary](./compliance/control-map-summary.md): 14 Built, 71 Partial, 48 Missing engineering rows; `node docs/compliance/check-evidence.mjs` checks every citation.
+- **cdk-nag NIST 800-53 R5** on every stack. An unsuppressed finding fails `cdk synth` and `npm test`; dev and prod have none. Every exception is per resource: [cdk-nag-exceptions.md](./compliance/cdk-nag-exceptions.md).
+- **Customer-managed KMS keys** (data, messaging, logs; edge in us-east-1), yearly rotation, on every table, cluster, data bucket, secret, queue, topic, log group and the trail; key-state changes alert the alerts topic. TLS 1.2+ on S3, SQS and CloudFront-to-API; viewer TLS 1.2+ needs `-c edgeDomainName -c edgeCertificateArn`. FIPS endpoints on prod (`-c fips`), except the API Lambda (Amazon Location).
+- **Logs added:** WAF, S3 access, VPC flow, Postgres. Buckets versioned.
+- **CI scanning, warn-only:** npm audit, CycloneDX SBOM, gitleaks, CodeQL (`.github/workflows/security.yml`, `codeql.yml`; [ci-security-scanning.md](./compliance/ci-security-scanning.md)).
+- **Runbooks:** [key rotation](./runbooks/key-rotation.md), [push credential rotation](./runbooks/push-credential-rotation.md).
+- **Open:** ISO acceptance of the exceptions, an edge domain and certificate, AWS Config / Security Hub after S-06, and the owner items in the [review](./compliance/review-2026-11.md#left-for-the-owner).
+
 ## How an alert flows
 
 1. Every minute, EventBridge triggers the ingest Lambda, which polls NWS twice per run, 30 seconds apart (the NWS minimum; the poller keeps its own spacing, honors `Retry-After` and backs off on 429/503). Features of one response are processed concurrently, but one alert chain stays in order.

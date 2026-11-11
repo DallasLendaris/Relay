@@ -144,7 +144,7 @@ describe('DeliveryStack', () => {
     t.resourceCountIs('AWS::SQS::Queue', 2);
     t.hasResourceProperties('AWS::SQS::Queue', {
       VisibilityTimeout: 30,
-      SqsManagedSseEnabled: true,
+      KmsMasterKeyId: Match.anyValue(), // customer-managed key (encryption.ts)
       RedrivePolicy: { maxReceiveCount: 100, deadLetterTargetArn: Match.anyValue() },
     });
     // 100 receives x 30 s is about 50 minutes of kill-switch pause before the DLQ.
@@ -519,13 +519,13 @@ describe('all stacks', () => {
 });
 
 describe('stack dependency order', () => {
-  // config and data are roots; monitoring needs config; delivery needs them; fanout needs delivery's
+  // config is the root (it owns the KMS keys); data and monitoring need config; delivery needs them; fanout needs delivery's
   // idempotency table (dense-cell tombstones); the late-join stack (it needs fanout's send queues)
   // owns the intent queue the API sends to, so it comes before the API; sender and ingest need
   // fanout (and delivery); the edge stack comes last. Equal ranks never depend on each other.
   const RANK: Record<string, number> = {
     config: 0,
-    data: 0,
+    data: 1, // encrypted with config's data key (encryption.ts)
     monitoring: 1, // reads the kill-switch name from config; everything with alarms notifies it
     delivery: 2,
     fanout: 3,
@@ -754,7 +754,7 @@ describe('check-in aggregator', () => {
         },
       },
     });
-    t.hasResourceProperties('AWS::SQS::Queue', { SqsManagedSseEnabled: true });
+    t.hasResourceProperties('AWS::SQS::Queue', { KmsMasterKeyId: Match.anyValue() });
     expect(grantedOnResource(t, 'AggregatorDlq')).toContain('sqs:SendMessage');
     t.hasResourceProperties('AWS::CloudWatch::Alarm', {
       MetricName: 'ApproximateNumberOfMessagesVisible',

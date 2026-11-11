@@ -18,6 +18,8 @@ import {
   TreatMissingData,
 } from 'aws-cdk-lib/aws-cloudwatch';
 import {
+  FlowLogDestination,
+  FlowLogTrafficType,
   GatewayVpcEndpointAwsService,
   Peer,
   Port,
@@ -178,6 +180,15 @@ export class SenderStack extends Stack {
       natGateways: 0,
       subnetConfiguration: [{ name: 'public', subnetType: SubnetType.PUBLIC, cidrMask: 24 }],
       gatewayEndpoints: { dynamo: { service: GatewayVpcEndpointAwsService.DYNAMODB } },
+      // NIST SC-7: the default security group is never used; strip its rules (CDK custom resource).
+      restrictDefaultSecurityGroup: true,
+    });
+    // NIST AU-12 / SI-4: record the tasks' flows (all egress, and any rejected inbound probe).
+    vpc.addFlowLog('FlowLogs', {
+      destination: FlowLogDestination.toCloudWatchLogs(
+        new LogGroup(this, 'VpcFlowLogs', { retention: RetentionDays.ONE_MONTH, removalPolicy }),
+      ),
+      trafficType: FlowLogTrafficType.ALL,
     });
     const securityGroup = new SecurityGroup(this, 'SenderSg', {
       vpc,

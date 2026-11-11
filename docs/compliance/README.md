@@ -25,6 +25,10 @@ These documents prepare the package for the California Cloud Services Assessment
 | [privacy-threshold-analysis.md](./privacy-threshold-analysis.md)           | What is collected, retention, sharing, user rights, privacy questions.               |
 | [business-impact-and-contingency.md](./business-impact-and-contingency.md) | RPO and RTO as built, pilot versus statewide posture, restore runbook outline.       |
 | [incident-response.md](./incident-response.md)                             | Roles, severities, Cal-CSIRS path, five playbooks.                                   |
+| [control-map.md](./control-map.md)                                         | NIST 800-53 Rev. 5 moderate gap map ([summary](./control-map-summary.md)).           |
+| [cdk-nag-exceptions.md](./cdk-nag-exceptions.md)                           | cdk-nag NIST 800-53 R5 exceptions register, keys, TLS and FIPS endpoints.            |
+| [ci-security-scanning.md](./ci-security-scanning.md)                       | CI scanning (npm audit, SBOM, gitleaks, CodeQL) and first findings.                  |
+| [review-2026-11.md](./review-2026-11.md)                                   | Independent review of the compliance-foundation work.                                |
 | [../positioning.md](../positioning.md)                                     | Pitch position, IPAWS role, NWS attribution, disclaimer wording, earthquake framing. |
 | [../../SECURITY.md](../../SECURITY.md)                                     | Vulnerability disclosure policy (draft).                                             |
 | [../runbooks/alert-recall.md](../runbooks/alert-recall.md)                 | Alert recall runbook, written by another track (may not exist until it merges).      |

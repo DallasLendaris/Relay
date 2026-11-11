@@ -22,6 +22,8 @@ type Options = Partial<
     | 'monitoring'
     | 'publicAlertBaseUrl'
     | 'allowNoPublicAlertUrl'
+    | 'fips'
+    | 'edgeCustomDomain'
   >
 >;
 

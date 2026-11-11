@@ -31,7 +31,15 @@ describe('GitHub Actions workflows', () => {
     const text = read(`.github/workflows/${f}`);
     expect(text).toMatch(/^permissions:\n\s+contents: read\s*$/m);
     // No job may ask for write access without this test being updated on purpose.
-    expect(text).not.toMatch(/:\s*write\b/);
+    // Allowed on purpose: CodeQL's analyze job uploads SARIF results (SA-11, RA-5), which needs
+    // security-events: write. Nothing else may write, and that permission may not be top-level.
+    const allowedWrites: Record<string, string[]> = { 'codeql.yml': ['security-events'] };
+    const writes = [...text.matchAll(/^\s*([\w-]+):\s*write\b/gm)].map((m) => m[1]);
+    expect(writes).toEqual(allowedWrites[f] ?? []);
+    if (writes.length > 0) {
+      const topLevel = text.split(/^jobs:/m)[0];
+      expect(topLevel).not.toMatch(/:\s*write\b/);
+    }
   });
 });
 

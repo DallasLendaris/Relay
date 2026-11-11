@@ -1,5 +1,6 @@
 import { CfnOutput, Duration, RemovalPolicy, Stack, StackProps, Tags } from 'aws-cdk-lib';
-import { SubnetType, Vpc } from 'aws-cdk-lib/aws-ec2';
+import { FlowLogDestination, FlowLogTrafficType, SubnetType, Vpc } from 'aws-cdk-lib/aws-ec2';
+import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import {
   AuroraPostgresEngineVersion,
   ClusterInstance,
@@ -58,9 +59,31 @@ export class DataStack extends Stack {
       maxAzs: 2,
       natGateways: 0,
       subnetConfiguration: [{ name: 'isolated', subnetType: SubnetType.PRIVATE_ISOLATED }],
+      // NIST SC-7: the default security group is never used; strip its rules (CDK custom resource).
+      restrictDefaultSecurityGroup: true,
+    });
+    // NIST AU-12 / SI-4: record every flow in and out of the database subnets.
+    vpc.addFlowLog('FlowLogs', {
+      destination: FlowLogDestination.toCloudWatchLogs(
+        new LogGroup(this, 'VpcFlowLogs', {
+          retention: RetentionDays.ONE_MONTH,
+          removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+        }),
+      ),
+      trafficType: FlowLogTrafficType.ALL,
+    });
+
+    // Postgres logs go to CloudWatch (NIST AU-2 / AU-12). RDS writes to a group named after the
+    // cluster; creating it first lets the stack own its retention and encryption.
+    const clusterIdentifier = `relay-${props.stage}`;
+    const postgresLogs = new LogGroup(this, 'PostgresLogs', {
+      logGroupName: `/aws/rds/cluster/${clusterIdentifier}/postgresql`,
+      retention: RetentionDays.ONE_MONTH,
+      removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
     });
 
     const cluster = new DatabaseCluster(this, 'Cluster', {
+      clusterIdentifier,
       engine: DatabaseClusterEngine.auroraPostgres({
         // 16.8+ supports scaling to 0 ACU (auto-pause).
         version: AuroraPostgresEngineVersion.VER_16_8,
@@ -84,7 +107,11 @@ export class DataStack extends Stack {
       // unrecoverable. Tags are copied so snapshots stay attributable (cost, ownership).
       backup: { retention: Duration.days(BACKUP_RETENTION_DAYS[props.stage]) },
       copyTagsToSnapshot: true,
+      cloudwatchLogsExports: ['postgresql'],
+      // Enhanced monitoring (NIST CA-7 / SI-4): OS metrics every 60 s, about $1-3 a month per instance.
+      monitoringInterval: Duration.seconds(60),
     });
+    cluster.node.addDependency(postgresLogs);
 
     // fromGeneratedSecret always creates a secret; the guard satisfies the type.
     const secret: ISecret | undefined = cluster.secret;

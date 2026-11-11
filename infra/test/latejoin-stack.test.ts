@@ -94,7 +94,7 @@ describe('LateJoinStack', () => {
     // The repo lets CDK generate queue names (wiring.test.ts), which carry the stack name
     // relay-<stage>-latejoin, so the queue is relay-<stage>-latejoin-LateJoinQueue-<hash>.
     t.hasResourceProperties('AWS::SQS::Queue', {
-      SqsManagedSseEnabled: true,
+      KmsMasterKeyId: Match.anyValue(), // customer-managed key (encryption.ts)
       RedrivePolicy: { maxReceiveCount: 20, deadLetterTargetArn: Match.anyValue() },
     });
     expect(stacks.dev.latejoin.stackName).toBe('dev-latejoin');
