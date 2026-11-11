@@ -1,0 +1,214 @@
+name: Security scanning
+
+# Warn-only for now: every scan reports to the job summary and uploads its report, but no finding
+# fails the workflow. How to make each check blocking, the NIST controls each supports and the
+# triage of the first findings: docs/compliance/ci-security-scanning.md.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, so new advisories against unchanged dependencies still surface (Mondays 14:17 UTC).
+    - cron: '17 14 * * 1'
+  workflow_dispatch:
+
+# DEP-4 / SEC-C-10: least privilege by default; a job asks for more only when it needs it.
+permissions:
+  contents: read
+
+env:
+  # Pinned tool versions. Bump the version and the checksum together.
+  CYCLONEDX_NPM_VERSION: 6.0.1
+  GITLEAKS_VERSION: 8.30.1
+  # sha256 of gitleaks_8.30.1_linux_x64.tar.gz, from the release's gitleaks_8.30.1_checksums.txt.
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
+jobs:
+  # RA-5, SI-2: known-vulnerable dependencies.
+  npm-audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # Actions are pinned to a full commit SHA (a tag can be moved). Dependabot bumps both the
+      # SHA and the comment; see .github/dependabot.yml.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      # npm audit reads package-lock.json; no install is needed.
+      - name: Audit runtime dependencies (high and critical)
+        id: audit_prod
+        continue-on-error: true # warn-only; see docs/compliance/ci-security-scanning.md
+        run: npm audit --audit-level=high --omit=dev
+      - name: Full audit report (all dependencies, all severities)
+        id: audit_full
+        continue-on-error: true # warn-only
+        run: npm audit --json > npm-audit.json
+      - name: Write summary
+        if: always()
+        env:
+          PROD_OUTCOME: ${{ steps.audit_prod.outcome }}
+        run: |
+          node --input-type=module -e '
+          import { readFileSync, appendFileSync } from "node:fs";
+          const out = process.env.GITHUB_STEP_SUMMARY;
+          const report = JSON.parse(readFileSync("npm-audit.json", "utf8"));
+          const v = report.metadata?.vulnerabilities ?? {};
+          const lines = [
+            "## npm audit (warn-only)",
+            "",
+            `Runtime dependencies, high or critical: **${process.env.PROD_OUTCOME === "success" ? "none" : "found"}**`,
+            "",
+            "| Severity | All dependencies |",
+            "| --- | --- |",
+            ...["critical", "high", "moderate", "low", "info"].map((s) => `| ${s} | ${v[s] ?? 0} |`),
+            "",
+            "| Package | Severity | Fix available | Advisories |",
+            "| --- | --- | --- | --- |",
+          ];
+          for (const [name, item] of Object.entries(report.vulnerabilities ?? {})) {
+            const fix = item.fixAvailable === true ? "yes" : item.fixAvailable ? `${item.fixAvailable.name}@${item.fixAvailable.version}${item.fixAvailable.isSemVerMajor ? " (major)" : ""}` : "no";
+            const urls = item.via.filter((x) => typeof x === "object").map((x) => x.url).join(" ");
+            lines.push(`| ${name} | ${item.severity} | ${fix} | ${urls || "via " + item.via.join(", ")} |`);
+          }
+          appendFileSync(out, lines.join("\n") + "\n");
+          if ((v.critical ?? 0) + (v.high ?? 0) > 0) {
+            console.log(`::warning title=npm audit::${v.critical ?? 0} critical and ${v.high ?? 0} high findings (warn-only)`);
+          }
+          '
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: npm-audit
+          path: npm-audit.json
+          if-no-files-found: warn
+
+  # CM-8, SR-4: component inventory (CycloneDX) of every workspace.
+  sbom:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Two SBOMs: everything installed (the build supply chain), and runtime only (what ships).
+      # cyclonedx-npm includes all workspaces by default.
+      - name: Generate CycloneDX SBOMs
+        run: |
+          npx --yes "@cyclonedx/cyclonedx-npm@${CYCLONEDX_NPM_VERSION}" \
+            --output-format JSON --output-reproducible --output-file sbom-all.cdx.json
+          npx --yes "@cyclonedx/cyclonedx-npm@${CYCLONEDX_NPM_VERSION}" --omit dev \
+            --output-format JSON --output-reproducible --output-file sbom-runtime.cdx.json
+          node -e '
+          const fs = require("node:fs");
+          const n = (f) => JSON.parse(fs.readFileSync(f, "utf8")).components?.length ?? 0;
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            `## SBOM (CycloneDX)\n\n| File | Components |\n| --- | --- |\n` +
+            `| sbom-all.cdx.json | ${n("sbom-all.cdx.json")} |\n| sbom-runtime.cdx.json | ${n("sbom-runtime.cdx.json")} |\n`);
+          '
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-cyclonedx
+          path: |
+            sbom-all.cdx.json
+            sbom-runtime.cdx.json
+          if-no-files-found: error
+
+  # RA-5, SA-11: committed secrets, across the whole git history.
+  gitleaks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # full history, so a secret removed in a later commit is still found
+      - name: Install gitleaks (pinned version, verified checksum)
+        run: |
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/gitleaks" gitleaks
+          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+      - name: Scan git history
+        id: scan
+        continue-on-error: true # warn-only; see docs/compliance/ci-security-scanning.md
+        # --redact keeps secret values out of the log and the report artifact.
+        run: |
+          gitleaks git --config .gitleaks.toml --redact --no-banner \
+            --report-format json --report-path gitleaks-report.json .
+      - name: Write summary
+        if: always()
+        env:
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+        run: |
+          node -e '
+          const fs = require("node:fs");
+          let hits = [];
+          try { hits = JSON.parse(fs.readFileSync("gitleaks-report.json", "utf8")); } catch {}
+          const lines = ["## gitleaks (warn-only)", "", `Scan outcome: **${process.env.SCAN_OUTCOME}**, findings: **${hits.length}**`, ""];
+          if (hits.length) {
+            lines.push("| Rule | File | Line | Commit |", "| --- | --- | --- | --- |");
+            for (const h of hits.slice(0, 100)) lines.push(`| ${h.RuleID} | ${h.File} | ${h.StartLine} | ${String(h.Commit).slice(0, 12)} |`);
+            console.log(`::warning title=gitleaks::${hits.length} possible secrets (warn-only). Triage before merging.`);
+          }
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n");
+          '
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: gitleaks-report
+          path: gitleaks-report.json
+          if-no-files-found: ignore
+
+  # SA-11 (and CM-6 for infrastructure settings) via cdk-nag: synth runs the cdk-nag aspects once
+  # infra/ registers them. Until then this only proves the app synthesizes. Warn-only.
+  infra-synth:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: cdk synth (cdk-nag findings surface here)
+        id: synth
+        continue-on-error: true # warn-only; see docs/compliance/ci-security-scanning.md
+        run: npm run synth -w @relay/infra -- --quiet 2>&1 | tee synth.log
+        shell: bash -o pipefail {0}
+      - name: Write summary
+        if: always()
+        env:
+          SYNTH_OUTCOME: ${{ steps.synth.outcome }}
+        run: |
+          findings="$(grep -E '\[(Error|Warning) at ' synth.log 2>/dev/null | head -200 || true)"
+          {
+            echo "## cdk synth / cdk-nag (warn-only)"
+            echo
+            echo "Synth outcome: **${SYNTH_OUTCOME}**"
+            echo
+            echo '```'
+            echo "${findings:-No cdk-nag annotations found.}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$SYNTH_OUTCOME" != "success" ]; then
+            echo "::warning title=cdk synth::synth failed or cdk-nag reported errors (warn-only)"
+          fi
