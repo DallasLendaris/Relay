@@ -90,7 +90,8 @@ describe.each(['dev', 'prod'] as const)('customer-managed KMS keys (%s)', (stage
         expect(rule.ServerSideEncryptionByDefault.SSEAlgorithm, `${name}/${id}`).toBe('aws:kms');
         expect(rule.BucketKeyEnabled, `${name}/${id}`).toBe(true);
         const key = rule.ServerSideEncryptionByDefault.KMSMasterKeyID;
-        const expected = name === 'edge' ? edge : id.startsWith('TrailBucket') ? logs : data;
+        const isLog = id.startsWith('TrailBucket') || id.startsWith('AgencyAuditBucket');
+        const expected = name === 'edge' ? edge : isLog ? logs : data;
         expect(isKey(key, expected), `${name}/${id}`).toBe(true);
       }
     }

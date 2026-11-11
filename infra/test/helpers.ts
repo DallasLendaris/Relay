@@ -25,6 +25,7 @@ type Options = Partial<
     | 'fips'
     | 'edgeCustomDomain'
     | 'apiOriginDomain'
+    | 'agency'
   >
 >;
 

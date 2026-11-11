@@ -36,12 +36,15 @@ describe.each(['dev', 'prod'] as const)('provider Lambda log groups (%s)', (stag
     const names = providers.map((p) => `${p.stack}/${p.fn.replace(/[0-9A-F]{8}$/, '')}`).sort();
     const expected = [
       'api/CustomCrossRegionExportWriterCustomResourceProviderHandler',
+      // The agency API host name crosses to the edge region too (b2-agency).
+      'agency/CustomCrossRegionExportWriterCustomResourceProviderHandler',
       'data/CustomVpcRestrictDefaultSGCustomResourceProviderHandler',
       'edge/CustomCrossRegionExportReaderCustomResourceProviderHandler',
       'sender/CustomVpcRestrictDefaultSGCustomResourceProviderHandler',
       // Bucket auto-delete exists on dev only.
       ...(stage === 'dev'
         ? [
+            'agency/CustomS3AutoDeleteObjectsCustomResourceProviderHandler',
             'edge/CustomS3AutoDeleteObjectsCustomResourceProviderHandler',
             'ingest/CustomS3AutoDeleteObjectsCustomResourceProviderHandler',
             'monitoring/CustomS3AutoDeleteObjectsCustomResourceProviderHandler',
@@ -69,17 +72,20 @@ describe.each(['dev', 'prod'] as const)('provider Lambda log groups (%s)', (stag
 });
 
 describe('provider log groups with an API origin domain', () => {
-  it('declares no export-provider groups when nothing crosses regions', () => {
+  it('declares no API export-provider group when the API host name does not cross regions', () => {
     const { templates } = synthApp('prod', {
       apiOriginDomain: {
         domainName: 'api-origin.example.org',
         certificateArn: 'arn:aws:acm:us-west-2:111111111111:certificate/abc',
       },
     });
-    const ids = Object.keys(templates.api.toJSON().Resources).concat(
-      Object.keys(templates.edge.toJSON().Resources),
-    );
+    const ids = Object.keys(templates.api.toJSON().Resources);
     expect(ids.filter((id) => id.includes('CrossRegion'))).toEqual([]);
+    // The agency API host name still crosses (b2-agency), so agency writes and edge reads.
+    const has = (t: keyof typeof templates, kind: string) =>
+      Object.keys(templates[t].toJSON().Resources).some((id) => id.includes(kind));
+    expect(has('agency', 'CrossRegionExportWriter')).toBe(true);
+    expect(has('edge', 'CrossRegionExportReader')).toBe(true);
   });
 });
 

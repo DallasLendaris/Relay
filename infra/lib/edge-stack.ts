@@ -65,6 +65,8 @@ export const RATE_LIMITS = {
   PUBLIC_READ: 20_000,
 } as const;
 
+/** The agency API (AgencyStack). */
+export const AGENCY_PATH_PATTERN = '/agency/*';
 /** Check-in is POST /alerts/{alertId}/checkins. */
 export const CHECKIN_PATH_REGEX = '^/alerts/[^/]+/checkins$';
 
@@ -80,6 +82,11 @@ export interface EdgeStackProps extends StackProps {
   stage: 'dev' | 'prod';
   /** Host name of the HTTP API (no scheme, no path), e.g. abc.execute-api.us-west-2.amazonaws.com. */
   apiDomainName: string;
+  /**
+   * Host name of the agency HTTP API (AgencyStack). When set, /agency/* goes there through the
+   * same distribution, so the same web ACL (and the origin-verify header) covers it.
+   */
+  agencyApiDomainName?: string;
   /**
    * Name of the origin-verify secret (ConfigStack, replicated to this region). CloudFront sends
    * its value as x-relay-origin-verify so the API can refuse requests that skipped the WAF.
@@ -179,6 +186,29 @@ export class EdgeStack extends Stack {
       enableAcceptEncodingBrotli: true,
     });
 
+    // An API Gateway origin: never cached, every viewer header forwarded except Host (API Gateway
+    // needs its own host name), HTTPS only, and the origin-verify header when configured.
+    const apiBehavior = (domainName: string) => ({
+      origin: new HttpOrigin(domainName, {
+        protocolPolicy: OriginProtocolPolicy.HTTPS_ONLY,
+        // CloudFront to API Gateway: TLS 1.2 only (API Gateway accepts nothing older).
+        originSslProtocols: [OriginSslPolicy.TLS_V1_2],
+        ...(props.originVerifySecretName
+          ? {
+              customHeaders: {
+                [ORIGIN_VERIFY_HEADER]: SecretValue.secretsManager(
+                  props.originVerifySecretName,
+                ).unsafeUnwrap(),
+              },
+            }
+          : {}),
+      }),
+      allowedMethods: AllowedMethods.ALLOW_ALL,
+      cachePolicy: CachePolicy.CACHING_DISABLED,
+      originRequestPolicy: OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+      viewerProtocolPolicy: ViewerProtocolPolicy.HTTPS_ONLY,
+    });
+
     // One origin object for both behaviors, so there is one Origin Access Control.
     const publicAlertsOrigin = S3BucketOrigin.withOriginAccessControl(this.publicAlertsBucket);
 
@@ -202,28 +232,13 @@ export class EdgeStack extends Stack {
         : {}),
       // Everything not matched below is the API: never cached, every viewer header forwarded
       // except Host (API Gateway needs its own host name).
-      defaultBehavior: {
-        origin: new HttpOrigin(props.apiDomainName, {
-          protocolPolicy: OriginProtocolPolicy.HTTPS_ONLY,
-          // CloudFront to API Gateway: TLS 1.2 only (API Gateway accepts nothing older).
-          originSslProtocols: [OriginSslPolicy.TLS_V1_2],
-          ...(props.originVerifySecretName
-            ? {
-                customHeaders: {
-                  [ORIGIN_VERIFY_HEADER]: SecretValue.secretsManager(
-                    props.originVerifySecretName,
-                  ).unsafeUnwrap(),
-                },
-              }
-            : {}),
-        }),
-        allowedMethods: AllowedMethods.ALLOW_ALL,
-        cachePolicy: CachePolicy.CACHING_DISABLED,
-        originRequestPolicy: OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
-        viewerProtocolPolicy: ViewerProtocolPolicy.HTTPS_ONLY,
-      },
+      defaultBehavior: apiBehavior(props.apiDomainName),
       // CloudFront matches behaviors in this order, so the specific doc path goes first.
       additionalBehaviors: {
+        // The agency API (Cognito JWT): never cached, same WAF, same origin-verify header.
+        ...(props.agencyApiDomainName
+          ? { [AGENCY_PATH_PATTERN]: apiBehavior(props.agencyApiDomainName) }
+          : {}),
         [PUBLIC_ALERT_DOCS_PATH_PATTERN]: {
           origin: publicAlertsOrigin,
           allowedMethods: AllowedMethods.ALLOW_GET_HEAD,

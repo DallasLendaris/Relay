@@ -110,8 +110,9 @@ export const DEFAULT_THROTTLE = {
 } as const;
 
 /**
- * Every path in packages/shared/openapi/relay.yaml except /agency/*, which belongs
- * to the Cognito-protected agency API (added later). Keep in sync with the spec.
+ * Every path in packages/shared/openapi/relay.yaml except /agency/*, which belongs to the
+ * Cognito-protected agency API: its own HTTP API in AgencyStack (agency-stack.ts AGENCY_ROUTES),
+ * behind the same CloudFront distribution and WAF. Keep in sync with the spec.
  */
 export const API_ROUTES: ReadonlyArray<{ method: HttpMethod; path: string }> = [
   { method: HttpMethod.POST, path: '/devices' },
@@ -130,6 +131,9 @@ export class ApiStack extends Stack {
   readonly apiDomainName: string;
   /** Check-ins table (exposed so the delivery owner can size its own warm throughput to match). */
   readonly checkinsTableName: string;
+  /** Per-cell check-in totals; the agency API (AgencyStack) queries its byAlert index only. */
+  readonly checkinTotalsTableName: string;
+  readonly checkinTotalsTableArn: string;
 
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
@@ -418,6 +422,8 @@ export class ApiStack extends Stack {
       }
     }
     this.checkinsTableName = checkins.tableName;
+    this.checkinTotalsTableName = checkinTotals.tableName;
+    this.checkinTotalsTableArn = checkinTotals.tableArn;
 
     Tags.of(this).add('project', 'relay');
     Tags.of(this).add('stage', props.stage);

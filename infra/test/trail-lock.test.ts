@@ -47,13 +47,16 @@ describe('trail bucket Object Lock', () => {
     expect(() => trailBucket('dev', { trailObjectLockDays: days })).toThrow(/trailObjectLockDays/);
   });
 
-  it('only the trail bucket is locked (other buckets keep normal deletes)', () => {
+  it('only the audit buckets are locked (trail, agency audit; others keep normal deletes)', () => {
     const ts = synthAll('dev');
     for (const [name, t] of Object.entries(ts)) {
       for (const [id, r] of Object.entries(t.toJSON().Resources as Record<string, any>)) {
         if (r.Type !== 'AWS::S3::Bucket') continue;
         const locked = r.Properties.ObjectLockEnabled === true;
-        expect(locked, `${name}/${id}`).toBe(name === 'monitoring' && id.startsWith('TrailBucket'));
+        const audit =
+          (name === 'monitoring' && id.startsWith('TrailBucket')) ||
+          (name === 'agency' && id.startsWith('AgencyAuditBucket'));
+        expect(locked, `${name}/${id}`).toBe(audit);
       }
     }
   });

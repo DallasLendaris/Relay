@@ -164,15 +164,20 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/agency/alerts": {
+    "/agency/me": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Alerts for the signed-in agency's county. */
-        get: operations["listAgencyAlerts"];
+        /**
+         * The signed-in agency user, as the server sees them (DRAFT).
+         * @description Identity, roles and jurisdiction come only from the Cognito access token (verified by the
+         *     API Gateway JWT authorizer, then re-checked server side). Every call, allowed or not, writes
+         *     an audit record; if that write fails the call returns 503. See docs/agency-auth.md.
+         */
+        get: operations["getAgencyMe"];
         put?: never;
         post?: never;
         delete?: never;
@@ -181,7 +186,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/agency/alerts/{alertId}/response": {
+    "/agency/alerts/{alertId}/summary": {
         parameters: {
             query?: never;
             header?: never;
@@ -189,10 +194,17 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Anonymous per-H3-cell check-in totals.
-         * @description Cells with fewer than minimumCellSize recipients are returned with hidden set to true and zeroed counts.
+         * Per-county check-in totals for an alert, inside the caller's jurisdiction only (DRAFT).
+         * @description Read-only. Totals come from the per-H3-cell check-in totals; each cell is placed in the
+         *     county that contains its center. Only counties in the caller's jurisdiction are returned.
+         *     Asking for any county outside it is refused (403 `area_outside_jurisdiction`) and audited.
+         *
+         *     Small-cell suppression (default pending the team's privacy-floor decision): any count
+         *     below `minCellCount` (default 10) is withheld (`checkedIn: null`, `suppressed: true`), plus
+         *     enough further cells that the area total cannot reveal a withheld count. An area below
+         *     the threshold is withheld whole. Roles: agency-viewer, agency-operator.
          */
-        get: operations["getAgencyAlertResponse"];
+        get: operations["getAgencyAlertSummary"];
         put?: never;
         post?: never;
         delete?: never;
@@ -310,21 +322,39 @@ export interface components {
             /** Format: date-time */
             checkedInAt: string;
         };
-        AgencyAlertResponse: {
+        /** @enum {string} */
+        AgencyRole: "agency-viewer" | "agency-operator" | "relay-admin";
+        AgencyMe: {
+            sub: string;
+            /** @description Null only for users without an agency role (e.g. a relay-admin). */
+            agencyId: string | null;
+            roles: components["schemas"]["AgencyRole"][];
+            /** @description California county FIPS codes. */
+            jurisdiction: string[];
+        };
+        AgencyAlertSummary: {
             /** Format: uuid */
             alertId: string;
             /** Format: date-time */
             asOf: string;
-            /** @constant */
-            minimumCellSize: 20;
+            /** @description Small-cell threshold in force (default 10, pending the privacy-floor decision). */
+            minCellCount: number;
+            /** @description False when the alert had more cells than one summary reads. */
+            complete: boolean;
+            areas: components["schemas"]["AgencyArea"][];
+        };
+        AgencyArea: {
+            countyFips: string;
+            /** @description Devices that checked in "I'm okay" in this county; null when withheld. */
+            checkedIn: number | null;
+            suppressed: boolean;
             cells: components["schemas"]["AgencyCell"][];
         };
         AgencyCell: {
             h3Cell: string;
-            recipients: number;
-            checkedIn: number;
-            /** @description True when the cell has fewer than minimumCellSize recipients. */
-            hidden: boolean;
+            /** @description Null when withheld (small-cell suppression). */
+            checkedIn: number | null;
+            suppressed: boolean;
         };
         /** @enum {string} */
         RelaySeverity: "emergency" | "warning" | "watch" | "advisory" | "statement";
@@ -544,6 +574,24 @@ export interface components {
         };
         /** @description Not found */
         NotFound: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description Authenticated, but the role or jurisdiction does not allow it */
+        Forbidden: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description Temporarily unavailable (for agency calls, also when the audit record cannot be written) */
+        Unavailable: {
             headers: {
                 [name: string]: unknown;
             };
@@ -803,7 +851,7 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
-    listAgencyAlerts: {
+    getAgencyMe: {
         parameters: {
             query?: never;
             header?: never;
@@ -812,21 +860,29 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Alerts */
+            /** @description The caller */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AlertSummaryList"];
+                    "application/json": components["schemas"]["AgencyMe"];
                 };
             };
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            503: components["responses"]["Unavailable"];
         };
     };
-    getAgencyAlertResponse: {
+    getAgencyAlertSummary: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Comma-separated California county FIPS codes (e.g. `06085,06081`) to narrow the result.
+                 *     Default: the whole jurisdiction. It can only narrow, never widen.
+                 */
+                areas?: string;
+            };
             header?: never;
             path: {
                 alertId: components["parameters"]["AlertId"];
@@ -835,17 +891,19 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response totals */
+            /** @description Totals by county */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AgencyAlertResponse"];
+                    "application/json": components["schemas"]["AgencyAlertSummary"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
-            404: components["responses"]["NotFound"];
+            403: components["responses"]["Forbidden"];
+            503: components["responses"]["Unavailable"];
         };
     };
 }

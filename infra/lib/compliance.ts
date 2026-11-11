@@ -88,6 +88,13 @@ const DLQ: Record<string, string> = {
     'Operator tool, invoked synchronously by a person (aws lambda invoke); the caller sees the error.',
   SendRedriveFunction:
     'Operator tool, invoked synchronously by a person (aws lambda invoke); the caller sees the error.',
+  AgencyFunction:
+    'Invoked synchronously by the agency HTTP API; the caller receives the error and every call, ' +
+    'failed or not, has an audit record (or is refused when it cannot get one). A Lambda DLQ only ' +
+    'applies to asynchronous invokes.',
+  AgencyPreTokenFunction:
+    'Invoked synchronously by Cognito during sign-in; a failure fails that sign-in (the user ' +
+    'retries) and Cognito logs it. A Lambda DLQ only applies to asynchronous invokes.',
 };
 for (const id of [
   'IndexRepairFunction',
@@ -112,6 +119,7 @@ const LAMBDAS: Partial<Record<StackKey, string[]>> = {
   ],
   ingest: ['IngestFunction'],
   latejoin: ['LateJoinFunction'],
+  agency: ['AgencyFunction', 'AgencyPreTokenFunction'],
 };
 
 const CONCURRENCY_OPS =
@@ -124,6 +132,11 @@ const CONCURRENCY_DEV =
   'Dev only: dev deliberately reserves no concurrency because a new account starts with a Lambda ' +
   'quota of 10, which cannot hold reservations. Prod reserves concurrency for this function ' +
   '(capacity.ts planConcurrency).';
+const CONCURRENCY_AGENCY =
+  'Agency side, a few dozen users: AgencyFunction is bounded by the agency API stage throttle ' +
+  '(agency-stack.ts AGENCY_THROTTLE, 20 rps, burst 40) and the pre-token trigger by Cognito sign-in ' +
+  'rates. A reservation would take capacity from the quota capacity.ts divides between the send ' +
+  'path and the public API (docs/scale-quotas.md).';
 /** Functions with no reserved concurrency on any stage. */
 const UNRESERVED: Partial<Record<StackKey, string[]>> = {
   fanout: [
@@ -207,6 +220,9 @@ function addExceptions(stacks: RelayStacks, isDev: boolean): void {
       suppress(stacks[key], id, [{ id: rule('LambdaConcurrency'), reason: CONCURRENCY_OPS }]);
     }
   }
+  for (const id of ['AgencyFunction', 'AgencyPreTokenFunction']) {
+    suppress(stacks.agency, id, [{ id: rule('LambdaConcurrency'), reason: CONCURRENCY_AGENCY }]);
+  }
   if (isDev) {
     for (const [key, ids] of Object.entries(UNRESERVED_DEV) as [StackKey, string[]][]) {
       for (const id of ids) {
@@ -246,10 +262,11 @@ function addExceptions(stacks: RelayStacks, isDev: boolean): void {
     ['ingest', 'ZonePackBucket'],
     ['edge', 'PublicAlertsBucket'],
     ['monitoring', 'TrailBucket'],
+    ['agency', 'AgencyAuditBucket'],
   ] as [StackKey, string][]) {
     suppress(stacks[key], id, [{ id: rule('S3BucketReplicationEnabled'), reason: REPLICATION }]);
   }
-  for (const key of ['ingest', 'edge', 'monitoring'] as StackKey[]) {
+  for (const key of ['ingest', 'edge', 'monitoring', 'agency'] as StackKey[]) {
     suppress(stacks[key], ACCESS_LOGS_BUCKET_ID, [
       { id: rule('S3BucketReplicationEnabled'), reason: REPLICATION },
       { id: rule('S3DefaultEncryptionKMS'), reason: LOG_BUCKET_SSE_S3 },
