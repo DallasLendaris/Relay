@@ -107,6 +107,20 @@ if (
   );
 }
 
+// API origin custom domain (disables the default execute-api endpoint): both or neither. The
+// certificate is regional, so it lives in the API's region.
+const apiOriginDomainName = app.node.tryGetContext('apiOriginDomainName');
+const apiOriginCertificateArn = app.node.tryGetContext('apiOriginCertificateArn');
+if ((apiOriginDomainName === undefined) !== (apiOriginCertificateArn === undefined)) {
+  throw new Error('pass both -c apiOriginDomainName and -c apiOriginCertificateArn, or neither');
+}
+if (
+  apiOriginCertificateArn !== undefined &&
+  !new RegExp(`^arn:[\\w-]+:acm:${env.region}:`).test(String(apiOriginCertificateArn))
+) {
+  throw new Error(`apiOriginCertificateArn must be an ACM certificate in ${env.region}`);
+}
+
 const stacks = buildRelayApp(app, {
   capacity,
   monitoring,
@@ -125,6 +139,14 @@ const stacks = buildRelayApp(app, {
         edgeCustomDomain: {
           domainName: String(edgeDomainName),
           certificateArn: String(edgeCertificateArn),
+        },
+      }
+    : {}),
+  ...(apiOriginDomainName !== undefined
+    ? {
+        apiOriginDomain: {
+          domainName: String(apiOriginDomainName),
+          certificateArn: String(apiOriginCertificateArn),
         },
       }
     : {}),

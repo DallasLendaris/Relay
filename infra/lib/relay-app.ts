@@ -70,6 +70,11 @@ export interface RelayAppOptions {
   fips?: boolean;
   /** Custom CloudFront domain and its us-east-1 ACM certificate (TLS 1.2+ for viewers). */
   edgeCustomDomain?: { domainName: string; certificateArn: string };
+  /**
+   * Custom domain and regional (us-west-2) ACM certificate for the API origin. With it the
+   * default execute-api endpoint is disabled and CloudFront reaches the API by this name.
+   */
+  apiOriginDomain?: { domainName: string; certificateArn: string };
 }
 
 /**
@@ -195,6 +200,7 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
             : {}),
         },
     ...(throttle ? { throttle } : {}),
+    ...(o.apiOriginDomain ? { originDomain: o.apiOriginDomain } : {}),
     crossRegionReferences: true,
   });
   const ingest = new IngestStack(app, id('ingest'), {

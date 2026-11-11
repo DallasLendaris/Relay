@@ -24,6 +24,7 @@ type Options = Partial<
     | 'allowNoPublicAlertUrl'
     | 'fips'
     | 'edgeCustomDomain'
+    | 'apiOriginDomain'
   >
 >;
 
