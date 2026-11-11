@@ -6,7 +6,7 @@
 
 | Category                                                      | Count | Status                                       |
 | ------------------------------------------------------------- | ----: | -------------------------------------------- |
-| Engineering: code or AWS configuration Relay builds           |   133 | 14 Built, 71 Partial, 48 Missing             |
+| Engineering: code or AWS configuration Relay builds           |   133 | 15 Built, 70 Partial, 48 Missing             |
 | Organizational: policy, people, process                       |   108 | 17 Drafted, 91 Not started                   |
 | Inherited: AWS provides it (Relay still owns a customer part) |    46 | Inherited (mostly physical, media, hardware) |
 | **Total in the moderate baseline**                            |   287 |                                              |
@@ -17,7 +17,7 @@ What this means:
 
 - **The engineering is further along than the paperwork.** The code has least-privilege IAM, per-function database roles, KMS-signed alerts, CloudTrail with alerts on kill-switch, secret and key changes, GuardDuty, input bounds and redacted logs. Most of the 71 Partial rows are in that state because the human side is missing. No one has an account yet, and there is no deploy pipeline.
 - **Almost no organizational work exists.** Apart from the drafts in this folder (SSP, FIPS 199, PTA, BIA, incident response, SECURITY.md), there are no policies, no training and no personnel rules. None of that can be done in code.
-- **The compliance-foundation work has merged** (cdk-nag, customer-managed KMS, TLS 1.2+, FIPS endpoints, rotation runbooks, CI scanning and an SBOM). Of the 13 rows it targeted, SC-28 and SC-28(1) are now Built, SR-4 moved from Missing to Partial, and the other ten stay Partial with smaller gaps; they are marked "Updated (compliance-foundation)" in the map. The review also downgraded two overstated Built rows (AU-9, SI-11) to Partial, so the engineering counts above are unchanged from `be6bc32`.
+- **The compliance-foundation work has merged** (cdk-nag, customer-managed KMS, TLS 1.2+, FIPS endpoints, rotation runbooks, CI scanning and an SBOM). Of the 13 rows it targeted, SC-28 and SC-28(1) are now Built, SR-4 moved from Missing to Partial, and the other ten stay Partial with smaller gaps; they are marked "Updated (compliance-foundation)" in the map. The review also downgraded two overstated Built rows (AU-9, SI-11) to Partial, so the engineering counts were unchanged from `be6bc32` at that review. On `b2-hardening` SI-11 became Built again (the delivery worker no longer logs error text), which gives the counts above.
 
 ## Top 10 engineering gaps for a summer 2027 single-county pilot
 
