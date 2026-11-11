@@ -9,6 +9,7 @@ import { encryptResources, useFipsEndpoints } from './encryption.js';
 import { FanoutStack } from './fanout-stack.js';
 import { IngestStack, type FanoutMode } from './ingest-stack.js';
 import { LateJoinStack } from './latejoin-stack.js';
+import { CROSS_REGION_READER, CROSS_REGION_WRITER, declareProviderLogs } from './provider-logs.js';
 import {
   addAggregatorAlarms,
   addDeliveryAlarms,
@@ -274,6 +275,18 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
   // Customer-managed KMS keys on every table, cluster, bucket, secret, queue, topic, log group and
   // trail (encryption.ts). us-west-2 stacks use the config stack's keys; edge has its own key.
   const regional = [config, monitoring, data, delivery, fanout, latejoin, api, ingest, sender];
+  // Declared log groups for CDK's provider Lambdas (provider-logs.ts), before the keys are set so
+  // they get the logs key. The API host name crosses from us-west-2 to the edge region unless
+  // the API has an origin domain (a plain string), so only then do the export providers exist.
+  const late: Map<object, string[]> = o.apiOriginDomain
+    ? new Map()
+    : new Map<object, string[]>([
+        [api, [CROSS_REGION_WRITER]],
+        [edge, [CROSS_REGION_READER]],
+      ]);
+  for (const stack of [...regional, edge]) {
+    declareProviderLogs(stack, { isProd: stage === 'prod', late: late.get(stack) ?? [] });
+  }
   for (const stack of regional) encryptResources(stack, config.keys);
   encryptResources(edge, { data: edge.key, messaging: edge.key, logs: edge.key });
   if (o.fips ?? stage === 'prod') {
