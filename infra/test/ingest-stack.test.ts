@@ -121,11 +121,11 @@ describe('IngestStack', () => {
   it('moves raw objects to Infrequent Access after 30 days', () => {
     t.hasResourceProperties('AWS::S3::Bucket', {
       LifecycleConfiguration: {
-        Rules: [
+        Rules: Match.arrayWith([
           Match.objectLike({
             Transitions: [{ StorageClass: 'STANDARD_IA', TransitionInDays: 30 }],
           }),
-        ],
+        ]),
       },
     });
   });

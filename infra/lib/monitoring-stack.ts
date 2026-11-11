@@ -38,6 +38,7 @@ import { BlockPublicAccess, Bucket, BucketEncryption } from 'aws-cdk-lib/aws-s3'
 import { Topic, ITopic } from 'aws-cdk-lib/aws-sns';
 import { EmailSubscription } from 'aws-cdk-lib/aws-sns-subscriptions';
 import { Construct, IConstruct } from 'constructs';
+import { accessLogsBucket, logAccessTo } from './buckets.js';
 
 /** Monitoring settings. bin/relay.ts reads them from CDK context; every field is optional. */
 export interface MonitoringOptions {
@@ -183,6 +184,8 @@ export class MonitoringStack extends Stack {
       // Audit evidence outlives the stack on every stage.
       removalPolicy: RemovalPolicy.RETAIN,
     });
+    // Who read or deleted audit evidence (NIST AU-9).
+    logAccessTo(trailBucket, accessLogsBucket(this, isProd), 'trail/');
     const trail = new Trail(this, 'Trail', {
       trailName: `relay-${stage}-trail`,
       bucket: trailBucket,

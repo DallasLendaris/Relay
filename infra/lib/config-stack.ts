@@ -11,6 +11,7 @@ import { Key, KeySpec, KeyUsage } from 'aws-cdk-lib/aws-kms';
 import { Secret } from 'aws-cdk-lib/aws-secretsmanager';
 import { StringParameter } from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
+import { createRegionalKeys, type RegionalKeys } from './encryption.js';
 import type { AlertSigningRefs } from './grants.js';
 
 export interface ConfigStackProps extends StackProps {
@@ -58,11 +59,14 @@ export class ConfigStack extends Stack {
   readonly originVerifySecretName: string;
   readonly killSwitchParamName: string;
   readonly killSwitchParamArn: string;
+  /** Customer-managed KMS keys of the main region (data, messaging, logs); see encryption.ts. */
+  readonly keys: RegionalKeys;
 
   constructor(scope: Construct, id: string, props: ConfigStackProps) {
     super(scope, id, props);
     const { stage } = props;
     const removalPolicy = stage === 'prod' ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY;
+    this.keys = createRegionalKeys(this, stage);
 
     const keyring = (logicalId: string, name: string) =>
       new Secret(this, logicalId, {

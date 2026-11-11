@@ -1,4 +1,5 @@
 import { App } from 'aws-cdk-lib';
+import { applyCompliance } from '../lib/compliance.js';
 import { buildRelayApp } from '../lib/relay-app.js';
 
 const app = new App();
@@ -89,7 +90,24 @@ const monitoring = {
   ...(monthlyBudgetUsd !== undefined ? { monthlyBudgetUsd } : {}),
 };
 
-buildRelayApp(app, {
+// FIPS endpoints for AWS SDK calls: -c fips=true|false (default prod on, dev off).
+const fips = boolCtx('fips');
+// CloudFront custom domain (TLS 1.2+ for viewers): both or neither.
+const edgeDomainName = app.node.tryGetContext('edgeDomainName');
+const edgeCertificateArn = app.node.tryGetContext('edgeCertificateArn');
+if ((edgeDomainName === undefined) !== (edgeCertificateArn === undefined)) {
+  throw new Error('pass both -c edgeDomainName and -c edgeCertificateArn, or neither');
+}
+if (
+  edgeCertificateArn !== undefined &&
+  !String(edgeCertificateArn).startsWith('arn:aws:acm:us-east-1:')
+) {
+  throw new Error(
+    'edgeCertificateArn must be an ACM certificate in us-east-1 (CloudFront requires it)',
+  );
+}
+
+const stacks = buildRelayApp(app, {
   capacity,
   monitoring,
   stage,
@@ -101,4 +119,19 @@ buildRelayApp(app, {
     ? { allowNoPublicAlertUrl: String(allowNoPublicAlertUrl) === 'true' }
     : {}),
   ...(modeCtx ? { fanoutMode: modeCtx as 'queue' | 'inline' } : {}),
+  ...(fips !== undefined ? { fips } : {}),
+  ...(edgeDomainName !== undefined
+    ? {
+        edgeCustomDomain: {
+          domainName: String(edgeDomainName),
+          certificateArn: String(edgeCertificateArn),
+        },
+      }
+    : {}),
 });
+
+// cdk-nag NIST 800-53 rev 5 checks on every stack: an unsuppressed finding is an error and fails
+// synth. `-c nag=off` skips them (faster local iteration; CI and the infra tests keep them on).
+if (String(app.node.tryGetContext('nag') ?? 'on') !== 'off') {
+  applyCompliance(app, stacks, { stage });
+}
