@@ -26,6 +26,8 @@ import {
 import { HttpOrigin, S3BucketOrigin } from 'aws-cdk-lib/aws-cloudfront-origins';
 import { Alarm, ComparisonOperator, Metric, TreatMissingData } from 'aws-cdk-lib/aws-cloudwatch';
 import { SnsAction } from 'aws-cdk-lib/aws-cloudwatch-actions';
+import { EventField, Rule, RuleTargetInput } from 'aws-cdk-lib/aws-events';
+import { SnsTopic } from 'aws-cdk-lib/aws-events-targets';
 import { Topic } from 'aws-cdk-lib/aws-sns';
 import { EmailSubscription } from 'aws-cdk-lib/aws-sns-subscriptions';
 import { BlockPublicAccess, Bucket, BucketEncryption } from 'aws-cdk-lib/aws-s3';
@@ -35,7 +37,8 @@ import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { CfnLoggingConfiguration, CfnWebACL } from 'aws-cdk-lib/aws-wafv2';
 import { Construct } from 'constructs';
 import { accessLogsBucket, logAccessTo, noncurrentVersionRule } from './buckets.js';
-import { createEdgeKey } from './encryption.js';
+import { createEdgeKey, keyAlias } from './encryption.js';
+import { DATA_KEY_EVENTS, KMS_ALIAS_EVENTS } from './monitoring-stack.js';
 
 /** URL prefix of the public alert objects (must match backend/src/scale/publish/paths.ts). */
 export const PUBLIC_ALERTS_PATH_PATTERN = '/alerts/v1/*';
@@ -267,6 +270,7 @@ export class EdgeStack extends Stack {
     });
     wafBlocked.addAlarmAction(new SnsAction(edgeTopic));
     wafBlocked.addOkAction(new SnsAction(edgeTopic));
+    this.addEdgeKeyRules(props.stage, edgeTopic);
 
     if (isProd && !props.customDomain) {
       Annotations.of(this).addWarningV2(
@@ -283,6 +287,55 @@ export class EdgeStack extends Stack {
 
     Tags.of(this).add('project', 'relay');
     Tags.of(this).add('stage', props.stage);
+  }
+
+  /**
+   * Reports disabling, deleting, re-enabling or re-policying the edge key, and changes to its alias
+   * (NIST SI-4, SC-12), like DataKeyChangedRule in the monitoring stack does for the us-west-2
+   * keys. EventBridge rules only see their own region's CloudTrail events, so the rule lives here
+   * (the multi-region trail delivers us-east-1 management events to this region's bus) and
+   * notifies the edge topic. Disabling the key makes the public-alerts bucket unreadable to
+   * CloudFront and stops WAF logging. CreateGrant is left out, as for the data keys.
+   */
+  private addEdgeKeyRules(stage: string, topic: Topic): void {
+    const alias = { wildcard: `*${keyAlias(stage, 'edge')}` };
+    const notify = (headline: string) =>
+      new SnsTopic(topic, {
+        message: RuleTargetInput.fromText(
+          `Relay ${stage} ${headline}: ${EventField.fromPath('$.detail.eventName')} ` +
+            `by ${EventField.fromPath('$.detail.userIdentity.arn')} ` +
+            `at ${EventField.fromPath('$.detail.eventTime')} ` +
+            `from ${EventField.fromPath('$.detail.sourceIPAddress')}`,
+        ),
+      });
+    new Rule(this, 'EdgeKeyChangedRule', {
+      description:
+        'The Relay edge KMS key (us-east-1) was disabled, scheduled for deletion, re-enabled or had its key policy changed',
+      eventPattern: {
+        source: ['aws.kms'],
+        detailType: ['AWS API Call via CloudTrail'],
+        detail: {
+          eventSource: ['kms.amazonaws.com'],
+          eventName: [...DATA_KEY_EVENTS],
+          // keyId is whatever the caller passed: the id, the ARN or the alias.
+          requestParameters: { keyId: [{ wildcard: `*${this.key.keyId}` }, alias] },
+        },
+      },
+      targets: [notify('EDGE KEY event')],
+    });
+    new Rule(this, 'EdgeKeyAliasChangedRule', {
+      description: 'The Relay edge KMS key alias was created, repointed or deleted',
+      eventPattern: {
+        source: ['aws.kms'],
+        detailType: ['AWS API Call via CloudTrail'],
+        detail: {
+          eventSource: ['kms.amazonaws.com'],
+          eventName: [...KMS_ALIAS_EVENTS],
+          requestParameters: { aliasName: [alias] },
+        },
+      },
+      targets: [notify('EDGE KEY ALIAS event')],
+    });
   }
 
   /**

@@ -6,7 +6,7 @@
 
 | Category                                                      | Count | Status                                       |
 | ------------------------------------------------------------- | ----: | -------------------------------------------- |
-| Engineering: code or AWS configuration Relay builds           |   133 | 14 Built, 73 Partial, 46 Missing             |
+| Engineering: code or AWS configuration Relay builds           |   133 | 15 Built, 72 Partial, 46 Missing             |
 | Organizational: policy, people, process                       |   108 | 17 Drafted, 91 Not started                   |
 | Inherited: AWS provides it (Relay still owns a customer part) |    46 | Inherited (mostly physical, media, hardware) |
 | **Total in the moderate baseline**                            |   287 |                                              |
@@ -17,7 +17,7 @@ What this means:
 
 - **The engineering is further along than the paperwork.** The code has least-privilege IAM, per-function database roles, KMS-signed alerts, CloudTrail with alerts on kill-switch, secret and key changes, GuardDuty, input bounds and redacted logs. Most of the 71 Partial rows are in that state because the human side is missing. No one has an account yet, and there is no deploy pipeline.
 - **Almost no organizational work exists.** Apart from the drafts in this folder (SSP, FIPS 199, PTA, BIA, incident response, SECURITY.md), there are no policies, no training and no personnel rules. None of that can be done in code.
-- **The compliance-foundation work has merged** (cdk-nag, customer-managed KMS, TLS 1.2+, FIPS endpoints, rotation runbooks, CI scanning and an SBOM). Of the 13 rows it targeted, SC-28 and SC-28(1) are now Built, SR-4 moved from Missing to Partial, and the other ten stay Partial with smaller gaps; they are marked "Updated (compliance-foundation)" in the map. The review also downgraded two overstated Built rows (AU-9, SI-11) to Partial, so the engineering counts above are unchanged from `be6bc32`.
+- **The compliance-foundation work has merged** (cdk-nag, customer-managed KMS, TLS 1.2+, FIPS endpoints, rotation runbooks, CI scanning and an SBOM). Of the 13 rows it targeted, SC-28 and SC-28(1) are now Built, SR-4 moved from Missing to Partial, and the other ten stay Partial with smaller gaps; they are marked "Updated (compliance-foundation)" in the map. The review also downgraded two overstated Built rows (AU-9, SI-11) to Partial, so the engineering counts were unchanged from `be6bc32` at that review. On `b2-hardening` SI-11 became Built again (the delivery worker no longer logs error text), which gives the counts above.
 
 ## Top 10 engineering gaps for a summer 2027 single-county pilot
 
@@ -25,7 +25,7 @@ Ranked by how much each one blocks or endangers a real pilot. "Planned" means th
 
 1. **Human access foundation** (AC-2, IA-2, IA-2(1), AC-17, MA-4, AU-9(4)). Create the AWS accounts (S-06): a separate prod account, IAM Identity Center with MFA, a break-glass role and a log-archive account. Every other control assumes this exists.
 2. **Deploy pipeline with approvals** (CM-3, CM-5, AC-17(4), SA-10). Built, not yet run: `.github/workflows/deploy.yml` (OIDC roles in `infra/bootstrap/`, no long-lived keys, `cdk diff` in the run summary, prod behind required reviewers; [deploy runbook](../runbooks/deploy.md)). Still needed: the AWS accounts (S-06), the GitHub environments, reviewers and branch protection on `main`, a narrower CloudFormation execution role than the bootstrap default, and a migration runner with a lock (OPS-9). CM-5 and AC-17(4) moved from Missing to Partial.
-3. **Close the WAF bypass** (SC-7, SC-7(3), SC-5, CM-7). Disable the default `execute-api` endpoint, or add a regional WAF, so that nothing reaches the API Lambda without passing CloudFront (SEC-C-2, SEC-A-7).
+3. **Close the WAF bypass** (SC-7, SC-7(3), SC-5, CM-7). Disable the default `execute-api` endpoint so that nothing reaches the API Lambda without passing CloudFront (SEC-C-2, SEC-A-7). The code is ready behind `-c apiOriginDomainName` / `-c apiOriginCertificateArn` (b2-hardening); it needs the API origin domain and a us-west-2 ACM certificate.
 4. **Edge TLS and domain** (SC-8, SC-8(1), SC-17, SC-20). The TLS 1.2+ policy is now in code behind `-c edgeDomainName` / `-c edgeCertificateArn`. Still needed: the Relay domain and ACM certificate themselves, security headers and DNSSEC in Route 53. Until then the default CloudFront certificate allows TLS 1.0.
 5. **Missing logs and log-failure alarms** (AU-2, AU-5, AU-12, SI-4(4)). WAF, S3 access, VPC flow and Postgres logs are now on. Turn on CloudFront and API Gateway access logs. Alarm when CloudTrail stops delivering. Consider data events on the check-in and device tables.
 6. **Backups you can actually restore** (CP-9, CP-9(1), CP-6, CP-10). Back up the keyrings offline (OPS-6). (The zone-pack and public buckets are now versioned.) Set up an AWS Backup plan with a cross-region copy. Write the restore runbook and run one restore test.

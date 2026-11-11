@@ -75,13 +75,15 @@ const DLQ: Record<string, string> = {
     'legacy DeadLetterConfig; destinations carry the full request and response. cdk-nag only ' +
     'recognizes DeadLetterConfig.',
   OutboxDrainerFunction:
-    'Scheduled every minute (5 on dev) by EventBridge with no payload. A failed run is redone ' +
-    'by the next run from the Aurora outbox, and DrainerNotRunningAlarm fires when runs stop, so a ' +
-    'DLQ of empty schedule events would hold nothing actionable.',
+    'Scheduled every minute (5 on dev) by EventBridge with no payload; Lambda async retries are ' +
+    'off (retryAttempts 0, events older than one period dropped). A failed run is redone by the ' +
+    'next run from the Aurora outbox, and DrainerNotRunningAlarm fires when runs stop, so a DLQ of ' +
+    'empty schedule events would hold nothing actionable.',
   IngestFunction:
-    'Scheduled every minute by EventBridge with retries off on purpose (the next run catches up). ' +
-    'Failures raise IngestErrorsAlarm and the feed-stale alarm; a DLQ of empty schedule events ' +
-    'would hold nothing actionable.',
+    'Scheduled every minute by EventBridge with retries off on purpose, both on the rule target ' +
+    'and in Lambda (retryAttempts 0, events older than 60 s dropped): ingest is idempotent and the ' +
+    'next run catches up. Failures raise IngestErrorsAlarm and the feed-stale alarm; a DLQ of ' +
+    'empty schedule events would hold nothing actionable.',
   RedriveFunction:
     'Operator tool, invoked synchronously by a person (aws lambda invoke); the caller sees the error.',
   SendRedriveFunction:
@@ -113,8 +115,9 @@ const LAMBDAS: Partial<Record<StackKey, string[]>> = {
 };
 
 const CONCURRENCY_OPS =
-  'Low-volume function bounded by its trigger (an SQS event source with batch size 10, a schedule, ' +
-  'or a person). Reserving concurrency would take capacity from the account quota that ' +
+  'Low-volume function bounded by its trigger: an SQS event source with a maxConcurrency cap ' +
+  '(late-join 20, paused consumer 10), a schedule whose run fits its period (outbox drainer), or a ' +
+  'person (redrive tools). Reserving concurrency would take capacity from the account quota that ' +
   'capacity.ts divides between the send path and the API (docs/scale-quotas.md); the send path ' +
   'functions all have reservations on prod.';
 const CONCURRENCY_DEV =

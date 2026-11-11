@@ -58,6 +58,20 @@ export const NWS_POLL_INTERVAL_SECONDS = 30;
 export const NWS_POLLS_PER_INVOCATION = 2;
 /** Under 60 s so a run can never overlap the next one (which reserved concurrency would drop). */
 export const INGEST_TIMEOUT_SECONDS = 58;
+/**
+ * Lambda's own async retries for ingest: none. EventBridge invokes the poller asynchronously, so
+ * besides the rule target's retry (also 0) Lambda would by default retry a failed run twice. A
+ * retry arrives about a minute later, exactly when the next scheduled run starts, and with
+ * reserved concurrency 1 the two collide: one is throttled and queued, NWS gets extra polls,
+ * and nothing is gained, because ingest is idempotent (the seen store, replay detection and the
+ * fan-out batch keys) and the next run catches up on its own.
+ */
+export const INGEST_RETRY_ATTEMPTS = 0;
+/**
+ * An event that waited longer than one schedule period (throttled behind an overrunning run) is
+ * superseded by the next one, so Lambda drops it instead of keeping it up to 6 hours.
+ */
+export const INGEST_MAX_EVENT_AGE_SECONDS = 60;
 /** NWS requires a User-Agent with contact info; override with the nwsUserAgent prop. */
 export const DEFAULT_NWS_USER_AGENT = 'Relay capstone (https://github.com/DallasLendaris/Relay)';
 
@@ -142,6 +156,8 @@ export class IngestStack extends Stack {
       timeout: Duration.seconds(INGEST_TIMEOUT_SECONDS), // 2 polls, 30 s apart, must end inside the minute
       memorySize: INGEST_MEMORY_MB, // the post-AlertReady CDN publish runs 16 uploads at once
       reservedConcurrentExecutions: POLLER_RESERVED_CONCURRENCY, // never two overlapping pollers; also a floor an API flood cannot take
+      retryAttempts: INGEST_RETRY_ATTEMPTS,
+      maxEventAge: Duration.seconds(INGEST_MAX_EVENT_AGE_SECONDS),
       logGroup: new LogGroup(this, 'IngestLogs', {
         retention: RetentionDays.ONE_MONTH,
         removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
@@ -181,7 +197,7 @@ export class IngestStack extends Stack {
       [`arn:aws:s3:::${props.publicAlerts.bucketName}/alerts/v1/*`],
     );
 
-    // No retries: the next minute's run catches up on anything missed.
+    // No retries here or in Lambda (INGEST_RETRY_ATTEMPTS): the next minute's run catches up.
     new Rule(this, 'EveryMinute', {
       schedule: Schedule.rate(Duration.minutes(1)),
       targets: [new LambdaFunction(ingestFn, { retryAttempts: 0 })],

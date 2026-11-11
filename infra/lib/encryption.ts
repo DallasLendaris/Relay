@@ -206,6 +206,8 @@ export function createEdgeKey(scope: Stack, stage: 'dev' | 'prod'): Key {
   allowViaServices(key, ['s3', 'sns'], region);
   allowLogs(key, region, account);
   allowPublishers(key, 'AllowCloudWatchAlarms', ['cloudwatch.amazonaws.com'], account);
+  // The edge stack's EventBridge rule (edge key changes) publishes to the edge topic.
+  allowPublishers(key, 'AllowEventBridgeRules', ['events.amazonaws.com'], account);
   key.addToResourcePolicy(
     new PolicyStatement({
       sid: 'AllowCloudFrontOacDecrypt',

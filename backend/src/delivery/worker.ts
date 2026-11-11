@@ -3,7 +3,7 @@ import type { SQSBatchResponse, SQSEvent } from 'aws-lambda';
 import type { AlertStore, Clock, DeliveryJob, IdempotencyStore, PushSender } from '../ports.js';
 import { claimExpiry, deliveryKey, refusalFor } from './eligibility.js';
 import { PUSH_POLICY } from './policy.js';
-import { errorFields, redactPushTokens } from './redact.js';
+import { errorFields } from './redact.js';
 import { sendJobs } from './send-jobs.js';
 import type { Logger } from './types.js';
 
@@ -114,10 +114,8 @@ export async function deliveryWorker(event: SQSEvent, deps: WorkerDeps): Promise
       return !alert ? 'missing' : refusal ? 'refused' : alert;
     } catch (err) {
       // A DB error fails only this alert's records, not the whole batch.
-      deps.logger.error('reading alert failed', {
-        alertId: id,
-        error: redactPushTokens(String(err)),
-      });
+      // Class and code only: a database message can quote the row (SI-11).
+      deps.logger.error('reading alert failed', { alertId: id, ...errorFields(err) });
       return 'error';
     }
   }
@@ -171,7 +169,7 @@ export async function deliveryWorker(event: SQSEvent, deps: WorkerDeps): Promise
         logger: deps.logger,
       },
     ).catch((err: unknown) => {
-      deps.logger.error('send threw', { error: redactPushTokens(String(err)) });
+      deps.logger.error('send threw', errorFields(err));
       return null;
     });
 
@@ -182,7 +180,8 @@ export async function deliveryWorker(event: SQSEvent, deps: WorkerDeps): Promise
         if (!r.ok && r.error === 'DeviceNotRegistered') {
           await deps.onDeadToken(entry.job.expoPushToken).catch((err: unknown) => {
             deps.logger.error('clearing dead token failed', {
-              error: redactPushTokens(String(err)),
+              alertId: entry.alert.id,
+              ...errorFields(err),
             });
           });
         }
@@ -191,13 +190,20 @@ export async function deliveryWorker(event: SQSEvent, deps: WorkerDeps): Promise
         await deps.idempotency
           .markSent(entry.key, claimExpiry(entry.alert))
           .catch((err: unknown) => {
-            deps.logger.error('marking sent failed', { key: entry.key, error: String(err) });
+            // The key embeds the device id, so it is not logged (nor is the error text).
+            deps.logger.error('marking sent failed', {
+              alertId: entry.alert.id,
+              ...errorFields(err),
+            });
           });
         continue;
       }
       // Retryable: give the claim back so the retry can send, and fail the record.
       await deps.idempotency.release(entry.key).catch((err: unknown) => {
-        deps.logger.error('releasing claim failed', { key: entry.key, error: String(err) });
+        deps.logger.error('releasing claim failed', {
+          alertId: entry.alert.id,
+          ...errorFields(err),
+        });
       });
       failures.push(entry.messageId);
     }

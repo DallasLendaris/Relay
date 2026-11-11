@@ -82,12 +82,15 @@ const enableGuardDuty = boolCtx('enableGuardDuty');
 const allowNoAlarmEmail = boolCtx('allowNoAlarmEmail');
 const logRetentionDays = numberCtx('logRetentionDays');
 const monthlyBudgetUsd = numberCtx('monthlyBudgetUsd');
+// Object Lock retention (governance) of CloudTrail objects: -c trailObjectLockDays (prod 365, dev 1).
+const trailObjectLockDays = numberCtx('trailObjectLockDays');
 const monitoring = {
   ...(alarmEmail ? { alarmEmail: String(alarmEmail) } : {}),
   ...(allowNoAlarmEmail !== undefined ? { allowNoAlarmEmail } : {}),
   ...(enableGuardDuty !== undefined ? { enableGuardDuty } : {}),
   ...(logRetentionDays !== undefined ? { logRetentionDays } : {}),
   ...(monthlyBudgetUsd !== undefined ? { monthlyBudgetUsd } : {}),
+  ...(trailObjectLockDays !== undefined ? { trailObjectLockDays } : {}),
 };
 
 // FIPS endpoints for AWS SDK calls: -c fips=true|false (default prod on, dev off).
@@ -105,6 +108,20 @@ if (
   throw new Error(
     'edgeCertificateArn must be an ACM certificate in us-east-1 (CloudFront requires it)',
   );
+}
+
+// API origin custom domain (disables the default execute-api endpoint): both or neither. The
+// certificate is regional, so it lives in the API's region.
+const apiOriginDomainName = app.node.tryGetContext('apiOriginDomainName');
+const apiOriginCertificateArn = app.node.tryGetContext('apiOriginCertificateArn');
+if ((apiOriginDomainName === undefined) !== (apiOriginCertificateArn === undefined)) {
+  throw new Error('pass both -c apiOriginDomainName and -c apiOriginCertificateArn, or neither');
+}
+if (
+  apiOriginCertificateArn !== undefined &&
+  !new RegExp(`^arn:[\\w-]+:acm:${env.region}:`).test(String(apiOriginCertificateArn))
+) {
+  throw new Error(`apiOriginCertificateArn must be an ACM certificate in ${env.region}`);
 }
 
 const stacks = buildRelayApp(app, {
@@ -125,6 +142,14 @@ const stacks = buildRelayApp(app, {
         edgeCustomDomain: {
           domainName: String(edgeDomainName),
           certificateArn: String(edgeCertificateArn),
+        },
+      }
+    : {}),
+  ...(apiOriginDomainName !== undefined
+    ? {
+        apiOriginDomain: {
+          domainName: String(apiOriginDomainName),
+          certificateArn: String(apiOriginCertificateArn),
         },
       }
     : {}),
