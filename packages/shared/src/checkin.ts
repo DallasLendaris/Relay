@@ -9,10 +9,10 @@ export const CheckInStatusSchema = z.enum(['ok', 'need_help']);
 export type CheckInStatus = z.infer<typeof CheckInStatusSchema>;
 
 export const CheckInSchema = z.object({
-  alertId: z.string().uuid(),
-  deviceId: z.string().uuid(),
+  alertId: z.guid(),
+  deviceId: z.guid(),
   status: CheckInStatusSchema,
-  checkedInAt: z.string().datetime({ offset: true }),
+  checkedInAt: z.iso.datetime({ offset: true }),
   token: z.string().max(LIMITS.checkInTokenMax),
   idempotencyKey: z.string().max(LIMITS.idempotencyKeyMax),
   h3Cell: z.string().max(64),

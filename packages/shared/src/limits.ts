@@ -3,8 +3,9 @@ import { z } from 'zod';
 /**
  * Input bounds. One place, used by the zod schemas, the API handler and (checked by a contract
  * test) the OpenAPI spec. Every string, array and record that accepts external input is bounded
- * so an oversized or hostile payload is rejected cheaply (zod 3 advisory GHSA-mrhx-c7xc-m3w5:
- * validating huge collections can exhaust memory, and the fix is only in zod 4).
+ * so an oversized or hostile payload is rejected cheaply. Defence in depth for zod advisory
+ * GHSA-mrhx-c7xc-m3w5 (validating huge constrained collections can exhaust memory; fixed in zod
+ * 4.6.6, and the repo pins zod ^4.6.7).
  */
 export const LIMITS = {
   /** Largest request body the API reads, in bytes. */
@@ -45,7 +46,7 @@ export const hasControlChars = (s: string): boolean => {
 };
 
 const noControl = (s: string): boolean => !hasControlChars(s);
-const noControlMsg = { message: 'must not contain control characters' };
+const noControlMsg = { error: 'must not contain control characters' };
 
 /** A place label as sent by a client (the API trims it before checking). */
 export const PlaceLabelSchema = z

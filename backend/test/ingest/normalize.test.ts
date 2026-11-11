@@ -206,6 +206,37 @@ describe('rejections', () => {
     }
   });
 
+  // zod 4 enforces RFC 3339 / CAP 1.2 date-times: seconds and a colon in the offset are required.
+  // zod 3 accepted both forms below, so this pins a deliberate tightening from the upgrade.
+  it('rejects date-times without seconds or with a colon-less offset', () => {
+    for (const value of ['2026-11-09T10:00-08:00', '2026-11-09T10:00:00-0800']) {
+      expect(
+        normalizeFeature(
+          tweak((f) => (f.properties.sent = value)),
+          opts,
+        ),
+      ).toMatchObject({
+        ok: false,
+        reason: 'missing or invalid sent',
+      });
+      expect(
+        normalizeFeature(
+          tweak((f) => (f.properties.onset = value)),
+          opts,
+        ),
+      ).toMatchObject({
+        ok: false,
+        reason: 'invalid onset',
+      });
+    }
+  });
+
+  it('accepts UTC and fractional-second date-times and keeps them as given', () => {
+    for (const value of ['2026-11-09T18:00:00Z', '2026-11-09T10:00:00.250-08:00']) {
+      expect(accept(tweak((f) => (f.properties.sent = value))).sent).toBe(value);
+    }
+  });
+
   it('never throws on junk input', () => {
     for (const junk of [null, undefined, 42, 'x', [], {}, { properties: 5 }, { properties: {} }]) {
       expect(normalizeFeature(junk, opts).ok).toBe(false);
