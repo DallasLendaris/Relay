@@ -8,6 +8,13 @@ export type ApplyResult = {
 };
 
 /**
+ * True when a stored cancelled alert was ended by feed reconciliation, not by a CAP Cancel: its
+ * last applied message is not a Cancel. A real Cancel for it is still applied (and pushed).
+ */
+export const endedWithoutCancel = (a: Alert): boolean =>
+  a.state === 'cancelled' && a.messageType !== 'Cancel';
+
+/**
  * Current state of an alert at `now`. Stored state only says what the latest NWS
  * message was; expiry is time-based, so it is computed on read.
  * Expired once `expires` (or `ends`, if set and later) has passed, unless cancelled.
@@ -18,6 +25,11 @@ export function effectiveState(alert: Alert, now: Date): Alert['state'] {
   const end = Math.max(...times.map((t) => Date.parse(t)));
   return now.getTime() > end ? 'expired' : alert.state;
 }
+
+const withoutPds = (a: Alert): Alert => {
+  const { pds: _pds, ...rest } = a;
+  return rest;
+};
 
 /**
  * Apply one normalized NWS message to the alert store.
@@ -62,7 +74,9 @@ export async function applyMessage(
     return { action: 'created', alert: created };
   }
 
-  if (stored.state === 'cancelled') {
+  // Cancelled is final, except that a real Cancel replaces an end by feed reconciliation (which
+  // pushed nothing), so devices that were sent the alert hear that it was cancelled.
+  if (stored.state === 'cancelled' && !(isCancel && endedWithoutCancel(stored))) {
     return ignored(stored, 'alert already cancelled');
   }
   if (Date.parse(incoming.sent) < Date.parse(stored.sent)) {
@@ -80,12 +94,22 @@ export async function applyMessage(
       r.sourceId !== incoming.sourceId && chain.findIndex((c) => c.sourceId === r.sourceId) === i,
   );
 
-  const next: Alert = {
-    ...incoming,
-    id: stored.id,
-    references,
-    state: isCancel ? 'cancelled' : 'updated',
-  };
+  const supersedes = { sourceId: stored.sourceId, relaySeverity: stored.relaySeverity };
+  const next: Alert = isCancel
+    ? {
+        // A Cancel ends the stored version: keep its area (a Cancel may carry no polygon or
+        // zones), severity and PDS flag, so the record still says what was cancelled and where,
+        // and follow-ups reach the devices that were sent it (docs/cancellation.md).
+        ...withoutPds(incoming),
+        ...(stored.pds === true ? { pds: true } : {}),
+        id: stored.id,
+        references,
+        area: stored.area,
+        relaySeverity: stored.relaySeverity,
+        state: 'cancelled',
+        supersedes,
+      }
+    : { ...incoming, id: stored.id, references, state: 'updated', supersedes };
   await store.save(next);
   return { action: isCancel ? 'cancelled' : 'updated', alert: next };
 }

@@ -8,10 +8,17 @@ import type { AlertReady, ShardJob } from '../contracts.js';
 export type ResumableShardJob = ShardJob & { startAt?: number };
 
 const isString = (v: unknown): v is string => typeof v === 'string' && v !== '';
+const okFollowUp = (v: unknown): boolean => v === undefined || v === 'cancel' || v === 'update';
 
 export function isAlertReady(v: unknown): v is AlertReady {
   const o = v as Partial<AlertReady> | null;
-  return !!o && isString(o.alertId) && isString(o.sourceId) && isString(o.relaySeverity);
+  return (
+    !!o &&
+    isString(o.alertId) &&
+    isString(o.sourceId) &&
+    isString(o.relaySeverity) &&
+    okFollowUp(o.followUp)
+  );
 }
 
 export function isShardJob(v: unknown): v is ResumableShardJob {
@@ -23,6 +30,7 @@ export function isShardJob(v: unknown): v is ResumableShardJob {
     isString(o.relaySeverity) &&
     isString(o.shardId) &&
     Array.isArray(o.cells) &&
+    okFollowUp(o.followUp) &&
     (o.startAt === undefined || (Number.isInteger(o.startAt) && o.startAt >= 0))
   );
 }

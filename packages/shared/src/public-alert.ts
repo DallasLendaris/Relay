@@ -58,5 +58,11 @@ export const PushDataSchema = z.looseObject({
    * CDN base configured, or when the payload had to be trimmed: then read GET /alerts/{alertId}.
    */
   alertUrl: z.url().optional(),
+  /**
+   * Set only on a follow-up push (docs/cancellation.md): `cancel` (the alert was cancelled),
+   * `update` (it changed and still covers this device), `removed` (it changed and no longer covers
+   * this device). The app should not offer "I'm okay" for `cancel` and `removed`.
+   */
+  followUp: z.enum(['cancel', 'update', 'removed']).optional(),
 });
 export type PushData = z.infer<typeof PushDataSchema>;

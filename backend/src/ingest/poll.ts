@@ -15,6 +15,8 @@ export type ApplyResult = {
   action: 'created' | 'updated' | 'cancelled' | 'ignored';
   alert: Alert;
   reason?: string;
+  /** Set by restoreEnded: the alert came back after feed absence; no new message was applied. */
+  restored?: true;
 };
 
 export interface PollDeps {
@@ -281,6 +283,7 @@ export async function restoreEnded(
         await deps.onApplied?.({
           action: marker.priorState === 'updated' ? 'updated' : 'created',
           alert: restored,
+          restored: true,
         });
       } catch (err) {
         await reconcile.cancel(restored, 'no_longer_in_feed').catch(() => undefined);
@@ -549,19 +552,25 @@ async function pollInto(deps: PollDeps, counts: PollCounts): Promise<boolean> {
         counts.skippedSeen += 1;
         return;
       }
-      alert.area.h3Cells = await deps.cellsFor(alert.area, {
-        onUnknownZones: (ugcs, total) => {
-          counts.unknownZones += ugcs.length;
-          log({
-            event: 'poll.unknown_zones',
-            level: 'warn',
-            sourceId: alert.sourceId,
-            unknown: ugcs.length,
-            total,
-            ugcs: ugcs.slice(0, 20),
-          });
-        },
-      });
+      // A Cancel ends the stored alert and keeps its area (lifecycle.ts), so its own area is not
+      // resolved: a bare Cancel (no polygon, no zones) would otherwise fail as "reaches nobody"
+      // on every poll and never be applied.
+      alert.area.h3Cells =
+        alert.messageType === 'Cancel'
+          ? []
+          : await deps.cellsFor(alert.area, {
+              onUnknownZones: (ugcs, total) => {
+                counts.unknownZones += ugcs.length;
+                log({
+                  event: 'poll.unknown_zones',
+                  level: 'warn',
+                  sourceId: alert.sourceId,
+                  unknown: ugcs.length,
+                  total,
+                  ugcs: ugcs.slice(0, 20),
+                });
+              },
+            });
       stage = 'save';
       const result = await deps.apply(alert);
       stage = 'deliver';
@@ -581,7 +590,15 @@ async function pollInto(deps: PollDeps, counts: PollCounts): Promise<boolean> {
         } else if (stored.state === 'cancelled' && alert.messageType === 'Cancel') {
           // A real Cancel wins over any earlier feed-absence record: never restore it.
           await deps.seen.clearEnded?.(stored.id);
-          log({ event: 'poll.ignored', sourceId: alert.sourceId, reason: result.reason });
+          if (stored.sourceId === alert.sourceId) {
+            // This very Cancel was saved by an earlier poll that failed before marking it seen
+            // (its follow-up push may not have been planned). Plan it again: the follow-up batch
+            // keys are deterministic, so a repeat never pushes twice (docs/cancellation.md).
+            toPlan = { action: 'cancelled', alert: stored };
+            log({ event: 'poll.replay_replan', sourceId: alert.sourceId });
+          } else {
+            log({ event: 'poll.ignored', sourceId: alert.sourceId, reason: result.reason });
+          }
         } else if (
           stored.state === 'cancelled' &&
           (await deps.seen.getEnded?.(stored.id))?.endedBy === 'feed_absence'
@@ -598,6 +615,9 @@ async function pollInto(deps: PollDeps, counts: PollCounts): Promise<boolean> {
       } else {
         toPlan = result;
         log({ event: 'poll.applied', sourceId: alert.sourceId, action: result.action });
+        // A real Cancel (possibly of an alert that reconciliation had ended for feed absence) is
+        // final: drop any feed-absence record so the alert is never restored.
+        if (result.action === 'cancelled') await deps.seen.clearEnded?.(result.alert.id);
       }
       if (toPlan) {
         await deps.onApplied?.(toPlan);

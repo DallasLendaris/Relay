@@ -93,6 +93,11 @@ export interface AlertReady {
   /** Alert.sourceId at the time of publishing, so a stale message for an old version is ignored. */
   sourceId: string;
   relaySeverity: Alert['relaySeverity'];
+  /**
+   * Set when this asks for a follow-up push instead of the alert itself (docs/cancellation.md):
+   * 'cancel' for a stored CAP Cancel, 'update' for a stored Update. Absent: a normal fan-out.
+   */
+  followUp?: 'cancel' | 'update';
 }
 
 /**
@@ -111,6 +116,8 @@ export interface ShardJob {
    * (KILL_SWITCH_TTL_MS) and reads SSM itself when it is absent or older. `readAtMs` is epoch ms.
    */
   killSwitch?: { paused: boolean; readAtMs: number };
+  /** Copied from AlertReady: this shard sends follow-ups (fanout/follow-up-shard.ts). */
+  followUp?: 'cancel' | 'update';
 }
 
 /** Coarse H3 resolution used to shard alert areas (a res-4 cell is about 1,770 km²). */

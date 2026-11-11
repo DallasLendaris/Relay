@@ -5,7 +5,9 @@ import type { Alert } from '@relay/shared';
 import { SigningAlertStore } from '../adapters/signing-alert-store.js';
 import type { Keyring } from '../config/secrets.js';
 import { refusalFor } from '../delivery/eligibility.js';
+import { followUpRefusal, versionTag, type FollowUpRequest } from '../delivery/follow-up.js';
 import { planDelivery } from '../delivery/plan-delivery.js';
+import { planFollowUpDelivery } from '../delivery/plan-follow-up.js';
 import type { Logger } from '../delivery/types.js';
 import {
   H3_RESOLUTION,
@@ -187,6 +189,54 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
     logger.info('alert ready published', { alertId: saved.id, severity: saved.relaySeverity });
   }
 
+  /**
+   * The follow-up push for a stored Cancel or Update (docs/cancellation.md): devices that were
+   * sent an earlier version hear that it was cancelled or changed. Same pause semantics as the
+   * alert itself (a paused kill switch keeps the message unseen); refusals are final and logged.
+   * Queue mode hands it to the planner; inline mode plans it here. Safe to repeat: every key
+   * downstream is per version.
+   */
+  async function planFollowUpFor(saved: Alert, request: FollowUpRequest): Promise<void> {
+    const refusal = followUpRefusal(
+      saved,
+      request,
+      versionTag(saved.sourceId),
+      clock.now(),
+      verifyAlert,
+    );
+    if (refusal) {
+      logger.warn('followup.refused', { alertId: saved.id, followUp: request, reason: refusal });
+      return;
+    }
+    if (await deps.isDeliveryPaused()) {
+      logger.warn('delivery paused', { alertId: saved.id, followUp: request });
+      throw new DeliveryPausedError(saved.id);
+    }
+    if (queueMode && planQueue) {
+      await planQueue.publish({
+        alertId: saved.id,
+        sourceId: saved.sourceId,
+        relaySeverity: saved.relaySeverity,
+        followUp: request,
+      });
+      logger.info('followup.ready_published', { alertId: saved.id, followUp: request });
+      return;
+    }
+    const plan = await planFollowUpDelivery(saved, request, {
+      places: deps.places,
+      devices: deps.devices,
+      queue: deps.queue,
+      tokenKey: deps.tokenKeys.current,
+      verifyAlert,
+      isDeliveryPaused: deps.isDeliveryPaused,
+      droppedCells: (id, sourceId) => store.listDroppedCells(id, sourceId),
+      clock,
+      logger,
+    });
+    if (plan.refused === 'paused') throw new DeliveryPausedError(saved.id);
+    logger.info('followup.plan_result', { alertId: saved.id, followUp: request, ...plan });
+  }
+
   // Feed reconciliation needs a store that can list every active NWS alert; the Postgres and
   // in-memory stores can. Without that method it is simply off.
   const lister = deps.alertStore as Partial<ActiveAlertLister>;
@@ -245,9 +295,21 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
     apply: (alert) => applyMessage(alert, { store, clock }),
     async onApplied(result) {
       if (result.action === 'cancelled') {
-        // Nothing to plan, but the alert must drop out of the public index.
+        // The alert must drop out of the public index, and the devices that were sent it hear
+        // (quietly) that it was cancelled. Only a CAP Cancel gets here; an end by feed
+        // reconciliation is never pushed (reconcile.cancel above).
         const saved = await store.get(result.alert.id);
-        if (saved) publishInBackground(saved);
+        if (!saved) return;
+        try {
+          await planFollowUpFor(saved, 'cancel');
+        } catch (err) {
+          if (!(err instanceof DeliveryPausedError)) {
+            logger.error('followup.planning_failed', { alertId: saved.id, error: String(err) });
+          }
+          throw err;
+        } finally {
+          publishInBackground(saved);
+        }
         return;
       }
       if (result.action !== 'created' && result.action !== 'updated') return;
@@ -258,8 +320,12 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
         if (!saved) {
           throw new Error(`saved alert ${result.alert.id} not found for delivery planning`);
         }
+        // An Update also tells the devices that were sent the earlier version (not for an alert
+        // restored after feed absence: no new message was applied).
+        const followUp = result.action === 'updated' && !result.restored && saved.supersedes;
         if (queueMode && planQueue) {
           await publishAlertReady(saved, planQueue);
+          if (followUp) await planFollowUpFor(saved, 'update');
           return;
         }
         // Re-planning is safe: dedupe happens in the delivery worker at send time
@@ -282,6 +348,7 @@ export function createIngestPipeline(deps: PipelineDeps): EngineDeps {
         // log it and let pollOnce mark the alert seen.
         if (plan.refused) logger.warn('plan refused', { alertId: saved.id, ...plan });
         else logger.info('plan result', { alertId: saved.id, ...plan });
+        if (followUp) await planFollowUpFor(saved, 'update');
       } catch (err) {
         if (err instanceof DeliveryPausedError) throw err; // expected; poll.ts logs it as a warning
         // Log, then re-throw: pollOnce counts the error and does NOT mark the alert seen, so

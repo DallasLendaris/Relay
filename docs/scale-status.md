@@ -66,6 +66,6 @@ One independent review covered the scale branch. Every confirmed finding was fix
 
 - **The app must register native APNs/FCM tokens** (`getDevicePushTokenAsync`) and collapse notifications by alert id. That's app-team work.
 - **Agency totals:** `DynamoCheckInTotals.listTotals` exists, but the agency route (AG-04) needs agency auth (AG-02) first.
-- **Cancellation pushes** are still not sent.
+- **Cancellation pushes:** built on `b2-cancel` ([cancellation.md](./cancellation.md)): follow-ups reuse the cell fan-out over the previous version's area, gated by the sender's per-batch member sets and a new per-key version tag.
 - **A concurrent place add and remove** on one device can, in a narrow window, cause one extra push (never a miss).
 - **Multi-region failover** and SMS fallback are not built.

@@ -447,6 +447,12 @@ export interface components {
             signature: string | null;
             /** @description True for a particularly dangerous situation (NWS damage threat CONSIDERABLE on a Tornado or Flash Flood Warning). The tier stays warning. Omitted when not applicable. */
             pds?: boolean;
+            supersedes?: components["schemas"]["AlertSupersedes"];
+        };
+        /** @description The version an Update or Cancel replaced (its NWS message id and Relay severity). Omitted on a first Alert. */
+        AlertSupersedes: {
+            sourceId: string;
+            relaySeverity: components["schemas"]["RelaySeverity"];
         };
         /**
          * @description Cell-free document for one alert version, served by the CDN at
@@ -498,6 +504,7 @@ export interface components {
             summaries: components["schemas"]["AlertSummaryText"][];
             signature: string | null;
             pds?: boolean;
+            supersedes?: components["schemas"]["AlertSupersedes"];
         };
         /**
          * @description Short-TTL pointer served at `{cdnBase}/alerts/v1/latest/{alertId}.json`
@@ -537,6 +544,14 @@ export interface components {
              *     fall back to GET /alerts/{alertId}. Absent when the sender has no CDN base configured.
              */
             alertUrl?: string;
+            /**
+             * @description Only on a follow-up push for an alert the device was already sent: `cancel` (the
+             *     issuer cancelled it), `update` (it changed and still covers this device), `removed` (it
+             *     changed and no longer covers this device). Cancel and removed pushes are quiet; the app
+             *     should not offer "I'm okay" for them, and should re-read the pointer.
+             * @enum {string}
+             */
+            followUp?: "cancel" | "update" | "removed";
         } & {
             [key: string]: unknown;
         };

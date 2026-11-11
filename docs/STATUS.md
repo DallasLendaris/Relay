@@ -73,8 +73,8 @@ Push policy: emergencies and warnings are loud and high-priority, watches and ad
 ## Known gaps and decisions
 
 - **NWS fixtures are constructed**, not recorded, because api.weather.gov was unreachable from the build environment.
-- **Cancellations aren't pushed yet.** A cancelled alert stops further pushes and shows as cancelled in the app.
-- **NWS Updates re-notify only on a severity increase** or for newly covered devices.
+- **Cancellation and update pushes** (branch `b2-cancel`, [design](./cancellation.md)): a device that was sent an alert gets one follow-up when NWS cancels it (quiet), updates it (the new severity's loudness; quiet "no longer includes your area" for dropped cells), both through the inline and the scale path. Feed absence is not pushed (in-app only). New: `Alert.supersedes`, push `data.followUp`, migration 0015 (`alert_dropped_cells`). The Spanish follow-up templates need the native-speaker read.
+- **NWS Updates re-notify** in full only on a severity change or for newly covered devices; a same-severity Update sends the "Updated" follow-up.
 - **A Lambda killed after Expo accepted a push but before it was marked sent** re-sends that one push once, after the 45-second lease. This is an accepted trade-off: a rare duplicate rather than a missed alert.
 - **Push-token reassignment:** a device that knows another phone's Expo token could take it over. Tokens are never logged or returned, so the risk is low, but it should be revisited before the Pilot.
 - **The OpenAPI spec changed tonight** (check-in 403 responses, and the once-per-device rule). It needs all-three approval like the other shared formats.

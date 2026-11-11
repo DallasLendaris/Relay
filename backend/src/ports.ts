@@ -60,6 +60,12 @@ export interface AlertStore {
    * and that have not ended yet (now is before the later of expires and ends).
    */
   listActiveForCells(cells: string[], now: Date): Promise<Alert[]>;
+  /**
+   * The cells an alert used to cover that the version `sourceId` dropped (recorded by `save` when
+   * a new version replaces the cells; docs/cancellation.md). Optional: follow-up planning then
+   * covers the kept cells only.
+   */
+  listDroppedCells?(alertId: string, sourceId: string): Promise<string[]>;
 }
 
 // ---------- Devices and places ----------
@@ -202,6 +208,16 @@ export interface DeliveryJob {
   expiresAt: string;
   /** Lets the phone group or replace notifications for the same alert chain. */
   groupingKey: string;
+  /**
+   * Set on a follow-up job (docs/cancellation.md, inline mode): what it says, the version it is
+   * for (versionTag of the alert's sourceId when planned) and the severity of the version the
+   * device was sent (its delivery key is `${alertId}:${previousSeverity}:${deviceId}`).
+   */
+  followUp?: {
+    kind: 'cancel' | 'update' | 'removed';
+    version: string;
+    previousSeverity: 'emergency' | 'warning' | 'watch' | 'advisory' | 'statement';
+  };
 }
 
 export interface DeliveryQueue {
@@ -226,7 +242,11 @@ export interface IdempotencyStore {
    * sent, stored on the item for late join; like the state, it is never overwritten by another
    * attempt once the key is sent.
    */
-  markSent(key: string, expiresAt: Date, detail?: { members?: Uint8Array }): Promise<void>;
+  markSent(
+    key: string,
+    expiresAt: Date,
+    detail?: { members?: Uint8Array; version?: string },
+  ): Promise<void>;
   /**
    * The shard worker's per-cell (or per dense part) plan record (G5): marks `key` sent and stores
    * the planned recipients' member set, replacing any earlier record of the key (a later plan's
@@ -284,6 +304,12 @@ export interface KeyInspection {
   members?: Uint8Array;
   /** A plan record's (device, target) set, when exactly one plan wrote it (markPlanned). */
   targets?: Uint8Array;
+  /**
+   * markSent's `detail.version`: the version tag (delivery/follow-up.ts versionTag) of the alert
+   * version whose batch was sent under this key. Absent on keys written before it existed, on
+   * tombstones and on plan records.
+   */
+  version?: string;
 }
 
 /** One finished sub-chunk: offsets (within the chunk) that still need sending. See recordChunk. */
