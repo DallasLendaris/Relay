@@ -102,6 +102,7 @@ export function buildRelayApp(app: App, o: RelayAppOptions) {
     stage,
     killSwitchParamName: config.killSwitchParamName,
     alertSigningKeyArns: config.alertSigning.verify.map((k) => k.keyArn),
+    dataKeyArns: [config.keys.data, config.keys.messaging, config.keys.logs].map((k) => k.keyArn),
     ...o.monitoring,
   });
   const data = new DataStack(app, id('data'), {

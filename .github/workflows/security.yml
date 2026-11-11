@@ -174,8 +174,8 @@ jobs:
           path: gitleaks-report.json
           if-no-files-found: ignore
 
-  # SA-11 (and CM-6 for infrastructure settings) via cdk-nag: synth runs the cdk-nag aspects once
-  # infra/ registers them. Until then this only proves the app synthesizes. Warn-only.
+  # SA-11 (and CM-6 for infrastructure settings) via cdk-nag: synth runs the cdk-nag NIST 800-53
+  # aspects (infra/bin/relay.ts). Warn-only here; infra/test/nag.test.ts in ci.yml already blocks.
   infra-synth:
     runs-on: ubuntu-latest
     permissions:

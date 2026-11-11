@@ -116,6 +116,35 @@ describe.each(['dev', 'prod'] as const)('customer-managed KMS keys (%s)', (stage
     expect(JSON.stringify(st.Condition)).toContain(':distribution/*');
   });
 
+  it('builds service-principal ARN conditions from the stack partition, not a literal arn:aws', () => {
+    for (const [t, id] of [
+      [ts.config, logs],
+      [ts.edge, edge],
+    ] as [Template, string][]) {
+      const policy = JSON.stringify(resources(t)[id]!.Properties['KeyPolicy']);
+      expect(policy, id).not.toContain('"arn:aws:');
+      expect(policy, id).toContain('AWS::Partition');
+    }
+  });
+
+  it('reports disabling, deleting or re-policying a data-domain key (not routine grants)', () => {
+    const rules = Object.entries(resources(ts.monitoring)).filter(
+      ([lid, r]) => r.Type === 'AWS::Events::Rule' && lid.startsWith('DataKeyChangedRule'),
+    );
+    expect(rules).toHaveLength(1);
+    const detail = rules[0]![1].Properties['EventPattern'].detail;
+    expect(detail.eventName).toEqual(
+      expect.arrayContaining(['ScheduleKeyDeletion', 'DisableKey', 'PutKeyPolicy']),
+    );
+    expect(detail.eventName).not.toContain('CreateGrant');
+    const ids = JSON.stringify(detail.requestParameters.keyId);
+    for (const n of ['data', 'messaging', 'logs'])
+      expect(ids).toContain(`alias/relay/${stage}/${n}`);
+    // One key-id pattern per key, taken from the imported key ARN.
+    expect(ids.match(/Fn::Split/g)).toHaveLength(3);
+    expect(JSON.stringify(rules[0]![1].Properties['Targets'])).toContain('AlertsTopic');
+  });
+
   it('limits account principals to use through the owning services (kms:ViaService)', () => {
     for (const [t, id] of [
       [ts.config, data],

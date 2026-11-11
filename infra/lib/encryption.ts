@@ -112,6 +112,7 @@ function allowPublishers(key: Key, sid: string, principals: string[], account: s
 
 /** CloudWatch Logs may use the key for this account's log groups in this region only. */
 function allowLogs(key: Key, region: string, account: string): void {
+  const { partition } = Stack.of(key);
   key.addToResourcePolicy(
     new PolicyStatement({
       sid: 'AllowCloudWatchLogs',
@@ -127,7 +128,7 @@ function allowLogs(key: Key, region: string, account: string): void {
       resources: ['*'],
       conditions: {
         ArnLike: {
-          'kms:EncryptionContext:aws:logs:arn': `arn:aws:logs:${region}:${account}:log-group:*`,
+          'kms:EncryptionContext:aws:logs:arn': `arn:${partition}:logs:${region}:${account}:log-group:*`,
         },
       },
     }),
@@ -136,7 +137,7 @@ function allowLogs(key: Key, region: string, account: string): void {
 
 /** The three us-west-2 keys. Created in ConfigStack, which every other stack already follows. */
 export function createRegionalKeys(scope: Stack, stage: 'dev' | 'prod'): RegionalKeys {
-  const { region, account } = scope;
+  const { region, account, partition } = scope;
   const data = cmk(scope, 'DataKey', stage, 'data', 'DynamoDB, Aurora, S3 data buckets, secrets');
   allowViaServices(data, ['dynamodb', 'rds', 's3', 'secretsmanager'], region);
 
@@ -172,7 +173,7 @@ export function createRegionalKeys(scope: Stack, stage: 'dev' | 'prod'): Regiona
       resources: ['*'],
       conditions: {
         StringLike: {
-          'kms:EncryptionContext:aws:cloudtrail:arn': `arn:aws:cloudtrail:*:${account}:trail/*`,
+          'kms:EncryptionContext:aws:cloudtrail:arn': `arn:${partition}:cloudtrail:*:${account}:trail/*`,
         },
         StringEquals: { 'aws:SourceAccount': account },
       },
@@ -199,7 +200,7 @@ export function createRegionalKeys(scope: Stack, stage: 'dev' | 'prod'): Regiona
  * same wildcard for the same reason).
  */
 export function createEdgeKey(scope: Stack, stage: 'dev' | 'prod'): Key {
-  const { region, account } = scope;
+  const { region, account, partition } = scope;
   const key = cmk(scope, 'EdgeKey', stage, 'edge', 'public-alerts bucket, edge topic, WAF logs');
   // s3: ingest (us-west-2) writes alert documents to the bucket in this region; sns: edge topic.
   allowViaServices(key, ['s3', 'sns'], region);
@@ -213,7 +214,7 @@ export function createEdgeKey(scope: Stack, stage: 'dev' | 'prod'): Key {
       actions: ['kms:Decrypt'],
       resources: ['*'],
       conditions: {
-        ArnLike: { 'aws:SourceArn': `arn:aws:cloudfront::${account}:distribution/*` },
+        ArnLike: { 'aws:SourceArn': `arn:${partition}:cloudfront::${account}:distribution/*` },
       },
     }),
   );

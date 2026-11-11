@@ -1,6 +1,6 @@
 # Control gap map: one-page summary
 
-> **Draft, pending review by SJSU counsel / the agency ISO.** This is a plain-language summary of [control-map.md](./control-map.md). It measures Relay against the NIST SP 800-53 Rev. 5 **moderate** baseline (release 5.2.0, 287 controls and enhancements) as of commit `be6bc32`. Nothing is deployed, so "built" means "in the code", not "proven in AWS".
+> **Draft, pending review by SJSU counsel / the agency ISO.** This is a plain-language summary of [control-map.md](./control-map.md). It measures Relay against the NIST SP 800-53 Rev. 5 **moderate** baseline (release 5.2.0, 287 controls and enhancements) as of commit `be6bc32`, with the rows the compliance-foundation work changed updated after the 2026-11 review ([review-2026-11.md](./review-2026-11.md)). Nothing is deployed, so "built" means "in the code", not "proven in AWS".
 
 ## Where Relay stands
 
@@ -17,7 +17,7 @@ What this means:
 
 - **The engineering is further along than the paperwork.** The code has least-privilege IAM, per-function database roles, KMS-signed alerts, CloudTrail with alerts on kill-switch, secret and key changes, GuardDuty, input bounds and redacted logs. Most of the 71 Partial rows are in that state because the human side is missing. No one has an account yet, and there is no deploy pipeline.
 - **Almost no organizational work exists.** Apart from the drafts in this folder (SSP, FIPS 199, PTA, BIA, incident response, SECURITY.md), there are no policies, no training and no personnel rules. None of that can be done in code.
-- **Work running on this branch now** (cdk-nag, customer-managed KMS, TLS 1.2+, FIPS endpoints, secret rotation, CI scanning and an SBOM) targets 13 rows (12 of them in the baseline). Each one is marked "Planned (compliance-foundation)" in the map.
+- **The compliance-foundation work has merged** (cdk-nag, customer-managed KMS, TLS 1.2+, FIPS endpoints, rotation runbooks, CI scanning and an SBOM). Of the 13 rows it targeted, SC-28 and SC-28(1) are now Built, SR-4 moved from Missing to Partial, and the other ten stay Partial with smaller gaps; they are marked "Updated (compliance-foundation)" in the map. The review also downgraded two overstated Built rows (AU-9, SI-11) to Partial, so the engineering counts above are unchanged from `be6bc32`.
 
 ## Top 10 engineering gaps for a summer 2027 single-county pilot
 
@@ -26,12 +26,12 @@ Ranked by how much each one blocks or endangers a real pilot. "Planned" means th
 1. **Human access foundation** (AC-2, IA-2, IA-2(1), AC-17, MA-4, AU-9(4)). Create the AWS accounts (S-06): a separate prod account, IAM Identity Center with MFA, a break-glass role and a log-archive account. Every other control assumes this exists.
 2. **Deploy pipeline with approvals** (CM-3, CM-5, AC-17(4), SA-10). GitHub OIDC deploy role, protected `main` with required review, `cdk diff` in the PR, and a migration runner with a lock (OPS-9). This retires the manual deploys that use the bootstrap admin role.
 3. **Close the WAF bypass** (SC-7, SC-7(3), SC-5, CM-7). Disable the default `execute-api` endpoint, or add a regional WAF, so that nothing reaches the API Lambda without passing CloudFront (SEC-C-2, SEC-A-7).
-4. **Edge TLS and domain** (SC-8, SC-8(1), SC-17, SC-20). Planned in part. Add a Relay domain with an ACM certificate, a TLS 1.2+ security policy, security headers and DNSSEC in Route 53. The default CloudFront certificate still allows TLS 1.0.
-5. **Missing logs and log-failure alarms** (AU-2, AU-5, AU-12, SI-4(4)). Turn on CloudFront, WAF, API Gateway and S3 access logs. Alarm when CloudTrail stops delivering. Consider data events on the check-in and device tables.
-6. **Backups you can actually restore** (CP-9, CP-9(1), CP-6, CP-10). Back up the keyrings offline (OPS-6). Version the zone-pack and public buckets. Set up an AWS Backup plan with a cross-region copy. Write the restore runbook and run one restore test.
+4. **Edge TLS and domain** (SC-8, SC-8(1), SC-17, SC-20). The TLS 1.2+ policy is now in code behind `-c edgeDomainName` / `-c edgeCertificateArn`. Still needed: the Relay domain and ACM certificate themselves, security headers and DNSSEC in Route 53. Until then the default CloudFront certificate allows TLS 1.0.
+5. **Missing logs and log-failure alarms** (AU-2, AU-5, AU-12, SI-4(4)). WAF, S3 access, VPC flow and Postgres logs are now on. Turn on CloudFront and API Gateway access logs. Alarm when CloudTrail stops delivering. Consider data events on the check-in and device tables.
+6. **Backups you can actually restore** (CP-9, CP-9(1), CP-6, CP-10). Back up the keyrings offline (OPS-6). (The zone-pack and public buckets are now versioned.) Set up an AWS Backup plan with a cross-region copy. Write the restore runbook and run one restore test.
 7. **Agency sign-in and safe aggregates** (IA-2(2), IA-8, AC-21, AC-7, AC-8, AC-12). Needed only if the county sees check-in data during the pilot. Choose Cognito or state SSO (Q-14), with MFA, small-cell suppression and noise (PRIV-3, PRIV-4).
 8. **Privacy notice, consent and expiry** (PT-4, PT-5, SI-12, AC-2(3)). Show a privacy notice and get consent in the app. Expire inactive devices (PRIV-11). Set retention for the raw NWS archive. The text comes from counsel. The mechanism is engineering.
-9. **Workload scanning and configuration compliance** (RA-5, CM-6, CM-8(3), SI-3, SR-10). Planned in part: CI scanning and cdk-nag. Still needed: AWS Config and Security Hub with the NIST 800-53 standard, ECR or Inspector image scanning, and the sender base image pinned by digest (DEP-3).
+9. **Workload scanning and configuration compliance** (RA-5, CM-6, CM-8(3), SI-3, SR-10). CI scanning (warn-only) and cdk-nag are now in place. Still needed: AWS Config and Security Hub with the NIST 800-53 standard, ECR or Inspector image scanning, and the sender base image pinned by digest (DEP-3).
 10. **Integrity on every read path** (SI-7, SI-7(1)). Verify alert signatures on `GET /alerts` and the public publish path, not only before sending (SEC-A-5). Sign the zone pack (SEC-C-11).
 
 Next after these: device attestation against forged check-ins (IA-3, Q-15), an egress proxy for Lambdas (SC-7(8)), and a cancellation push (IR-4(1), GOV-8).

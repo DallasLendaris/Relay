@@ -97,7 +97,20 @@ export interface MonitoringStackProps extends StackProps, MonitoringOptions {
   killSwitchParamName: string;
   /** ARNs of every alert-signing KMS key (ConfigStack). Changes to them or their aliases are reported. */
   alertSigningKeyArns: string[];
+  /**
+   * ARNs of the customer-managed data-domain keys of this region (ConfigStack: data, messaging,
+   * logs; encryption.ts). Disabling, deleting or re-policying one of them is reported.
+   */
+  dataKeyArns?: string[];
 }
+
+/**
+ * KMS events reported for the data-domain keys. CreateGrant is left out on purpose: DynamoDB and
+ * RDS create grants on these keys in normal operation, so it would page on every deploy.
+ */
+export const DATA_KEY_EVENTS = KMS_KEY_EVENTS.filter((e) => e !== 'CreateGrant');
+/** Alias names of the data-domain keys (encryption.ts keyAlias). */
+export const DATA_KEY_ALIAS_NAMES = ['data', 'messaging', 'logs'] as const;
 
 /**
  * The alerting and audit backbone. Owns the SNS topic every CloudWatch alarm in every stack
@@ -300,6 +313,43 @@ export class MonitoringStack extends Stack {
       },
       'ALERT SIGNING KEY ALIAS event',
     );
+    // The data-domain keys (encryption.ts). Disabling or deleting one makes every table, queue,
+    // topic or log group it protects unreadable, so it is reported like the signing keys.
+    const dataKeyArns = props.dataKeyArns ?? [];
+    if (dataKeyArns.length > 0) {
+      const dataAliases = DATA_KEY_ALIAS_NAMES.map((n) => ({
+        wildcard: `*alias/relay/${stage}/${n}`,
+      }));
+      report(
+        'DataKeyChangedRule',
+        'aws.kms',
+        'A Relay data, messaging or logs KMS key was disabled, scheduled for deletion, re-enabled or had its key policy changed',
+        {
+          eventSource: ['kms.amazonaws.com'],
+          eventName: [...DATA_KEY_EVENTS],
+          requestParameters: {
+            keyId: [
+              ...dataKeyArns.map((arn) => ({
+                wildcard: Fn.join('', ['*', Fn.select(1, Fn.split('/', arn))]),
+              })),
+              ...dataAliases,
+            ],
+          },
+        },
+        'DATA KEY event',
+      );
+      report(
+        'DataKeyAliasChangedRule',
+        'aws.kms',
+        'A Relay data, messaging or logs KMS key alias was created, repointed or deleted',
+        {
+          eventSource: ['kms.amazonaws.com'],
+          eventName: [...KMS_ALIAS_EVENTS],
+          requestParameters: { aliasName: dataAliases },
+        },
+        'DATA KEY ALIAS event',
+      );
+    }
 
     // ---- Kill-switch health (metrics from backend/src/config/kill-switch.ts, EMF) ----
     // Delivery stops on its own when the switch is mis-set or unreadable. Without these alarms

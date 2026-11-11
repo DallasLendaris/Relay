@@ -126,4 +126,5 @@ So the API Lambda (it calls Amazon Location for place search) does not get the v
 - Decide whether automatic Aurora credential rotation is worth about $15/month per stage (VPC endpoint plus a VPC rotation Lambda).
 - Get a custom domain and ACM certificate for the edge so viewers are held to TLS 1.2.
 - Decide on an AWS Backup plan and cross-region replication once the State's retention and the RPO are set.
-- The monitoring stack alerts on alert-signing key events only; extending those rules to the four new keys (`DisableKey`, `ScheduleKeyDeletion`, `PutKeyPolicy`) is a small follow-up.
+- Key-state events (`DisableKey`, `ScheduleKeyDeletion`, `PutKeyPolicy`, alias changes) of the data, messaging and logs keys now alert the alerts topic (`DataKeyChangedRule`, added at the 2026-11 review). The edge key in us-east-1 is not covered yet (EventBridge rules are regional).
+- cdk-nag evaluates `AWS::Lambda::Function` resources created through `aws-lambda` only; the provider Lambdas of CDK's own custom resources (cross-region exports, `restrictDefaultSecurityGroup`, dev `autoDeleteObjects`) are not checked, and their run-time log groups have neither the logs key nor a retention ([review](./review-2026-11.md), B3 and C6).
