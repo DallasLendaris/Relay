@@ -86,6 +86,12 @@ export const AlertSchema = z.object({
    * (not false) when it does not apply, so alerts signed before this field existed are unchanged.
    */
   pds: z.boolean().optional(),
+  /**
+   * The version this Update or Cancel replaced: its NWS message id and its Relay severity. Set by
+   * the lifecycle step on every Update and Cancel (docs/cancellation.md); follow-up pushes read the
+   * previous severity from it. Omitted on a first Alert, so alerts signed before it are unchanged.
+   */
+  supersedes: z.object({ sourceId: short, relaySeverity: RelaySeveritySchema }).optional(),
 });
 export type Alert = z.infer<typeof AlertSchema>;
 

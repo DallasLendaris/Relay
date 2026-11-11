@@ -45,7 +45,7 @@ export interface ShardWorkerDeps extends EligibilityDeps {
    * plans of one alert version could then double-send those buckets.
    */
   idempotency?: Required<Pick<IdempotencyStore, 'claim' | 'markSent' | 'peek'>> &
-    Pick<IdempotencyStore, 'markPlanned'>;
+    Pick<IdempotencyStore, 'markPlanned' | 'inspect'>;
   /**
    * Re-runs a job later (the paused queue: about 60 s, then back to the shard function). Used for
    * the cells of a dense bucket that another attempt holds, so they settle without failing the job

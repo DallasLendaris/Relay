@@ -23,6 +23,7 @@ describe('runMigrations', () => {
       '0012_push_project.sql',
       '0013_strip_house_numbers.sql',
       '0014_outbox_claim_lease.sql',
+      '0015_alert_dropped_cells.sql',
     ]);
     const rows = await exec.query<{ name: string }>(
       'SELECT name FROM schema_migrations ORDER BY name',

@@ -113,7 +113,7 @@ describe('SAFE-1: damage threat sets the emergency tier', () => {
   ] as const) {
     it(`${event}: CONSIDERABLE -> CATASTROPHIC update re-notifies as an emergency`, async () => {
       const store = new InMemoryAlertStore();
-      const published: Array<{ alertId: string; relaySeverity: string }> = [];
+      const published: Array<{ alertId: string; relaySeverity: string; followUp?: string }> = [];
       const engine = createIngestPipeline({
         alertStore: store,
         places: new MemoryPlaceStore(),
@@ -159,7 +159,13 @@ describe('SAFE-1: damage threat sets the emergency tier', () => {
         }),
       );
 
-      expect(published.map((m) => m.relaySeverity)).toEqual(['warning', 'emergency']);
+      // The Update also asks for its follow-up (docs/cancellation.md); with a severity change
+      // that covers only dropped cells, the re-notify is the normal fan-out below.
+      expect(published.filter((m) => m.followUp).map((m) => m.followUp)).toEqual(['update']);
+      expect(published.filter((m) => !m.followUp).map((m) => m.relaySeverity)).toEqual([
+        'warning',
+        'emergency',
+      ]);
       // Same alert id, so the shard batch key `${alertId}:${relaySeverity}:...` changes: re-notify.
       expect(new Set(published.map((m) => m.alertId)).size).toBe(1);
       const stored = await store.get(published[0]?.alertId ?? '');

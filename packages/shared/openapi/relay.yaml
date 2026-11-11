@@ -768,6 +768,20 @@ components:
           description: >-
             True for a particularly dangerous situation (NWS damage threat CONSIDERABLE on a
             Tornado or Flash Flood Warning). The tier stays warning. Omitted when not applicable.
+        supersedes:
+          $ref: '#/components/schemas/AlertSupersedes'
+
+    AlertSupersedes:
+      type: object
+      description: >-
+        The version an Update or Cancel replaced (its NWS message id and Relay severity). Omitted
+        on a first Alert.
+      required: [sourceId, relaySeverity]
+      properties:
+        sourceId:
+          type: string
+        relaySeverity:
+          $ref: '#/components/schemas/RelaySeverity'
 
     PublicAlertDocument:
       type: object
@@ -880,6 +894,8 @@ components:
           type: [string, 'null']
         pds:
           type: boolean
+        supersedes:
+          $ref: '#/components/schemas/AlertSupersedes'
 
     AlertPointer:
       type: object
@@ -935,6 +951,14 @@ components:
             Absolute CDN URL of this alert's PublicAlertDocument. Open it instead of calling the
             API. A 404 means the publish has not landed yet: retry once after a few seconds, then
             fall back to GET /alerts/{alertId}. Absent when the sender has no CDN base configured.
+        followUp:
+          type: string
+          enum: [cancel, update, removed]
+          description: |
+            Only on a follow-up push for an alert the device was already sent: `cancel` (the
+            issuer cancelled it), `update` (it changed and still covers this device), `removed` (it
+            changed and no longer covers this device). Cancel and removed pushes are quiet; the app
+            should not offer "I'm okay" for them, and should re-read the pointer.
 
     CheckIn:
       type: object

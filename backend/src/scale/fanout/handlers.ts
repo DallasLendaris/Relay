@@ -26,7 +26,8 @@ import { fleetScalerFromEnv } from './fleet-scaler.js';
 import { SqsPausedQueue, type PausedQueue } from './paused-queue.js';
 import { isAlertReady, isShardJob, type ResumableShardJob } from './messages.js';
 import { DynamoCellReader } from './dynamo-cell-reader.js';
-import { planShards, type PlannerDeps } from './planner.js';
+import { planFollowUp, processFollowUpShard, type FollowUpPlannerDeps } from './follow-up.js';
+import { planShards } from './planner.js';
 import {
   LambdaShardDispatcher,
   SqsSendQueue,
@@ -111,12 +112,17 @@ async function parkIfPaused<R extends { refused?: FanoutRefusal }>(
 }
 
 export const buildPlannerHandler =
-  (deps: PlannerDeps, refreshKeys?: () => Promise<PlannerDeps>, paused?: PausedQueue) =>
+  (
+    deps: FollowUpPlannerDeps,
+    refreshKeys?: () => Promise<FollowUpPlannerDeps>,
+    paused?: PausedQueue,
+  ) =>
   (event: SQSEvent): Promise<SQSBatchResponse> =>
     runRecords(event, isAlertReady, async (ready) =>
       parkIfPaused(
         await retryUnsigned({ alertId: ready.alertId }, deps, refreshKeys, (d) =>
-          planShards(ready, d),
+          // A follow-up (cancel / update push, docs/cancellation.md) or the alert itself.
+          ready.followUp ? planFollowUp(ready, d) : planShards(ready, d),
         ),
         paused,
         { kind: 'plan', ready, parkedAt: deps.clock.now().toISOString() },
@@ -141,7 +147,8 @@ export const buildShardHandler =
           { alertId: job.alertId, shardId: job.shardId },
           deps,
           refreshKeys,
-          (d) => processShard(job, d),
+          (d): Promise<{ refused?: FanoutRefusal }> =>
+            job.followUp ? processFollowUpShard(job, d) : processShard(job, d),
         ),
         paused,
         { kind: 'shard', job, parkedAt: deps.clock.now().toISOString() },
@@ -237,16 +244,19 @@ export function shardDispatcherFromEnv(env: Record<string, string | undefined>):
 function buildPlanner(env: Record<string, string | undefined>) {
   const e = requireEnv(env, PLANNER_ENV);
   const fleetScaler = fleetScalerFromEnv(env, new ECSClient({}), logger);
+  const store = alertStore(e);
   const base = {
     // One cached read per alert per 10 s per warm planner (see alert-cache.ts).
-    alerts: new CachedAlertReader(alertStore(e)),
+    alerts: new CachedAlertReader(store),
+    // Cells an Update dropped, for its "no longer includes your area" follow-up.
+    droppedCells: (alertId: string, sourceId: string) => store.listDroppedCells(alertId, sourceId),
     shardDispatcher: shardDispatcherFromEnv(env),
     ...(fleetScaler ? { fleetScaler } : {}),
     isDeliveryPaused: createKillSwitch(e.KILL_SWITCH_PARAM),
     clock,
     logger,
   };
-  const withKeys = async (): Promise<PlannerDeps> => ({
+  const withKeys = async (): Promise<FollowUpPlannerDeps> => ({
     ...base,
     verifyAlert: await alertVerifierFromEnv(env),
   });

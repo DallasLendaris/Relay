@@ -12,6 +12,8 @@ interface Entry {
   members?: Uint8Array;
   /** A plan record's (device, target) set, kept only while one plan wrote the key (G5b). */
   targets?: Uint8Array;
+  /** markSent's version tag (follow-ups, docs/cancellation.md). */
+  version?: string;
 }
 
 /**
@@ -53,7 +55,11 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
     return 'claimed';
   }
 
-  async markSent(key: string, expiresAt: Date, detail?: { members?: Uint8Array }): Promise<void> {
+  async markSent(
+    key: string,
+    expiresAt: Date,
+    detail?: { members?: Uint8Array; version?: string },
+  ): Promise<void> {
     const attempt = this.attempts.get(key);
     this.attempts.delete(key);
     this.inherited.delete(key);
@@ -65,6 +71,7 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
       until: expiresAt.getTime(),
       attempt: attempt ?? 0,
       ...(detail?.members ? { members: new Uint8Array(detail.members) } : {}),
+      ...(detail?.version ? { version: detail.version } : {}),
     });
   }
 
@@ -95,6 +102,7 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
       state: 'sent',
       ...(e.members ? { members: new Uint8Array(e.members) } : {}),
       ...(e.targets ? { targets: new Uint8Array(e.targets) } : {}),
+      ...(e.version ? { version: e.version } : {}),
     };
   }
 

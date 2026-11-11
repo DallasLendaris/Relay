@@ -101,6 +101,21 @@ export class PostgresAlertStore implements AlertStore {
 
     // All in one transaction: a failure part-way leaves the old alert untouched.
     await this.db.transaction(async (tx) => {
+      // A new version (another sourceId) replacing the cells: remember the old cells under the new
+      // version first; the ones it still covers are removed again below (docs/cancellation.md).
+      const prior = await tx.query<{ source_id: string | null }>(
+        'SELECT source_id FROM alerts WHERE id = $1::uuid',
+        [alert.id],
+      );
+      const newVersion = prior[0] !== undefined && prior[0].source_id !== alert.sourceId;
+      if (newVersion) {
+        await tx.query(
+          `INSERT INTO alert_dropped_cells (alert_id, source_id, h3_cell)
+           SELECT alert_id, $2, h3_cell FROM alert_cells WHERE alert_id = $1::uuid
+           ON CONFLICT DO NOTHING`,
+          [alert.id, alert.sourceId],
+        );
+      }
       // Upsert the alert, then register every source id in its chain (one statement).
       await tx.query(
         `WITH p AS (SELECT $1::jsonb AS r),
@@ -133,7 +148,34 @@ export class PostgresAlertStore implements AlertStore {
           [alert.id, packed],
         );
       }
+      if (newVersion) {
+        await tx.query(
+          `DELETE FROM alert_dropped_cells d USING alert_cells c
+            WHERE d.alert_id = $1::uuid AND d.source_id = $2
+              AND c.alert_id = d.alert_id AND c.h3_cell = d.h3_cell`,
+          [alert.id, alert.sourceId],
+        );
+      }
     });
+  }
+
+  /** Cells the version `sourceId` no longer covers (recorded by save), paged like withCells. */
+  async listDroppedCells(alertId: string, sourceId: string): Promise<string[]> {
+    const out: string[] = [];
+    let after = '';
+    for (;;) {
+      const rows = await this.db.query<{ h3_cell: string }>(
+        `SELECT h3_cell FROM alert_dropped_cells
+          WHERE alert_id = $1::uuid AND source_id = $2 AND h3_cell > $3
+          ORDER BY h3_cell LIMIT $4::int`,
+        [alertId, sourceId, after, READ_CELL_PAGE],
+      );
+      for (const r of rows) out.push(r.h3_cell);
+      const last = rows[rows.length - 1];
+      if (!last || rows.length < READ_CELL_PAGE) break;
+      after = last.h3_cell;
+    }
+    return out.sort();
   }
 
   async listActiveForCells(cells: string[], now: Date): Promise<Alert[]> {

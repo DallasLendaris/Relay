@@ -274,7 +274,7 @@ describe('demo path', () => {
   });
 
   describe('NWS updates', () => {
-    it('does not re-notify for a same-severity update', async () => {
+    it('a same-severity update is not re-sent as a new alert, but sends one "Updated" follow-up', async () => {
       const s = setup({ feed: chainFeed(0) });
       await s.addDevice('inside', INSIDE.lat, INSIDE.lng);
       await s.poll();
@@ -284,9 +284,45 @@ describe('demo path', () => {
       s.feed.body = chainFeed(1); // Update, still a Flood Warning
       const counts = await s.poll();
       expect(counts.applied).toBe(1);
-      expect(s.queue.jobs).toHaveLength(2); // planned again...
+      // planned again, plus the follow-up job (docs/cancellation.md)
+      expect(s.queue.jobs).toHaveLength(3);
       expect(await s.drain()).toEqual([]);
-      expect(s.sender.sent).toHaveLength(1); // ...but the worker drops the duplicate
+      // the re-planned alert is a duplicate; the follow-up says it was updated
+      expect(s.sender.sent).toHaveLength(2);
+      expect(s.sender.sent[1]).toMatchObject({ data: { followUp: 'update' } });
+      expect(s.sender.sent[1]?.title).toMatch(/^Updated: /);
+
+      // The same Update seen again changes nothing.
+      await s.poll();
+      await s.drain();
+      expect(s.sender.sent).toHaveLength(2);
+    });
+
+    it('a Cancel sends one quiet follow-up to the device that got the alert, nothing to others', async () => {
+      const s = setup({ feed: chainFeed(0) });
+      await s.addDevice('inside', INSIDE.lat, INSIDE.lng);
+      await s.poll();
+      await s.drain();
+      expect(s.sender.sent).toHaveLength(1);
+      // Joins after the alert went out: it was never sent it, so it hears nothing about it.
+      await s.addDevice('late', INSIDE.lat, INSIDE.lng);
+
+      s.feed.body = chainFeed(1, { messageType: 'Cancel' });
+      expect((await s.poll()).applied).toBe(1);
+      expect(await s.drain()).toEqual([]);
+      expect(s.sender.sent).toHaveLength(2);
+      expect(s.sender.sent[1]).toMatchObject({
+        to: 'ExponentPushToken[inside]',
+        priority: 'normal',
+        data: { followUp: 'cancel' },
+      });
+      expect(s.sender.sent[1]).not.toHaveProperty('sound');
+      expect(s.sender.sent[1]?.title).toMatch(/^Cancelled: /);
+
+      // The same Cancel in the next poll changes nothing.
+      await s.poll();
+      await s.drain();
+      expect(s.sender.sent).toHaveLength(2);
     });
 
     it('re-notifies when the update raises severity (Watch -> Warning)', async () => {

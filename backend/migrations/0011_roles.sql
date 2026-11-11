@@ -73,7 +73,9 @@ BEGIN
       (true, 'cell_index_outbox', 'relay_api', 'SELECT, INSERT, UPDATE, DELETE'),
       (true, 'cell_index_outbox', 'relay_ops', 'SELECT, INSERT, UPDATE, DELETE'),
       (true, 'deleted_devices', 'relay_api', 'SELECT, INSERT'),
-      (true, 'deleted_devices', 'relay_ops', 'SELECT')
+      (true, 'deleted_devices', 'relay_ops', 'SELECT'),
+      (true, 'alert_dropped_cells', 'relay_ingest', 'SELECT, INSERT, DELETE'),
+      (true, 'alert_dropped_cells', 'relay_fanout', 'SELECT')
     ) AS v(optional, tbl, grantee, privs)
   LOOP
     IF to_regclass(format('public.%I', g.tbl)) IS NULL THEN
