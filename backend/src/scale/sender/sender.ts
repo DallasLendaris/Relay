@@ -1088,9 +1088,16 @@ export async function processBatch(
     // ack anyway (failing the message would re-send once the lease runs out).
     // A planned batch also records whom it carried (G5), so late join can tell whether a device that
     // registered during the fan-out was in it (latejoin.ts). Retries and late-join batches are
-    // never asked about.
+    // never asked about. The version tag is the version whose text was actually sent (the alert
+    // loaded above), not the one the batch was planned for: an original batch planned for v1 but
+    // sent after a same-severity Update v2 committed carried v2's text, so v2's follow-up must
+    // read it as current, not send a second (loud) "Updated" push (review-2026-11-batch2 C-1).
     await idempotency
-      .markSent(batch.batchKey, claimExpiry(alert), sentDetail(batch, logger))
+      .markSent(
+        batch.batchKey,
+        claimExpiry(alert),
+        sentDetail({ ...batch, sourceId: alert.sourceId }, logger),
+      )
       .catch((err: unknown) => {
         logger.error('sender.mark_sent_failed', { batchKey: batch.batchKey, ...errorFields(err) });
       });

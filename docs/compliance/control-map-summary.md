@@ -15,7 +15,7 @@ The map also lists 50 rows outside the moderate baseline so nothing is missed: P
 
 What this means:
 
-- **The engineering is further along than the paperwork.** The code has least-privilege IAM, per-function database roles, KMS-signed alerts, CloudTrail with alerts on kill-switch, secret and key changes, GuardDuty, input bounds and redacted logs. Most of the 71 Partial rows are in that state because the human side is missing. No one has an account yet, and there is no deploy pipeline.
+- **The engineering is further along than the paperwork.** The code has least-privilege IAM, per-function database roles, KMS-signed alerts, CloudTrail with alerts on kill-switch, secret and key changes, GuardDuty, input bounds and redacted logs. Most of the 76 Partial rows are in that state because the human side is missing. No one has an account yet, and the deploy pipeline is built but has never run.
 - **Almost no organizational work exists.** Apart from the drafts in this folder (SSP, FIPS 199, PTA, BIA, incident response, SECURITY.md), there are no policies, no training and no personnel rules. None of that can be done in code.
 - **The compliance-foundation work has merged** (cdk-nag, customer-managed KMS, TLS 1.2+, FIPS endpoints, rotation runbooks, CI scanning and an SBOM). Of the 13 rows it targeted, SC-28 and SC-28(1) are now Built, SR-4 moved from Missing to Partial, and the other ten stay Partial with smaller gaps; they are marked "Updated (compliance-foundation)" in the map. The review also downgraded two overstated Built rows (AU-9, SI-11) to Partial, so the engineering counts were unchanged from `be6bc32` at that review. On `b2-hardening` SI-11 became Built again (the delivery worker no longer logs error text), which gave 15 Built, 72 Partial, 46 Missing. On `b2-agency` a DRAFT agency side ([agency-auth.md](../agency-auth.md)) moved AC-7, AC-12, IA-2 and IA-2(1) from Missing to Partial and IA-2(2) from Missing to Built, which gives the counts above.
 
@@ -34,7 +34,7 @@ Ranked by how much each one blocks or endangers a real pilot. "Planned" means th
 9. **Workload scanning and configuration compliance** (RA-5, CM-6, CM-8(3), SI-3, SR-10). CI scanning (warn-only) and cdk-nag are now in place. Still needed: AWS Config and Security Hub with the NIST 800-53 standard, ECR or Inspector image scanning, and the sender base image pinned by digest (DEP-3).
 10. **Integrity on every read path** (SI-7, SI-7(1)). Verify alert signatures on `GET /alerts` and the public publish path, not only before sending (SEC-A-5). Sign the zone pack (SEC-C-11).
 
-Next after these: device attestation against forged check-ins (IA-3, Q-15), an egress proxy for Lambdas (SC-7(8)), and a cancellation push (IR-4(1), GOV-8).
+Next after these: device attestation against forged check-ins (IA-3, Q-15), an egress proxy for Lambdas (SC-7(8)), and a follow-up push from the operator recall tool (IR-4(1), GOV-8; CAP Cancel and Update follow-ups are built on `b2-cancel`, [cancellation.md](../cancellation.md)).
 
 ## What the team must do (not code)
 

@@ -4,7 +4,7 @@ Audit of `audit-baseline` (74acc5c), 2026-11-09. Report: "Relay System Audit" (C
 
 ## DEP (Haiku) - no critical/high
 
-- DEP-1 med: zod 3 advisory GHSA-mrhx-c7xc-m3w5, unbounded z.array in AlertSchema on ingest path -> add .max() bounds + body size cap (or zod 4).
+- DEP-1 med: zod 3 advisory GHSA-mrhx-c7xc-m3w5, unbounded z.array in AlertSchema on ingest path -> add .max() bounds + body size cap (or zod 4). **Resolved:** bounds and body cap in the audit-fix round (`packages/shared/src/limits.ts`), then zod 4.6.7 on `b2-zod4` (2026-11-11), which carries the upstream fix; `npm audit --omit=dev` reports 0 ([ci-security-scanning.md](../compliance/ci-security-scanning.md)).
 - DEP-2 low-med: sender image ships source maps with sources -> drop .map from runtime stage.
 - DEP-3 low-med: node:22-slim not digest pinned.
 - DEP-4 low: actions not SHA-pinned; no permissions block.

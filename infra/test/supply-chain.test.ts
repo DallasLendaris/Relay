@@ -113,6 +113,11 @@ describe('deploy workflow (S-06, CM-5, SEC-C-10)', () => {
     }
   });
 
+  it('the deploy job runs no npm install scripts (it holds the deploy role OIDC token)', () => {
+    expect(jobs.deploy).toMatch(/- run: npm ci --ignore-scripts$/m);
+    expect(jobs.deploy).not.toMatch(/- run: npm ci$/m);
+  });
+
   it('never persists the checkout token', () => {
     const checkouts = text.match(/uses: actions\/checkout@/g) ?? [];
     expect(checkouts).toHaveLength(3);
@@ -134,6 +139,9 @@ describe('deploy workflow (S-06, CM-5, SEC-C-10)', () => {
       ['alarmEmail', 'ALARM_EMAIL'],
       ['edgeDomainName', 'EDGE_DOMAIN_NAME'],
       ['edgeCertificateArn', 'EDGE_CERTIFICATE_ARN'],
+      // b2-hardening's flag that disables the default execute-api endpoint (SC-7).
+      ['apiOriginDomainName', 'API_ORIGIN_DOMAIN_NAME'],
+      ['apiOriginCertificateArn', 'API_ORIGIN_CERTIFICATE_ARN'],
     ]) {
       expect(jobs.diff).toContain(`${v}: \${{ vars.${v} }}`);
       expect(jobs.diff).toContain(`-c "${ctx}=$${v}"`);

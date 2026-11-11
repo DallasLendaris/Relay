@@ -58,6 +58,10 @@ describe('date-times are RFC 3339 with an offset', () => {
     '2026-11-09T10:00:00.123-08:00',
     '2026-11-09T10:00:00.123456789Z',
     '2026-11-09T10:00:00+05:45',
+    // CAP 1.2 writes UTC as -00:00 (it forbids "Z"); NWS uses YYYY-MM-DDThh:mm:ssXzh:zm
+    // (weather.gov/media/alert/CAP_v12_guide_03-07-2017.pdf).
+    '2026-11-09T18:00:00-00:00',
+    '2011-05-24T16:49:00-07:00',
   ])('accepts %s', (d) => expect(date.safeParse(d).success).toBe(true));
   // zod 3 also accepted the two forms below. RFC 3339 (the OpenAPI `format: date-time`) and
   // CAP 1.2 both require seconds and a colon in the offset, so zod 4 rejecting them is kept.

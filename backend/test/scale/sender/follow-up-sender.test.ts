@@ -102,6 +102,23 @@ describe('sender: follow-up batches', () => {
     expect(t.push.calls.flat()[0]?.title).toBe('Updated: Flash Flood Warning');
   });
 
+  it('tags a sent key with the version whose text went out, not the one it was planned for', async () => {
+    // An original batch planned for v1 is sent after a same-severity Update v2 committed: the
+    // phone got v2's text, so v2's follow-up must see the key as current (no second push).
+    const t = makeDeps();
+    const v2 = signed({
+      sourceId: 'urn:oid:update',
+      state: 'updated',
+      supersedes: { sourceId: 'urn:oid:1', relaySeverity: 'warning' },
+    });
+    await t.alerts.save(v2);
+    const batch = makeBatch({ alertId: v2.id, sourceId: 'urn:oid:1' });
+    const out = await processBatch(batch, t.deps);
+    expect(out).toMatchObject({ ack: true, reason: 'sent' });
+    expect(t.push.calls.flat()[0]?.title).not.toMatch(/^Updated/);
+    expect((await t.idempotency.inspect(batch.batchKey)).version).toBe(versionTag(v2.sourceId));
+  });
+
   it('sentDetail tags every key with its version once the batch knows its sourceId', () => {
     const batch = { batchKey: 'k', attempt: 0, recipients: [], sourceId: 'urn:oid:9' };
     expect(sentDetail(batch, silent)?.version).toBe(versionTag('urn:oid:9'));

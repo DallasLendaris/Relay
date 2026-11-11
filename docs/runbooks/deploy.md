@@ -22,7 +22,7 @@ The roles are defined in [`infra/bootstrap/github-deploy-stack.ts`](../../infra/
 
 - **No long-lived keys.** GitHub issues an OIDC token per job; AWS exchanges it for credentials that last at most 2 hours. There is no IAM user and no access key anywhere.
 - **Trust is one repository and one environment.** Each role's trust policy requires `aud = sts.amazonaws.com` and `sub = repo:DallasLendaris/Relay:environment:<env>` with `StringEquals` (no wildcards). The deploy role for prod trusts only `environment:prod`, so the only jobs that can assume it are ones that passed the prod environment's protection rules (required reviewers, `main` only). A workflow on another branch, a PR, a fork or another repository gets a different `sub` and is refused.
-- **The roles can do one thing: assume CDK's bootstrap roles.** Not `AdministratorAccess`. The deploy role may assume `cdk-hnb659fds-deploy-role`, `-file-publishing-role`, `-image-publishing-role` and `-lookup-role` in us-west-2 and us-east-1 of its own account; the diff role only the lookup role (read-only; it cannot change anything). Those bootstrap roles are what `cdk deploy` uses anyway: the publishing roles can only write to the bootstrap asset bucket and ECR repository, and the deploy role can only drive CloudFormation and pass the CloudFormation execution role.
+- **The roles can do one thing: assume CDK's bootstrap roles.** Not `AdministratorAccess`. The deploy role may assume `cdk-hnb659fds-deploy-role`, `-file-publishing-role`, `-image-publishing-role` and `-lookup-role` in us-west-2 and us-east-1 of its own account; the diff role only the lookup role (it cannot change anything, but it is not "no data": the lookup role carries `ReadOnlyAccess`, which also reads DynamoDB items such as check-ins, so `prod-diff` must be limited to `main` like `prod`). Those bootstrap roles are what `cdk deploy` uses anyway: the publishing roles can only write to the bootstrap asset bucket and ECR repository, and the deploy role can only drive CloudFormation and pass the CloudFormation execution role.
 - **Residual risk: the CloudFormation execution role.** CloudFormation makes the actual changes with `cdk-hnb659fds-cfn-exec-role`, which by default has `AdministratorAccess`. So a malicious change that gets through review and the prod approval can still create anything. The controls against that are code review, the diff, and the required reviewer. Narrowing it (`cdk bootstrap --cloudformation-execution-policies <policy>` with a policy limited to the services Relay uses, plus a permissions boundary) is a follow-up once the first deploys show which actions are needed.
 
 ## One-time setup (per AWS account)
@@ -46,7 +46,7 @@ Do this once in the dev account and once in the prod account, signed in as an ac
    npm run oidc-roles -- deploy -c stages=prod      # in the prod account
    ```
 
-   `-c stages=dev,prod` creates both stages' roles if dev and prod ever share an account. If the account already has a GitHub OIDC provider (IAM allows one per URL), add `-c existingOidcProviderArn=arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com`. With a custom bootstrap qualifier, add `-c qualifier=<q>`. The stack is `relay-github-oidc`; cdk-nag NIST 800-53 runs on it during synth. The role ARNs are `arn:aws:iam::<account>:role/relay-github-deploy-<stage>` and `arn:aws:iam::<account>:role/relay-github-diff-<stage>`.
+   `-c stages=dev,prod` creates both stages' roles if dev and prod ever share an account. Avoid that: both deploy roles assume the same CDK bootstrap roles, so in a shared account the dev role (whose environment has no reviewers) can deploy prod stacks too. The prod reviewer and `main`-only rules then no longer separate dev from prod. If the account already has a GitHub OIDC provider (IAM allows one per URL), add `-c existingOidcProviderArn=arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com`. With a custom bootstrap qualifier, add `-c qualifier=<q>`. The stack is `relay-github-oidc`; cdk-nag NIST 800-53 runs on it during synth. The role ARNs are `arn:aws:iam::<account>:role/relay-github-deploy-<stage>` and `arn:aws:iam::<account>:role/relay-github-diff-<stage>`.
 
 3. **Create the GitHub environments** (repository Settings > Environments): `dev-diff`, `dev`, `prod-diff`, `prod`.
    - **`prod`: Required reviewers.** At least one reviewer who is not the person who starts the run; turn on "Prevent self-review". Turn off "Allow administrators to bypass configured protection rules". Deployment branches and tags: selected branches, `main` only.
@@ -55,14 +55,15 @@ Do this once in the dev account and once in the prod account, signed in as an ac
 
 4. **Set the environment variables** (plain variables, not secrets: none of these is secret). Leave a variable unset rather than empty-but-set when it does not apply.
 
-   | Variable                                   | Environments                        | Value                                                                                       |
-   | ------------------------------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------- |
-   | `AWS_ACCOUNT_ID`                           | all four                            | The stage's 12-digit account ID; the credentials action fails if it gets any other account. |
-   | `AWS_DIFF_ROLE_ARN`                        | `<stage>-diff`                      | `arn:aws:iam::<account>:role/relay-github-diff-<stage>`                                     |
-   | `AWS_DEPLOY_ROLE_ARN`                      | `<stage>`                           | `arn:aws:iam::<account>:role/relay-github-deploy-<stage>`                                   |
-   | `PUBLIC_ALERT_BASE_URL`                    | `prod-diff` (dev: optional)         | CDN origin for alert links, `https://...` (required on prod by `bin/relay.ts`).             |
-   | `ALARM_EMAIL`                              | `prod-diff` (dev: optional)         | On-call address for the alarm topic (required on prod).                                     |
-   | `EDGE_DOMAIN_NAME`, `EDGE_CERTIFICATE_ARN` | `prod-diff`, when the domain exists | Both or neither; the certificate must be in us-east-1.                                      |
+   | Variable                                               | Environments                               | Value                                                                                                    |
+   | ------------------------------------------------------ | ------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+   | `AWS_ACCOUNT_ID`                                       | all four                                   | The stage's 12-digit account ID; the credentials action fails if it gets any other account.              |
+   | `AWS_DIFF_ROLE_ARN`                                    | `<stage>-diff`                             | `arn:aws:iam::<account>:role/relay-github-diff-<stage>`                                                  |
+   | `AWS_DEPLOY_ROLE_ARN`                                  | `<stage>`                                  | `arn:aws:iam::<account>:role/relay-github-deploy-<stage>`                                                |
+   | `PUBLIC_ALERT_BASE_URL`                                | `prod-diff` (dev: optional)                | CDN origin for alert links, `https://...` (required on prod by `bin/relay.ts`).                          |
+   | `ALARM_EMAIL`                                          | `prod-diff` (dev: optional)                | On-call address for the alarm topic (required on prod).                                                  |
+   | `EDGE_DOMAIN_NAME`, `EDGE_CERTIFICATE_ARN`             | `prod-diff`, when the domain exists        | Both or neither; the certificate must be in us-east-1.                                                   |
+   | `API_ORIGIN_DOMAIN_NAME`, `API_ORIGIN_CERTIFICATE_ARN` | `prod-diff`, when the origin domain exists | Both or neither; the certificate must be in us-west-2. Disables the default execute-api endpoint (SC-7). |
 
    The context lives in the `-diff` environment because the diff job synthesizes; the deploy job deploys that cloud assembly and does not synthesize again.
 
@@ -89,7 +90,7 @@ Do this once in the dev account and once in the prod account, signed in as an ac
 
 ## Rollback
 
-A CDK deploy is one CloudFormation change set per stack, applied in dependency order (`config`, `monitoring`, `data`, `delivery`, `fanout`, `latejoin`, `api`, `ingest`, `sender`, `edge`).
+A CDK deploy is one CloudFormation change set per stack, applied in dependency order (`config`, `monitoring`, `data`, `delivery`, `fanout`, `latejoin`, `api`, `ingest`, `sender`, `agency`, `edge`).
 
 - **A stack fails mid-deploy:** CloudFormation rolls that stack back to its previous state on its own (the workflow does not pass `--no-rollback`), and the job fails. Stacks that already finished earlier in the same run stay on the new version. Usually the fix is a new PR; if the half-applied state is a problem, roll back as below.
 - **A deploy succeeded but the change is bad:** redeploy the previous commit. Revert the PR on `main` (a revert PR, reviewed like any change) and run the workflow for the stage again. That keeps `main` equal to what is deployed. For an outage, the revert PR can be approved fast, but it still goes through the pipeline. Before that, if alerts are going out wrong, use the delivery kill switch (`/relay/<stage>/delivery-kill-switch`, "Kill switch" in [`infra/README.md`](../../infra/README.md), and [alert-recall.md](./alert-recall.md)).
@@ -112,6 +113,7 @@ On **prod**, these resources have `DeletionPolicy: Retain` (Aurora: `Snapshot` p
 | `api`        | `CheckinsTable`, `CheckinTotalsTable`, function log groups                                                                                       |
 | `ingest`     | `RawBucket`, `ZonePackBucket`, `AccessLogsBucket`, `StateTable`, `IngestLogs`                                                                    |
 | `sender`     | secrets `ApnsKey`, `FcmServiceAccount`; `SenderLogs`, `VpcFlowLogs`                                                                              |
+| `agency`     | `AgencyAuditBucket` (retained on dev too, Object Lock), `AgencyUserPool` (deletion protection), `AccessLogsBucket`, function log groups          |
 | `edge`       | KMS `EdgeKey`, `PublicAlertsBucket`, `AccessLogsBucket`, `WafLogs` (us-east-1)                                                                   |
 
 The list comes from `grep -rn RemovalPolicy infra/lib`; re-check it when a stack changes. On dev almost everything is `Destroy`, so a dev rollback can lose dev data.
