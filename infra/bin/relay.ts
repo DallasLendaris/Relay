@@ -90,6 +90,23 @@ const monitoring = {
   ...(monthlyBudgetUsd !== undefined ? { monthlyBudgetUsd } : {}),
 };
 
+// FIPS endpoints for AWS SDK calls: -c fips=true|false (default prod on, dev off).
+const fips = boolCtx('fips');
+// CloudFront custom domain (TLS 1.2+ for viewers): both or neither.
+const edgeDomainName = app.node.tryGetContext('edgeDomainName');
+const edgeCertificateArn = app.node.tryGetContext('edgeCertificateArn');
+if ((edgeDomainName === undefined) !== (edgeCertificateArn === undefined)) {
+  throw new Error('pass both -c edgeDomainName and -c edgeCertificateArn, or neither');
+}
+if (
+  edgeCertificateArn !== undefined &&
+  !String(edgeCertificateArn).startsWith('arn:aws:acm:us-east-1:')
+) {
+  throw new Error(
+    'edgeCertificateArn must be an ACM certificate in us-east-1 (CloudFront requires it)',
+  );
+}
+
 const stacks = buildRelayApp(app, {
   capacity,
   monitoring,
@@ -102,6 +119,15 @@ const stacks = buildRelayApp(app, {
     ? { allowNoPublicAlertUrl: String(allowNoPublicAlertUrl) === 'true' }
     : {}),
   ...(modeCtx ? { fanoutMode: modeCtx as 'queue' | 'inline' } : {}),
+  ...(fips !== undefined ? { fips } : {}),
+  ...(edgeDomainName !== undefined
+    ? {
+        edgeCustomDomain: {
+          domainName: String(edgeDomainName),
+          certificateArn: String(edgeCertificateArn),
+        },
+      }
+    : {}),
 });
 
 // cdk-nag NIST 800-53 rev 5 checks on every stack: an unsuppressed finding is an error and fails

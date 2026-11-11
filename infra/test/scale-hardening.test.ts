@@ -1,6 +1,7 @@
 import { Match, type Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it, vi } from 'vitest';
 import { synthAll, synthApp } from './helpers.js';
+import { FIPS_ENV } from '../lib/encryption.js';
 
 vi.setConfig({ testTimeout: 60_000 });
 
@@ -94,7 +95,11 @@ describe('cell-index repair outbox', () => {
         f.Properties['Environment']?.Variables?.CHECKINS_TABLE === undefined,
     );
     expect(repair).toBeDefined();
-    expect(Object.keys(repair?.Properties['Environment'].Variables).sort()).toEqual([
+    // AWS_USE_FIPS_ENDPOINT (prod) is read by the AWS SDK, not by the handler.
+    const names = Object.keys(repair?.Properties['Environment'].Variables).filter(
+      (n) => n !== FIPS_ENV,
+    );
+    expect(names.sort()).toEqual([
       'CELL_INDEX_TABLE',
       'DB_CLUSTER_ARN',
       'DB_NAME',

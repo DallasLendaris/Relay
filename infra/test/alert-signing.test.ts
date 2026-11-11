@@ -38,6 +38,12 @@ function statements(t: Template): { roles: string[]; actions: string[]; resource
   return out;
 }
 
+/** The asymmetric alert-signing keys of a template. */
+const signingKeys = (t: Template) =>
+  Object.values(resources(t)).filter(
+    (r) => r.Type === 'AWS::KMS::Key' && r.Properties['KeyUsage'] === 'SIGN_VERIFY',
+  );
+
 const canSign = (a: string) => a === 'kms:Sign' || a === 'kms:*' || a === '*';
 
 /** Role logical id of each Lambda that has env var `name`. */
@@ -55,7 +61,8 @@ describe.each(Object.keys(stages) as (keyof typeof stages)[])('alert signing (%s
   const ts = stages[stage];
 
   it('config has one ECC_NIST_P256 SIGN_VERIFY key with an alias, and no alert-keys secret', () => {
-    ts.config.resourceCountIs('AWS::KMS::Key', 1);
+    // The other config keys are the symmetric data, messaging and logs keys (encryption.ts).
+    expect(signingKeys(ts.config)).toHaveLength(1);
     ts.config.hasResourceProperties('AWS::KMS::Key', {
       KeySpec: 'ECC_NIST_P256',
       KeyUsage: 'SIGN_VERIFY',
@@ -71,7 +78,7 @@ describe.each(Object.keys(stages) as (keyof typeof stages)[])('alert signing (%s
   });
 
   it('the key policy grants nothing beyond the account root (IAM decides)', () => {
-    const key = Object.values(resources(ts.config)).find((r) => r.Type === 'AWS::KMS::Key');
+    const key = signingKeys(ts.config)[0];
     for (const s of key?.Properties['KeyPolicy'].Statement ?? []) {
       expect(JSON.stringify(s.Principal)).toMatch(/:root/);
     }

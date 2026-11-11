@@ -1,12 +1,8 @@
-import { Aspects, CfnResource, Stack, type App } from 'aws-cdk-lib';
-import { CfnTrail } from 'aws-cdk-lib/aws-cloudtrail';
-import { CfnLogGroup } from 'aws-cdk-lib/aws-logs';
-import { CfnBucket } from 'aws-cdk-lib/aws-s3';
-import { CfnSecret } from 'aws-cdk-lib/aws-secretsmanager';
-import { CfnTopic } from 'aws-cdk-lib/aws-sns';
+import { Aspects, Stack, type App } from 'aws-cdk-lib';
 import { NIST80053R5Checks, NagSuppressions, type NagPackSuppression } from 'cdk-nag';
 import type { IConstruct } from 'constructs';
 import { ACCESS_LOGS_BUCKET_ID } from './buckets.js';
+import { DB_ROLES } from './grants.js';
 import type { buildRelayApp } from './relay-app.js';
 
 export type RelayStacks = ReturnType<typeof buildRelayApp>;
@@ -160,9 +156,6 @@ const REPLICATION =
   'packs and public alert documents are re-published by ingest) or audit logs already copied to ' +
   'CloudWatch Logs. Replication doubles storage and needs a second-region bucket and key; decide ' +
   'it with the RPO in the BIA.';
-const LOG_BUCKET_LOGGING =
-  'This is the server access log bucket itself; logging it into itself would loop, and into ' +
-  'another bucket would only move the problem. Reads and deletes of it are in CloudTrail.';
 const LOG_BUCKET_SSE_S3 =
   'S3 server access log delivery requires the destination bucket to use SSE-S3 (SSE-KMS default ' +
   'encryption is not supported for access log targets). Objects are still encrypted at rest (AES-256).';
@@ -177,17 +170,22 @@ const DELETION_PROTECTION_DEV =
   'Dev only: the dev cluster is disposable and is torn down with the stack. Prod has deletion ' +
   'protection on and a final snapshot on removal (data-stack.test.ts).';
 
-/** Part B (encryption hardening) removes these; until then they are pending work, not exceptions. */
-const PENDING_KMS =
-  'Pending: customer-managed KMS keys and secret rotation land in the encryption hardening change ' +
-  '(branch comp-cdk part B); this temporary suppression is removed there.';
-const PENDING: Array<[new (...a: never[]) => CfnResource, string[]]> = [
-  [CfnLogGroup, ['CloudWatchLogGroupEncrypted']],
-  [CfnSecret, ['SecretsManagerUsingKMSKey', 'SecretsManagerRotationEnabled']],
-  [CfnBucket, ['S3DefaultEncryptionKMS']],
-  [CfnTopic, ['SNSEncryptedKMS']],
-  [CfnTrail, ['CloudTrailEncryptionEnabled']],
-];
+const ROTATION_DB =
+  'Not rotated by Secrets Manager: the hosted rotation Lambda connects to Postgres directly, so it ' +
+  'must run inside the data VPC with a Secrets Manager interface endpoint (no NAT exists), about ' +
+  '$15/month for two AZs plus a VPC Lambda to patch. Relay deliberately runs no compute in that ' +
+  'VPC (Data API only). Rotated manually every 90 days: docs/runbooks/key-rotation.md.';
+const ROTATION_KEYRING =
+  'Keyring secret ({current, keys}) whose rotation adds a key id while older ids keep verifying ' +
+  'outstanding tokens; Secrets Manager single-value rotation cannot express that. Rotated with ' +
+  '`npm run seed-keys -- <stage> --rotate` yearly or on suspicion: docs/runbooks/key-rotation.md.';
+const ROTATION_EXTERNAL =
+  'Credential issued by an outside provider (Apple, Google or Expo); AWS cannot mint a new one. ' +
+  'Rotated by hand on a fixed cadence: docs/runbooks/push-credential-rotation.md.';
+const ROTATION_ORIGIN =
+  'CloudFront holds a copy of this value from the last edge deploy, so rotating it in Secrets ' +
+  'Manager alone would make every API request fail with 403 until the edge stack is redeployed. ' +
+  'Rotated as a planned two-step change every 90 days: docs/runbooks/key-rotation.md.';
 
 function addExceptions(stacks: RelayStacks, isDev: boolean): void {
   for (const [key, ids] of Object.entries(LAMBDAS) as [StackKey, string[]][]) {
@@ -251,7 +249,6 @@ function addExceptions(stacks: RelayStacks, isDev: boolean): void {
   for (const key of ['ingest', 'edge', 'monitoring'] as StackKey[]) {
     suppress(stacks[key], ACCESS_LOGS_BUCKET_ID, [
       { id: rule('S3BucketReplicationEnabled'), reason: REPLICATION },
-      { id: rule('S3BucketLoggingEnabled'), reason: LOG_BUCKET_LOGGING },
       { id: rule('S3DefaultEncryptionKMS'), reason: LOG_BUCKET_SSE_S3 },
     ]);
   }
@@ -261,17 +258,15 @@ function addExceptions(stacks: RelayStacks, isDev: boolean): void {
     { id: rule('VPCNoUnrestrictedRouteToIGW'), reason: PUBLIC_SUBNETS },
   ]);
 
-  // Temporary (removed by part B), per resource.
-  for (const stack of Object.values(stacks)) {
-    for (const node of stack.node.findAll()) {
-      for (const [type, rules] of PENDING) {
-        if (node instanceof type) {
-          NagSuppressions.addResourceSuppressions(
-            node,
-            rules.map((r) => ({ id: rule(r), reason: PENDING_KMS })),
-          );
-        }
-      }
-    }
+  const rotation = (reason: string) => [{ id: rule('SecretsManagerRotationEnabled'), reason }];
+  suppress(stacks.data, 'Cluster/Secret', rotation(ROTATION_DB));
+  for (const role of Object.keys(DB_ROLES)) {
+    suppress(stacks.data, `RoleSecret-${role}`, rotation(ROTATION_DB));
   }
+  suppress(stacks.config, 'TokenKeys', rotation(ROTATION_KEYRING));
+  suppress(stacks.config, 'DeviceCredentialKeys', rotation(ROTATION_KEYRING));
+  suppress(stacks.config, 'ExpoAccessToken', rotation(ROTATION_EXTERNAL));
+  suppress(stacks.config, 'OriginVerify', rotation(ROTATION_ORIGIN));
+  suppress(stacks.sender, 'ApnsKey', rotation(ROTATION_EXTERNAL));
+  suppress(stacks.sender, 'FcmServiceAccount', rotation(ROTATION_EXTERNAL));
 }
