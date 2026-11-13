@@ -1,9 +1,10 @@
 # Records the live NWS California alerts feed (and the zone shapes its alerts need) into
 # backend/dev-data/replay/, for replay mode and `npm run simulate`.
 #
-# Run it from the Actions tab ("Capture NWS feed" > Run workflow) on any branch. On a branch other
-# than main it commits the recording back to that branch; on main (protected) it only uploads the
-# recording as a workflow artifact for you to commit through a pull request.
+# Run it from the Actions tab ("Capture NWS feed" > Run workflow) on any branch. It uploads the
+# recording as the "nws-recordings" workflow artifact: download it, unzip it into
+# backend/dev-data/replay/, and commit it. The job has read-only access on purpose (see the
+# workflow permissions test in infra/test/supply-chain.test.ts).
 name: Capture NWS feed
 
 on:
@@ -27,8 +28,6 @@ jobs:
   capture:
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -54,11 +53,3 @@ jobs:
         with:
           name: nws-recordings
           path: backend/dev-data/replay/recorded-*
-      - name: Commit the recordings to this branch
-        if: github.ref != 'refs/heads/main'
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add backend/dev-data/replay/recorded-*
-          git commit -m "Record live NWS California feed ($(date -u +%Y-%m-%dT%H:%MZ))"
-          git push

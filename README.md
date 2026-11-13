@@ -116,7 +116,7 @@ RELAY_FEED=live RELAY_PUSH=expo npm run local
 
 Then follow `app/README.md` to run the app, connect it to `http://<this computer's LAN address>:8787`, and save a place. If no live California alert covers the place, keep `RELAY_FEED=replay` and save the app's demo point: the replayed alert still goes through Expo's real push service to the phone.
 
-**Recording real NWS data:** `npm run capture-nws -w @relay/backend` saves the live feed and its zone shapes to `backend/dev-data/replay/recorded-<time>.json`. Or run the **Capture NWS feed** workflow from the GitHub Actions tab, which records on a GitHub runner and commits the files to the branch it runs on. Replay and `simulate` use the newest recording automatically, and a test checks that every recording ingests with no errors. Replay sets its clock to the newest alert's send time, so the recorded alerts are active.
+**Recording real NWS data:** `npm run capture-nws -w @relay/backend` saves the live feed and its zone shapes to `backend/dev-data/replay/recorded-<time>.json`. Or run the **Capture NWS feed** workflow from the GitHub Actions tab, which records on a GitHub runner and uploads the files as the `nws-recordings` artifact to download and commit. Replay and `simulate` use the newest recording automatically, and a test checks that every recording ingests with no errors. Replay sets its clock to the newest alert's send time, so the recorded alerts are active.
 
 ## Testing
 
