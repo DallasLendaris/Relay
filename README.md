@@ -124,7 +124,7 @@ Then follow `app/README.md` to run the app, connect it to `http://<this computer
 npm run poc:test
 ```
 
-Runs the automated tests of `packages/shared`, `backend` and `loadtest` (about 1,730 tests). Highlights:
+Runs the automated tests of `packages/shared`, `backend` and `loadtest` (about 1,735 tests). Highlights:
 
 - `backend/test/local/local-mode.test.ts`: the PoC path through local mode and its HTTP server, including a phone that saves its place after the alert arrived.
 - `backend/test/e2e/demo-path.test.ts`: the same path on the engine's adapters, plus failure cases (a fan-out that fails halfway, retried pushes, kill switch, updates and cancels).
