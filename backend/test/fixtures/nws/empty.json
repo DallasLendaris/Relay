@@ -1,0 +1,17 @@
+{
+  "@context": [
+    "https://geojson.org/geojson-ld/geojson-context.jsonld",
+    {
+      "@version": "1.1",
+      "wx": "https://api.weather.gov/ontology#",
+      "s": "https://schema.org/",
+      "geo": "http://www.opengis.net/ont/geosparql#",
+      "unit": "http://www.opengis.net/def/uom/UCUM/",
+      "@vocab": "https://api.weather.gov/ontology#"
+    }
+  ],
+  "type": "FeatureCollection",
+  "features": [],
+  "title": "current watches, warnings, and advisories for California",
+  "updated": "2026-11-09T17:00:00+00:00"
+}

@@ -1,0 +1,38 @@
+{
+  "name": "relay",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "loadtest",
+    "packages/*",
+    "backend",
+    "infra"
+  ],
+  "scripts": {
+    "build:shared": "npm run build -w @relay/shared",
+    "prelint": "npm run build:shared",
+    "lint": "eslint . && npm run lint --workspaces --if-present",
+    "pretypecheck": "npm run build:shared",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "pretest": "npm run build:shared",
+    "test": "npm run test --workspaces --if-present",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "poc:build": "npm run build:shared && npm run typecheck && npm run synth -w @relay/infra",
+    "poc:test": "npm run build:shared && npm test -w @relay/shared -w @relay/backend -w loadtest",
+    "simulate": "npm run build:shared && npm run simulate -w @relay/backend",
+    "local": "npm run build:shared && npm run local -w @relay/backend"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "eslint": "^9.0.0",
+    "globals": "^17.14.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^3.0.0"
+  }
+}

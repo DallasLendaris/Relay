@@ -1,0 +1,43 @@
+{
+  "name": "@relay/backend",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests",
+    "fake-data": "tsx scripts/generate-fake-data.ts",
+    "local": "tsx scripts/local-server.ts",
+    "simulate": "tsx scripts/simulate.ts",
+    "capture-nws": "tsx scripts/capture-nws.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1164.0",
+    "@aws-sdk/client-ecs": "^3.1164.0",
+    "@aws-sdk/client-kms": "^3.1164.0",
+    "@aws-sdk/client-lambda": "^3.1164.0",
+    "@aws-sdk/client-location": "^3.1164.0",
+    "@aws-sdk/client-rds-data": "^3.1164.0",
+    "@aws-sdk/client-s3": "^3.1164.0",
+    "@aws-sdk/client-secrets-manager": "^3.1164.0",
+    "@aws-sdk/client-sqs": "^3.1164.0",
+    "@aws-sdk/client-ssm": "^3.1164.0",
+    "@aws-sdk/lib-dynamodb": "^3.1164.0",
+    "@relay/shared": "^0.1.0",
+    "@turf/boolean-point-in-polygon": "^7.4.0",
+    "h3-js": "^4.5.0"
+  },
+  "devDependencies": {
+    "@apidevtools/swagger-parser": "^13.1.0",
+    "@electric-sql/pglite": "^0.5.15",
+    "@turf/turf": "^7.4.0",
+    "@types/aws-lambda": "^8.10.164",
+    "@types/geojson": "^7946.0.16",
+    "@types/node": "^26.6.6",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "aws-sdk-client-mock": "^4.1.0",
+    "tsx": "^4.23.15"
+  }
+}
