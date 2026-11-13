@@ -143,3 +143,18 @@ export function relaySeverityFor(
   }
   return 'statement';
 }
+
+/**
+ * When an alert stops being relevant, in epoch milliseconds: the later of `expires` (when this
+ * message expires) and `ends` (when the hazard ends). NaN when `expires` does not parse.
+ *
+ * Exception: CAP urgency "Past" means responsive action is no longer required. NWS sends it on
+ * messages that only say a product was replaced, cancelled or allowed to expire, often keeping
+ * the old `ends`. Such a message ends when the message itself expires.
+ */
+export function alertEndsAtMs(alert: Pick<Alert, 'expires' | 'ends' | 'urgency'>): number {
+  const expires = Date.parse(alert.expires);
+  if (alert.urgency === 'Past' || !alert.ends) return expires;
+  const ends = Date.parse(alert.ends);
+  return Number.isNaN(ends) ? expires : Math.max(expires, ends);
+}

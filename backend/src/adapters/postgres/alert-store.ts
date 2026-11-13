@@ -18,6 +18,13 @@ export const MAX_SAVE_PARAM_BYTES = 60_000;
 const H3_INDEX = /^[0-9a-f]{15}$/;
 
 /**
+ * SQL for when an alert ends: the later of expires and ends (GREATEST ignores a null ends), except
+ * an urgency-Past message, which ends at its own expires. Same rule as alertEndsAtMs in shared.
+ */
+const END_AT = `GREATEST(a.expires, CASE WHEN a.record ->> 'urgency' = 'Past' THEN NULL
+  ELSE (a.record ->> 'ends')::timestamptz END)`;
+
+/**
  * Cells as one compact string. An H3 res-7 index is 15 hex digits; as raw bytes in base64
  * it takes about 11 characters instead of 18 in a JSON array. Anything that is not a plain
  * H3 index falls back to a JSON array (only test data does that).
@@ -181,13 +188,13 @@ export class PostgresAlertStore implements AlertStore {
   async listActiveForCells(cells: string[], now: Date): Promise<Alert[]> {
     const found = new Map<string, Alert>();
     for (const part of chunk([...new Set(cells)], CELL_CHUNK)) {
-      // An alert has ended once now is past the later of expires and ends (GREATEST
-      // ignores a null ends). The cell filter is served by the alert_cells index.
+      // An alert has ended once now is past END_AT. The cell filter is served by the
+      // alert_cells index.
       const rows = await this.db.query<RecordRow>(
         `SELECT DISTINCT a.id, a.record FROM alerts a
            JOIN alert_cells c ON c.alert_id = a.id
           WHERE a.state IN ('active', 'updated') AND c.h3_cell = ANY(${textArrayParam(1)})
-            AND $2::timestamptz < GREATEST(a.expires, (a.record ->> 'ends')::timestamptz)`,
+            AND $2::timestamptz < ${END_AT}`,
         [JSON.stringify(part), now.toISOString()],
       );
       for (const row of rows) {
@@ -206,7 +213,7 @@ export class PostgresAlertStore implements AlertStore {
     const rows = await this.db.query<RecordRow>(
       `SELECT a.id, a.record FROM alerts a
         WHERE a.state IN ('active', 'updated') AND a.record ->> 'source' = $1
-          AND $2::timestamptz < GREATEST(a.expires, (a.record ->> 'ends')::timestamptz)`,
+          AND $2::timestamptz < ${END_AT}`,
       [source, now.toISOString()],
     );
     const out: Alert[] = [];
@@ -222,7 +229,7 @@ export class PostgresAlertStore implements AlertStore {
     const rows = await this.db.query<RecordRow>(
       `SELECT a.id, a.record FROM alerts a
         WHERE a.state = 'cancelled' AND a.record ->> 'source' = $1
-          AND $2::timestamptz < GREATEST(a.expires, (a.record ->> 'ends')::timestamptz)`,
+          AND $2::timestamptz < ${END_AT}`,
       [source, now.toISOString()],
     );
     const out: Alert[] = [];

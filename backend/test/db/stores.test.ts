@@ -253,6 +253,17 @@ describe('PostgresAlertStore', () => {
     expect(await ids('2026-01-02T13:00:00.000Z')).toEqual([]);
   });
 
+  it('an urgency-Past message ends at its own expires, ignoring a later ends', async () => {
+    const store = new PostgresAlertStore(db);
+    // Shape of a real NWS "has been replaced" notice: message expired, hazard end still ahead.
+    await store.save(alert({ urgency: 'Past', ends: '2026-01-02T12:00:00.000Z' }));
+    const at = async (iso: string) =>
+      (await store.listActiveForCells(['872830828ffffff'], new Date(iso))).length;
+    expect(await at('2026-01-02T08:00:00.000Z')).toBe(1); // before expires (09:00Z)
+    expect(await at('2026-01-02T10:00:00.000Z')).toBe(0); // after expires, before ends
+    expect(await store.listActiveBySource('nws', new Date('2026-01-02T10:00:00.000Z'))).toEqual([]);
+  });
+
   it('round-trips cells (returned sorted), including an empty list, via alert_cells', async () => {
     const store = new PostgresAlertStore(db);
     const cells = manyCells(300);

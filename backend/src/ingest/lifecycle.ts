@@ -1,4 +1,4 @@
-import type { Alert } from '@relay/shared';
+import { alertEndsAtMs, type Alert } from '@relay/shared';
 import type { AlertStore, Clock } from '../ports.js';
 
 export type ApplyResult = {
@@ -18,12 +18,11 @@ export const endedWithoutCancel = (a: Alert): boolean =>
  * Current state of an alert at `now`. Stored state only says what the latest NWS
  * message was; expiry is time-based, so it is computed on read.
  * Expired once `expires` (or `ends`, if set and later) has passed, unless cancelled.
+ * An urgency-Past message ignores `ends` (see alertEndsAtMs).
  */
 export function effectiveState(alert: Alert, now: Date): Alert['state'] {
   if (alert.state === 'cancelled') return 'cancelled';
-  const times = [alert.expires, alert.ends].filter((t): t is string => t !== null);
-  const end = Math.max(...times.map((t) => Date.parse(t)));
-  return now.getTime() > end ? 'expired' : alert.state;
+  return now.getTime() > alertEndsAtMs(alert) ? 'expired' : alert.state;
 }
 
 const withoutPds = (a: Alert): Alert => {

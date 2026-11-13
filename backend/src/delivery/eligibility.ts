@@ -1,15 +1,13 @@
-import type { Alert } from '@relay/shared';
+import { alertEndsAtMs, type Alert } from '@relay/shared';
 
 /** Why an alert may not be planned or sent. Checked in the planner AND again in the worker. */
-export type Refusal = 'unsigned' | 'not_actual' | 'inactive' | 'expired';
+export type Refusal = 'unsigned' | 'not_actual' | 'inactive' | 'expired' | 'no_action';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** The later of expires and ends: when the alert stops being relevant. */
+/** When the alert stops being relevant (see alertEndsAtMs in shared for the rule). */
 export function alertEndTime(alert: Alert): Date {
-  const expires = Date.parse(alert.expires);
-  const ends = alert.ends ? Date.parse(alert.ends) : Number.NaN;
-  return new Date(Math.max(expires, Number.isNaN(ends) ? 0 : ends));
+  return new Date(alertEndsAtMs(alert));
 }
 
 /**
@@ -25,6 +23,9 @@ export function refusalFor(
   if (!verifyAlert(alert)) return 'unsigned';
   if (alert.status !== 'Actual') return 'not_actual';
   if (alert.state !== 'active' && alert.state !== 'updated') return 'inactive';
+  // CAP urgency Past: "responsive action is no longer required" (a replaced, cancelled or
+  // expiring product). Never pushed, even while the message has not expired yet.
+  if (alert.urgency === 'Past') return 'no_action';
   // `!(a < b)` so an unparseable date (NaN) is refused too.
   if (!(now.getTime() < alertEndTime(alert).getTime())) return 'expired';
   return null;

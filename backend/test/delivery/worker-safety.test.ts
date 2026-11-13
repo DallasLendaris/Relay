@@ -150,6 +150,8 @@ describe('deliveryWorker', () => {
       ['a cancelled alert', signed({ state: 'cancelled' })],
       ['an expired alert', signed({ state: 'expired' })],
       ['a past-expiry alert', signed({ expires: '2026-11-10T10:00:00Z' })],
+      // Planned earlier, then NWS updated it to a "no action needed" notice before the send.
+      ['an alert whose latest message has urgency Past', signed({ urgency: 'Past' })],
     ];
     for (const [name, alert] of cases) {
       it(name, async () => {

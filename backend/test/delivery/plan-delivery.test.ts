@@ -94,6 +94,12 @@ describe('planDelivery', () => {
       ['cancelled', signed({ state: 'cancelled' }), 'inactive'],
       ['expired state', signed({ state: 'expired' }), 'inactive'],
       ['past expiry', signed({ expires: '2026-11-10T10:00:00Z' }), 'expired'],
+      ['urgency Past', signed({ urgency: 'Past' }), 'no_action'],
+      [
+        'replaced notice: Past, message expired, hazard end ahead',
+        signed({ urgency: 'Past', expires: '2026-11-10T10:00:00Z', ends: '2026-11-10T12:00:00Z' }),
+        'no_action',
+      ],
     ];
     for (const [name, alert, reason] of cases) {
       const r = await planDelivery(alert, deps);

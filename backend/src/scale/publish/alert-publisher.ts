@@ -1,4 +1,4 @@
-import type { Alert } from '@relay/shared';
+import { alertEndsAtMs, type Alert } from '@relay/shared';
 import { cellToChildren, cellToParent } from 'h3-js';
 import { noopLogger, type Logger } from '../../delivery/types.js';
 import type { AlertStore } from '../../ports.js';
@@ -57,8 +57,7 @@ export function shardsOf(cells: readonly string[]): string[] {
 
 function isLive(a: Alert, now: Date): boolean {
   if (a.state !== 'active' && a.state !== 'updated') return false;
-  const endsAt = Math.max(Date.parse(a.expires), a.ends ? Date.parse(a.ends) : 0);
-  return endsAt > now.getTime();
+  return alertEndsAtMs(a) > now.getTime();
 }
 
 export function summarize(a: Alert): ActiveAlertSummary {

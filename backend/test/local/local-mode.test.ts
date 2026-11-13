@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, readdirSync } from 'node:fs';
-import { cellToParent, latLngToCell } from 'h3-js';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { cellToLatLng, cellToParent, latLngToCell } from 'h3-js';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -181,5 +181,56 @@ describe.skipIf(RECORDINGS.length === 0)('local mode: recorded NWS responses', (
     expect(counts.errors).toBe(0);
     expect(counts.unknownZones).toBe(0);
     expect(counts.fetchFailed).toBe(0);
+  });
+});
+
+// The real case behind the urgency-Past rule: in the Nov 13 2026 recording, NWS lists a Coastal
+// Flood Watch for the San Luis Obispo / Santa Barbara beaches as "has been replaced". Its message
+// expired the day before, but it still carries the hazard's later `ends`.
+const NOV13 = 'recorded-2026-11-13T19-02-22-521Z.json';
+describe.skipIf(!RECORDINGS.includes(NOV13))('local mode: replaced NWS notices', () => {
+  it('a replaced watch is not active and is never pushed, even to a phone inside it', async () => {
+    const replayFile = join(REPLAY_DIR, NOV13);
+    const relay = createLocalRelay({
+      feed: 'replay',
+      push: 'log',
+      replayFile,
+      replayZonesFile: replayFile.replace(/\.json$/, '.zones.json'),
+    });
+    await relay.pollAndDeliver();
+    const feed = JSON.parse(readFileSync(replayFile, 'utf8')) as {
+      features: Array<{ properties: { id: string; event: string } }>;
+    };
+    const sourceId = feed.features.find((f) => f.properties.event === 'Coastal Flood Watch')
+      ?.properties.id;
+    const watch = await relay.stores.alerts.findBySourceId(sourceId ?? '');
+    expect(watch?.urgency).toBe('Past');
+    const active = await relay.stores.alerts.listActiveBySource('nws', relay.clock.now());
+    expect(active.map((a) => a.event)).not.toContain('Coastal Flood Watch');
+
+    // A phone at those beaches still gets the live warnings there, but not the replaced watch.
+    const cell = watch!.area.h3Cells[0]!;
+    const [latitude, longitude] = cellToLatLng(cell);
+    const call = async (method: string, path: string, body: unknown, credential?: string) => {
+      const res = await relay.handle({
+        rawPath: path,
+        headers: credential ? { authorization: `Bearer ${credential}` } : {},
+        body: JSON.stringify(body),
+        requestContext: { http: { method } },
+      });
+      expect(res.statusCode, res.body).toBeLessThan(300);
+      return JSON.parse(res.body || '{}') as Record<string, string>;
+    };
+    const device = await call('POST', '/devices', {});
+    const token = 'ExponentPushToken[slo-beach]';
+    await call(
+      'PUT',
+      '/devices/me/push-token',
+      { expoPushToken: token, language: 'en' },
+      device['credential'],
+    );
+    await call('POST', '/places', { label: 'Beach', latitude, longitude }, device['credential']);
+    const titles = relay.sentMessages.filter((m) => m.to === token).map((m) => m.title);
+    expect(titles).not.toContain('Coastal Flood Watch');
   });
 });

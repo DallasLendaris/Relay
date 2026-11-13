@@ -275,6 +275,8 @@ export type BatchReason =
   | 'not_actual'
   | 'inactive'
   | 'expired'
+  /** CAP urgency Past: the message says no action is needed (replaced, cancelled, expiring). */
+  | 'no_action'
   | 'informational'
   | 'stale_severity'
   /** A follow-up for an alert version that is no longer current (or no longer in its state). */
@@ -816,6 +818,7 @@ export async function processBatch(
         reason === 'not_actual' ||
         reason === 'inactive' ||
         reason === 'expired' ||
+        reason === 'no_action' ||
         reason === 'stale_version';
       logger.error(final ? 'sender.alert_refused' : 'sender.alert_unavailable', {
         alertId: batch.alertId,

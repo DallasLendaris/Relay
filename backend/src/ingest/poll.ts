@@ -3,7 +3,7 @@
  * The normalizer, lifecycle (apply) and H3 matching are injected so this file stays small
  * and testable.
  */
-import type { Alert } from '@relay/shared';
+import { alertEndsAtMs, type Alert } from '@relay/shared';
 import type { RawArchive, SeenStore } from '../ports.js';
 import { InvalidGeometryError, TooManyCellsError } from '../geo/index.js';
 import type { NwsClient } from './nws-client.js';
@@ -156,8 +156,7 @@ export function expiredReferencesOf(body: string): Set<string> {
   return out;
 }
 
-const endOf = (a: Alert): number =>
-  Math.max(Date.parse(a.expires), a.ends ? Date.parse(a.ends) : 0);
+const endOf = (a: Alert): number => alertEndsAtMs(a);
 const idsOf = (a: Alert): string[] => [a.sourceId, ...a.references.map((r) => r.sourceId)];
 
 /**
