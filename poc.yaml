@@ -1,7 +1,7 @@
 project_name: 'Relay'
 type: software
 runtime: node
-poc_claim: "A real NWS alert covering a saved place reaches a phone as a push notification within 60 seconds, and the phone's I'm okay is counted once in that place's H3 cell; npm run simulate checks every step on a saved NWS response and the demo video shows it live."
+poc_claim: "A real NWS alert covering a saved place reaches a phone as a push notification within 60 seconds, and the phone's I'm okay is counted once in that place's H3 cell; npm run simulate checks every step on a recorded real NWS feed and the demo video shows it live."
 
 commands:
   setup: 'npm ci'
@@ -18,7 +18,7 @@ hardware:
 
 external_services:
   - name: National Weather Service alerts API (api.weather.gov)
-    mock: 'Default RELAY_FEED=replay serves a saved NWS response from backend/dev-data/replay/ (no network)'
+    mock: 'Default RELAY_FEED=replay serves a real NWS response recorded on 2026-11-13 from backend/dev-data/replay/ (no network)'
   - name: Expo push service
     mock: 'Default RELAY_PUSH=log records each push instead of sending it'
   - name: AWS (Lambda, SQS, Aurora, DynamoDB, KMS)

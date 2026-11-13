@@ -91,7 +91,7 @@ Configuration is optional. Every variable is listed with its default in `.env.ex
 npm run simulate
 ```
 
-It replays a saved NWS response through the engine and API: a phone registers and saves a place in San José, a control phone saves one in Los Angeles, the feed is polled, the alert is stored and signed, the San José phone gets the push, taps "I'm okay" twice, and the cell total is 1. It prints each step and `PASS`, and exits non-zero if any step fails.
+It replays a real NWS California feed recorded on Nov 13, 2026 (42 alerts, in `backend/dev-data/replay/`) through the engine and API. It places one phone inside a pushable alert from that recording (a Winter Storm Warning in the Eastern Sierra) and a control phone outside every alert. Then it polls the feed, stores and signs the alerts, pushes to the first phone only, taps "I'm okay" twice, and checks that the cell total is 1. It prints each step and `PASS`, and exits non-zero if any step fails. If a recording holds no alert that would be pushed, it says so and uses the constructed sample in the same folder.
 
 **2. The server (keeps running):**
 
@@ -116,7 +116,7 @@ RELAY_FEED=live RELAY_PUSH=expo npm run local
 
 Then follow `app/README.md` to run the app, connect it to `http://<this computer's LAN address>:8787`, and save a place. If no live California alert covers the place, keep `RELAY_FEED=replay` and save the app's demo point: the replayed alert still goes through Expo's real push service to the phone.
 
-**Recording real NWS data:** `npm run capture-nws -w @relay/backend` saves the live feed and its zone shapes to `backend/dev-data/replay/recorded-<time>.json`. Replay and `simulate` use the newest recording automatically.
+**Recording real NWS data:** `npm run capture-nws -w @relay/backend` saves the live feed and its zone shapes to `backend/dev-data/replay/recorded-<time>.json`. Or run the **Capture NWS feed** workflow from the GitHub Actions tab, which records on a GitHub runner and commits the files to the branch it runs on. Replay and `simulate` use the newest recording automatically, and a test checks that every recording ingests with no errors. Replay sets its clock to the newest alert's send time, so the recorded alerts are active.
 
 ## Testing
 

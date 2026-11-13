@@ -70,15 +70,18 @@ export interface SentPush {
 
 const USER_AGENT = '(Relay SJSU capstone local mode, github.com/DallasLendaris/relay)';
 
-/** Earliest `sent` in a saved feed: replay mode starts its clock there. */
+/**
+ * Latest `sent` in a saved feed: replay mode starts its clock there. That is the moment the
+ * feed looked like this, so every alert in it has been issued and the unexpired ones are active.
+ */
 export function feedStartTime(body: string): Date {
   const parsed = JSON.parse(body) as { features?: Array<{ properties?: { sent?: string } }> };
   const times = (parsed.features ?? [])
     .map((f) => Date.parse(f.properties?.sent ?? ''))
     .filter((t) => Number.isFinite(t));
   if (!times.length) return new Date();
-  // One minute after the first message was sent, so it is clearly in effect.
-  return new Date(Math.min(...times) + 60_000);
+  // One minute after the newest message, so all of them are clearly in effect.
+  return new Date(Math.max(...times) + 60_000);
 }
 
 /** Check-in store that also keeps per-alert, per-cell totals (the agency rollup). */
