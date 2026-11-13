@@ -20,7 +20,11 @@
     "pretest": "npm run build:shared",
     "test": "npm run test --workspaces --if-present",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "poc:build": "npm run build:shared && npm run typecheck && npm run synth -w @relay/infra",
+    "poc:test": "npm run build:shared && npm test -w @relay/shared -w @relay/backend -w loadtest",
+    "simulate": "npm run build:shared && npm run simulate -w @relay/backend",
+    "local": "npm run build:shared && npm run local -w @relay/backend"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

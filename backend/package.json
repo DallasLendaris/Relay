@@ -7,7 +7,10 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run --passWithNoTests",
-    "fake-data": "tsx scripts/generate-fake-data.ts"
+    "fake-data": "tsx scripts/generate-fake-data.ts",
+    "local": "tsx scripts/local-server.ts",
+    "simulate": "tsx scripts/simulate.ts",
+    "capture-nws": "tsx scripts/capture-nws.ts"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.1164.0",
