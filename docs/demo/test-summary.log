@@ -1,0 +1,19 @@
+npm run poc:test on a clean clone of poc-v1-submission, network disabled after npm ci
+Machine: 2 CPUs, Node v22.23.4, Linux. Wall time: 311 s (limit 600 s).
+Other poc.yaml commands on the same clone, offline: build 35 s, simulate 3 s, run + smoke_check OK.
+
+> npm run build:shared && npm test -w @relay/shared -w @relay/backend -w loadtest
+> npm run build -w @relay/shared
+> @relay/shared@0.1.0 build
+> @relay/shared@0.1.0 test
+ Test Files  6 passed (6)
+      Tests  60 passed (60)
+   Duration  2.80s (transform 151ms, setup 0ms, collect 632ms, tests 1.13s, environment 1ms, prepare 298ms)
+> @relay/backend@0.0.0 test
+ Test Files  126 passed (126)
+      Tests  1639 passed (1639)
+   Duration  281.50s (transform 2.88s, setup 0ms, collect 24.92s, tests 234.34s, environment 27ms, prepare 6.16s)
+> @relay/loadtest@0.0.0 test
+ Test Files  5 passed (5)
+      Tests  33 passed (33)
+   Duration  24.10s (transform 536ms, setup 0ms, collect 1.42s, tests 21.80s, environment 1ms, prepare 248ms)
