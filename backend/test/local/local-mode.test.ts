@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync, readdirSync } from 'node:fs';
+import { cellToParent, latLngToCell } from 'h3-js';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadLocalConfig, REPLAY_DIR } from '../../src/local/config.js';
+import { covers, pickDemoPoints } from '../../src/local/pick-points.js';
 import { createLocalRelay, feedStartTime } from '../../src/local/relay.js';
 import { INSIDE_POINT, runScenario } from '../../src/local/scenario.js';
 import { createLocalServer } from '../../src/local/server.js';
@@ -138,5 +141,45 @@ describe('local mode: config', () => {
     const c = loadLocalConfig({ RELAY_REPLAY_FILE: SAMPLE });
     expect(c.replayFile).toBe(SAMPLE);
     expect(c.replayZonesFile).toBe(SAMPLE_ZONES);
+  });
+});
+
+describe('local mode: picking demo points from a feed', () => {
+  it('places the resident inside a pushable alert and the control outside all of them', async () => {
+    const points = await pickDemoPoints(replayRelay);
+    expect(points.inside.length).toBeGreaterThan(0);
+    expect(points.outside).not.toBeNull();
+    const result = await runScenario(replayRelay(), () => {}, points.inside[0], points.outside!);
+    expect(result.okCount).toBe(1);
+    expect(result.pushesToControl).toBe(0);
+  });
+
+  it('covers() handles mixed-resolution cell sets', () => {
+    const fine = latLngToCell(37.35, -121.9, 7);
+    expect(covers([fine], INSIDE_POINT)).toBe(true);
+    expect(covers([cellToParent(fine, 5)], INSIDE_POINT)).toBe(true);
+    expect(covers([fine], { latitude: 34.05, longitude: -118.24 })).toBe(false);
+  });
+});
+
+// Real NWS responses recorded by `npm run capture-nws` (locally or by the capture workflow).
+const RECORDINGS = existsSync(REPLAY_DIR)
+  ? readdirSync(REPLAY_DIR).filter((f) => /^recorded-.*(?<!\.zones)\.json$/.test(f))
+  : [];
+
+describe.skipIf(RECORDINGS.length === 0)('local mode: recorded NWS responses', () => {
+  it.each(RECORDINGS)('%s ingests with no errors and no unknown zones', async (file) => {
+    const replayFile = join(REPLAY_DIR, file);
+    const zones = replayFile.replace(/\.json$/, '.zones.json');
+    const relay = createLocalRelay({
+      feed: 'replay',
+      push: 'log',
+      replayFile,
+      ...(existsSync(zones) ? { replayZonesFile: zones } : {}),
+    });
+    const { counts } = await relay.pollAndDeliver();
+    expect(counts.errors).toBe(0);
+    expect(counts.unknownZones).toBe(0);
+    expect(counts.fetchFailed).toBe(0);
   });
 });

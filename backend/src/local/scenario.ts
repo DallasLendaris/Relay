@@ -3,7 +3,7 @@
  *
  *   1. A phone registers (POST /devices) and its push token (PUT /devices/me/push-token).
  *   2. It saves a place inside the alert area (POST /places, by coordinates).
- *   3. A second phone saves a place far outside it (Los Angeles), as a control.
+ *   3. A second phone saves a place outside every active alert, as a control.
  *   4. The engine polls the feed, stores and signs the alert, maps it to H3 cells, plans delivery,
  *      and the delivery worker sends the push.
  *   5. The first phone taps "I'm okay" with the token from its push (POST /alerts/{id}/checkins).
@@ -36,7 +36,8 @@ class StepError extends Error {}
 export async function runScenario(
   relay: LocalRelay,
   log: (line: string) => void = () => {},
-  point = INSIDE_POINT,
+  point: { latitude: number; longitude: number } = INSIDE_POINT,
+  controlPoint: { latitude: number; longitude: number } = OUTSIDE_POINT,
 ): Promise<ScenarioResult> {
   const call = async (method: string, path: string, body?: unknown, credential?: string) => {
     const event: ApiEvent = {
@@ -59,7 +60,7 @@ export async function runScenario(
     if (!ok) throw new StepError(message);
   };
 
-  const phone = async (name: string, where: typeof point) => {
+  const phone = async (name: string, where: { latitude: number; longitude: number }) => {
     const device = (await call('POST', '/devices', {})) as { deviceId: string; credential: string };
     const pushToken = `ExponentPushToken[${name}-${randomUUID().slice(0, 8)}]`;
     await call(
@@ -79,8 +80,8 @@ export async function runScenario(
 
   const resident = await phone('resident', point);
   log(`1. Phone registered and saved a place (H3 cell ${resident.h3Cell})`);
-  const control = await phone('control', OUTSIDE_POINT);
-  log(`2. Control phone saved a place in Los Angeles (H3 cell ${control.h3Cell})`);
+  const control = await phone('control', controlPoint);
+  log(`2. Control phone saved a place outside every alert (H3 cell ${control.h3Cell})`);
 
   const started = Date.now();
   const run = await relay.pollAndDeliver();
