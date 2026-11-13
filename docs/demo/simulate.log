@@ -1,0 +1,14 @@
+Relay simulate: replaying a saved NWS response through the real engine
+Feed file: dev-data/replay/constructed-sample.json
+Clock set to the feed's time: 2026-11-09T14:11:00.008Z
+
+1. Phone registered and saved a place (H3 cell 872834714ffffff)
+2. Control phone saved a place in Los Angeles (H3 cell 8729a1d75ffffff)
+3. Polled the feed: 4 alerts stored and signed, 0 errors, 2 delivery jobs
+4. Push sent: "Flash Flood Warning"
+4. Push sent: "Heat Advisory"
+   2 push(es), 205 ms from poll to last push
+5. Control phone outside the area got no push
+6. "I'm okay" counted once in cell 872834714ffffff (tapped twice)
+
+PASS {"alertId":"3525b5e2-8958-4d21-afa9-a8bab4976cbb","alertEvent":"Flash Flood Warning","pushTitle":"Flash Flood Warning","pushesToResident":2,"h3Cell":"872834714ffffff","okCount":1,"pushesToControl":0,"millisFeedToPush":205}

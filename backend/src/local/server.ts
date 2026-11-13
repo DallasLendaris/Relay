@@ -87,7 +87,7 @@ const rows=(el,head,data)=>{document.getElementById(el).innerHTML='<tr>'+head.ma
 async function tick(){try{const s=await (await fetch('/local/status')).json();
 document.getElementById('meta').textContent='Feed: '+s.feed+' · Push: '+s.push+' · Clock: '+s.clock+(s.lastPoll?' · Last poll: '+s.lastPoll.at:'');
 rows('alerts',['Event','Severity','State','Expires','H3 cells'],s.alerts.map(a=>[a.event,a.relaySeverity,a.state,a.expires,a.cells]));
-rows('pushes',['Time','Title','Result'],s.pushes.map(p=>[p.at,p.title,p.ok?'accepted':p.error]));
+rows('pushes',['Time','Title','Result'],s.pushes.map(p=>[p.at,p.title,p.ok?(s.push==='log'?'logged (not sent)':'accepted by Expo'):p.error]));
 rows('cells',['Alert','H3 cell','Okay'],s.checkInTotals.flatMap(t=>t.cells.map(c=>[t.alertId.slice(0,8),c.h3Cell,c.okCount])));
 }catch(e){document.getElementById('meta').textContent='Server not reachable'}}
 tick();setInterval(tick,2000);

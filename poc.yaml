@@ -1,0 +1,44 @@
+project_name: 'Relay'
+type: software
+runtime: node
+poc_claim: "A real NWS alert covering a saved place reaches a phone as a push notification within 60 seconds, and the phone's I'm okay is counted once in that place's H3 cell; npm run simulate checks every step on a saved NWS response and the demo video shows it live."
+
+commands:
+  setup: 'npm ci'
+  build: 'npm run poc:build'
+  test: 'npm run poc:test'
+  simulate: 'npm run simulate'
+  run: 'npm run local'
+  run_mode: service
+  smoke_check: 'curl -fsS http://localhost:8787/health'
+
+hardware:
+  required: false
+  components: []
+
+external_services:
+  - name: National Weather Service alerts API (api.weather.gov)
+    mock: 'Default RELAY_FEED=replay serves a saved NWS response from backend/dev-data/replay/ (no network)'
+  - name: Expo push service
+    mock: 'Default RELAY_PUSH=log records each push instead of sending it'
+  - name: AWS (Lambda, SQS, Aurora, DynamoDB, KMS)
+    mock: 'Not needed: local mode runs the same engine code on in-memory adapters; the CDK app is checked by cdk synth in build'
+
+env_vars:
+  [
+    RELAY_FEED,
+    RELAY_PUSH,
+    RELAY_REPLAY_FILE,
+    EXPO_ACCESS_TOKEN,
+    PORT,
+    HOST,
+    RELAY_POLL_SECONDS,
+    NWS_CONTACT,
+  ]
+
+demo:
+  video: 'TODO-add-video-link'
+  evidence:
+    - docs/demo/simulate.log
+    - docs/demo/status-page.png
+    - docs/demo/test-summary.log
