@@ -202,7 +202,7 @@ describe('audit trail (SEC-C-4)', () => {
 
   it('IAM policy changes (global events, so read from the trail log group) alarm to the topic', () => {
     const f = values(t, 'AWS::Logs::MetricFilter').find((x) =>
-      x.Properties.FilterPattern.includes('iam.amazonaws.com'),
+      x.Properties.FilterPattern.includes('($.eventSource = "iam.amazonaws.com")'),
     );
     for (const e of [
       'PutRolePolicy',

@@ -21,7 +21,7 @@ function nagApp(stage: 'dev' | 'prod') {
   return stacks;
 }
 
-const nistMessage = Match.stringLikeRegexp(`${NIST.replace(/\./g, '\\.')}-`);
+const nistMessage = Match.stringLikeRegexp(`${NIST.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-`);
 
 describe.each(['dev', 'prod'] as const)('cdk-nag NIST 800-53 rev 5 (%s)', (stage) => {
   const stacks = nagApp(stage);

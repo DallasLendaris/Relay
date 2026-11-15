@@ -172,7 +172,7 @@ describe('stages', () => {
 
 describe('cdk-nag NIST 800-53 rev 5', () => {
   it('has no NIST errors or warnings, and no suppressions', () => {
-    const nist = Match.stringLikeRegexp(`${NIST.replace(/\./g, '\\.')}-`);
+    const nist = Match.stringLikeRegexp(`${NIST.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-`);
     const a = Annotations.fromStack(stack);
     const show = (xs: ReturnType<typeof a.findError>) =>
       xs.map((x) => `${x.id}: ${String(x.entry.data)}`);
