@@ -15,7 +15,7 @@
     "test": "vitest run --testTimeout=60000"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.6.6",
     "aws-cdk": "^2.1000.0",
     "aws-cdk-lib": "^2.200.0",
     "cdk-nag": "2.38.2",
