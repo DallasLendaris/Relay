@@ -12,7 +12,7 @@
 # digest current afterwards. infra/test/supply-chain.test.ts fails if a FROM line is neither
 # digest-pinned nor covered by this TODO marker, so the marker must go when the digest lands.
 
-FROM --platform=linux/arm64 node:22-slim AS build
+FROM --platform=linux/arm64 node:26-slim AS build
 WORKDIR /app
 
 # Dependency layer: only manifests, so it is cached until a dependency changes.
@@ -36,7 +36,7 @@ RUN npx esbuild backend/src/scale/sender/main.ts \
       --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
       --outfile=/out/sender.mjs
 
-FROM --platform=linux/arm64 node:22-slim
+FROM --platform=linux/arm64 node:26-slim
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build /out/sender.mjs /out/sender.mjs.map ./
