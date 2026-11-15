@@ -1,0 +1,45 @@
+name: CodeQL
+
+# SA-11, RA-5: static analysis of the TypeScript/JavaScript code. Results go to the repository's
+# Security tab (code scanning). Warn-only for now: the analysis job does not fail on findings.
+# See docs/compliance/ci-security-scanning.md.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, so new queries in the CodeQL bundle run against unchanged code (Wednesdays 09:41 UTC).
+    - cron: '41 9 * * 3'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Upload SARIF results to code scanning. Only this job gets it.
+      security-events: write
+      # Needed by the CodeQL action to read workflow run metadata on private repositories.
+      actions: read
+    steps:
+      # Actions are pinned to a full commit SHA (a tag can be moved). Dependabot bumps both the
+      # SHA and the comment; see .github/dependabot.yml.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: javascript-typescript
+          # JavaScript/TypeScript needs no build.
+          build-mode: none
+          queries: security-extended
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        # Warn-only: the SARIF upload fails on a private repository without code scanning
+        # (GitHub Advanced Security) enabled. Remove this line once code scanning is on.
+        continue-on-error: true
+        with:
+          category: '/language:javascript-typescript'

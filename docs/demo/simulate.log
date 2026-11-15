@@ -1,0 +1,14 @@
+Relay simulate: replaying a saved NWS response through the real engine
+Feed file: dev-data/replay/recorded-2026-11-13T19-02-22-521Z.json
+Clock set to the feed's time: 2026-11-13T18:55:00.002Z
+Placing the phone inside the Winter Storm Warning (37.950, -119.023)
+
+1. Phone registered and saved a place (H3 cell 87298cadcffffff)
+2. Control phone saved a place outside every alert (H3 cell 8729a1d75ffffff)
+3. Polled the feed: 42 alerts stored and signed, 0 errors, 1 delivery jobs
+4. Push sent: "Winter Storm Warning"
+   1 push(es), 2345 ms from poll to last push
+5. Control phone outside the area got no push
+6. "I'm okay" counted once in cell 87298cadcffffff (tapped twice)
+
+PASS {"alertId":"fd622f28-acf5-4eb7-aa24-664fb3762a83","alertEvent":"Winter Storm Warning","pushTitle":"Winter Storm Warning","pushesToResident":1,"h3Cell":"87298cadcffffff","okCount":1,"pushesToControl":0,"millisFeedToPush":2345}

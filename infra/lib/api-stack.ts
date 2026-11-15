@@ -1,0 +1,431 @@
+import { fileURLToPath } from 'node:url';
+import {
+  Annotations,
+  CfnOutput,
+  Duration,
+  Fn,
+  RemovalPolicy,
+  Stack,
+  StackProps,
+  Tags,
+} from 'aws-cdk-lib';
+import {
+  ApiMapping,
+  DomainName,
+  EndpointType,
+  HttpApi,
+  HttpMethod,
+  HttpStage,
+  SecurityPolicy,
+} from 'aws-cdk-lib/aws-apigatewayv2';
+import { Certificate } from 'aws-cdk-lib/aws-certificatemanager';
+import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import { Alarm, ComparisonOperator, TreatMissingData } from 'aws-cdk-lib/aws-cloudwatch';
+import {
+  AttributeType,
+  BillingMode,
+  ProjectionType,
+  StreamViewType,
+  Table,
+} from 'aws-cdk-lib/aws-dynamodb';
+import { Architecture, Runtime, StartingPosition } from 'aws-cdk-lib/aws-lambda';
+import { DynamoEventSource, SqsDlq, SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
+import { CfnPlaceIndex } from 'aws-cdk-lib/aws-location';
+import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
+import { Queue, QueueEncryption } from 'aws-cdk-lib/aws-sqs';
+import { Construct } from 'constructs';
+import { APIGW_BURST, DEFAULT_APIGW_RPS_QUOTA } from './capacity.js';
+import { fcmProjectIds } from './fcm-projects.js';
+import { allow, dbEnv, grantDb, grantSecretRead, type DbRefs } from './grants.js';
+
+export interface ApiStackProps extends StackProps {
+  stage: 'dev' | 'prod';
+  db: DbRefs;
+  tokenKeysSecretArn: string;
+  deviceCredentialKeysSecretArn: string;
+  /** Cell-index table (FanoutStack): the API writes a device's places into it. */
+  cellIndexTableName: string;
+  cellIndexTableArn: string;
+  /** Secret CloudFront sends as x-relay-origin-verify (ConfigStack). */
+  originVerifySecretArn: string;
+  /**
+   * Late-join intent queue (LateJoinStack). The API may only SEND to it; the late-join Lambda is
+   * its only consumer and does the real sending. The API has no permission on the urgent and
+   * standard send queues at all.
+   */
+  lateJoinQueue: { arn: string; url: string };
+  /**
+   * Refuse requests without the origin header (REQUIRE_ORIGIN_HEADER). Default: prod true, dev
+   * false (dev is reached directly by developers and the app's dev builds).
+   */
+  requireOriginHeader?: boolean;
+  /** Check-ins table warm throughput (writes/s). Default: prod 40,000, dev none. */
+  checkinsWarmWritesPerSecond?: number;
+  /** Check-in totals table warm throughput (writes/s). Default: prod 40,000, dev none. */
+  checkinTotalsWarmWritesPerSecond?: number;
+  /**
+   * Lambda reserved concurrency. buildRelayApp sets all three on prod (see capacity.ts, SEC-C-2);
+   * unset means unreserved, which is what dev and direct ApiStack users get.
+   */
+  reservedConcurrency?: { api?: number; aggregator?: number; repair?: number };
+  /**
+   * Stage throttle on $default. Defaults: dev 50 rps / burst 100; prod the HTTP API account quota
+   * (10,000 rps, burst 5,000). A stage limit above the account quota never applied anyway.
+   */
+  throttle?: { rateLimit: number; burstLimit: number };
+  /**
+   * Custom domain CloudFront uses as the API origin (bin/relay.ts: `-c apiOriginDomainName=
+   * api-origin.example.org -c apiOriginCertificateArn=arn:aws:acm:us-west-2:...`). With it the
+   * default execute-api endpoint is disabled (NIST SC-7), so no request reaches the API function
+   * without passing CloudFront and the WAF. The certificate must be a regional ACM certificate in
+   * this stack's region, and a DNS CNAME from the domain to the `ApiOriginTarget` output must
+   * exist before CloudFront can connect (no hosted zone is managed here). Without it the default
+   * endpoint stays on and the origin-verify header is the only guard (infra/README.md).
+   */
+  originDomain?: { domainName: string; certificateArn: string };
+}
+
+export const AGGREGATOR_TIMEOUT_SECONDS = 60;
+export const REPAIR_TIMEOUT_SECONDS = 60;
+/** The check-in burst: 1,000,000 devices in about 5 minutes peaks at 20,000 to 50,000 writes/s. */
+export const DEFAULT_CHECKINS_WARM_WRITES = 40_000;
+
+/**
+ * Check-in totals table warm throughput on prod (PERF-4a / PERF-9). The aggregator writes one
+ * marker per stream record inside a DynamoDB transaction, and a transactional write costs 2 WRU,
+ * so a record costs about 2 WRU (the counter update is shared by up to 50 records). A 50,000
+ * check-ins/s peak would be 100,000 WRU/s if the stream kept pace; it does not have to, because
+ * Streams buffer for 24 h and the aggregator retries throttled records. So warm to the 40,000
+ * default per-table quota (20,000 records/s) and, once the quota is raised to 120,000 as
+ * docs/scale-quotas.md asks, pass `-c checkinTotalsWarmWritesPerSecond=100000`.
+ * PERF-9 follow-up (not done): dropping the transaction for a conditional marker Put plus a
+ * counter ADD halves the cost to about 1 WRU per record but needs a new idempotency design.
+ */
+export const DEFAULT_CHECKIN_TOTALS_WARM_WRITES = 40_000;
+
+export const DEFAULT_THROTTLE = {
+  dev: { rateLimit: 50, burstLimit: 100 },
+  prod: { rateLimit: DEFAULT_APIGW_RPS_QUOTA, burstLimit: APIGW_BURST },
+} as const;
+
+/**
+ * Every path in packages/shared/openapi/relay.yaml except /agency/*, which belongs to the
+ * Cognito-protected agency API: its own HTTP API in AgencyStack (agency-stack.ts AGENCY_ROUTES),
+ * behind the same CloudFront distribution and WAF. Keep in sync with the spec.
+ */
+export const API_ROUTES: ReadonlyArray<{ method: HttpMethod; path: string }> = [
+  { method: HttpMethod.POST, path: '/devices' },
+  { method: HttpMethod.PUT, path: '/devices/me/push-token' },
+  { method: HttpMethod.DELETE, path: '/devices/me' },
+  { method: HttpMethod.POST, path: '/places' },
+  { method: HttpMethod.GET, path: '/places' },
+  { method: HttpMethod.DELETE, path: '/places/{placeId}' },
+  { method: HttpMethod.GET, path: '/alerts' },
+  { method: HttpMethod.GET, path: '/alerts/{alertId}' },
+  { method: HttpMethod.POST, path: '/alerts/{alertId}/checkins' },
+];
+
+export class ApiStack extends Stack {
+  /** Host name of the HTTP API, for the CloudFront origin. */
+  readonly apiDomainName: string;
+  /** Check-ins table (exposed so the delivery owner can size its own warm throughput to match). */
+  readonly checkinsTableName: string;
+  /** Per-cell check-in totals; the agency API (AgencyStack) queries its byAlert index only. */
+  readonly checkinTotalsTableName: string;
+  readonly checkinTotalsTableArn: string;
+
+  constructor(scope: Construct, id: string, props: ApiStackProps) {
+    super(scope, id, props);
+    const isProd = props.stage === 'prod';
+    const fcmProjects = fcmProjectIds(this);
+
+    // Address search for saved places. SingleUse means results are not stored.
+    const placeIndexName = `relay-${props.stage}-places`;
+    const placeIndex = new CfnPlaceIndex(this, 'PlaceIndex', {
+      indexName: placeIndexName,
+      dataSource: 'Esri',
+      dataSourceConfiguration: { intendedUse: 'SingleUse' },
+    });
+
+    const warmWrites =
+      props.checkinsWarmWritesPerSecond ?? (isProd ? DEFAULT_CHECKINS_WARM_WRITES : 0);
+    const totalsWarmWrites =
+      props.checkinTotalsWarmWritesPerSecond ?? (isProd ? DEFAULT_CHECKIN_TOTALS_WARM_WRITES : 0);
+    const requireOrigin = props.requireOriginHeader ?? isProd;
+    const reserved = props.reservedConcurrency ?? {};
+    const concurrency = (n: number | undefined) =>
+      n === undefined ? {} : { reservedConcurrentExecutions: n };
+
+    // Cell-index repair outbox: when the API cannot write a device's place into the cell index
+    // it queues a message here, and a Lambda redoes the write from Aurora's truth. A message
+    // that keeps failing lands in the DLQ, which alarms to the alerts topic (a missing index entry is a missed alert).
+    const repairDlq = new Queue(this, 'IndexRepairDlq', {
+      encryption: QueueEncryption.SQS_MANAGED,
+      retentionPeriod: Duration.days(14),
+    });
+    const repairQueue = new Queue(this, 'IndexRepairQueue', {
+      encryption: QueueEncryption.SQS_MANAGED,
+      visibilityTimeout: Duration.seconds(REPAIR_TIMEOUT_SECONDS * 6),
+      retentionPeriod: Duration.days(14),
+      deadLetterQueue: { queue: repairDlq, maxReceiveCount: 5 },
+    });
+
+    // Check-ins. Names are generated by CDK (so dev and prod never collide); the Lambda
+    // learns them through env vars.
+    const tableDefaults = {
+      billingMode: BillingMode.PAY_PER_REQUEST,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: isProd },
+      removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+    };
+    // Stateless check-ins: one row per device per alert (pk = alertId#deviceId), so a device
+    // counts once however many times it checks in. The stream feeds the aggregator.
+    const checkins = new Table(this, 'CheckinsTable', {
+      ...tableDefaults,
+      partitionKey: { name: 'pk', type: AttributeType.STRING },
+      stream: StreamViewType.NEW_IMAGE,
+      // Check-ins are not kept forever: every row carries `ttl` (the alert's end plus the
+      // retention period, 30 days until counsel decides) and DynamoDB deletes it after that.
+      timeToLiveAttribute: 'ttl',
+      // A new on-demand table only serves what its previous peak allowed (4,000 writes/s to
+      // start, doubling gradually), so a statewide check-in burst would be throttled. Warm
+      // throughput provisions the capacity up front (CloudFormation: WarmThroughput).
+      ...(warmWrites > 0 ? { warmThroughput: { writeUnitsPerSecond: warmWrites } } : {}),
+    });
+    // Lists one device's check-ins, so DELETE /devices/me can erase them without a table scan.
+    // Keys only: the erasure needs nothing but the primary key to delete the row.
+    checkins.addGlobalSecondaryIndex({
+      indexName: 'byDevice',
+      partitionKey: { name: 'deviceId', type: AttributeType.STRING },
+      projectionType: ProjectionType.KEYS_ONLY,
+    });
+    // Running count per alert and H3 cell (written only by the aggregator). This is what
+    // agencies see, never the rows above. The byAlert index lists an alert's cells; ttl expires
+    // old alerts.
+    const checkinTotals = new Table(this, 'CheckinTotalsTable', {
+      ...tableDefaults,
+      partitionKey: { name: 'pk', type: AttributeType.STRING },
+      timeToLiveAttribute: 'ttl',
+      ...(totalsWarmWrites > 0
+        ? { warmThroughput: { writeUnitsPerSecond: totalsWarmWrites } }
+        : {}),
+    });
+    checkinTotals.addGlobalSecondaryIndex({
+      indexName: 'byAlert',
+      partitionKey: { name: 'alertId', type: AttributeType.STRING },
+      projectionType: ProjectionType.ALL,
+    });
+
+    const apiFn = new NodejsFunction(this, 'ApiFunction', {
+      entry: fileURLToPath(new URL('../../backend/src/api/handler.ts', import.meta.url)),
+      depsLockFilePath: fileURLToPath(new URL('../../package-lock.json', import.meta.url)),
+      projectRoot: fileURLToPath(new URL('../../', import.meta.url)),
+      handler: 'handler',
+      runtime: Runtime.NODEJS_22_X,
+      architecture: Architecture.ARM_64,
+      timeout: Duration.seconds(15),
+      memorySize: 256,
+      logGroup: new LogGroup(this, 'ApiLogs', {
+        retention: RetentionDays.ONE_MONTH,
+        removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+      }),
+      environment: {
+        ...dbEnv(props.db, 'api'),
+        PLACE_INDEX_NAME: placeIndexName,
+        CHECKINS_TABLE: checkins.tableName,
+        TOKEN_KEYS_SECRET_ARN: props.tokenKeysSecretArn,
+        DEVICE_CREDENTIAL_KEYS_SECRET_ARN: props.deviceCredentialKeysSecretArn,
+        CELL_INDEX_TABLE: props.cellIndexTableName,
+        INDEX_REPAIR_QUEUE_URL: repairQueue.queueUrl,
+        LATEJOIN_QUEUE_URL: props.lateJoinQueue.url,
+        ORIGIN_VERIFY_SECRET_ARN: props.originVerifySecretArn,
+        REQUIRE_ORIGIN_HEADER: requireOrigin ? 'true' : 'false',
+        ...(fcmProjects.length > 0 ? { FCM_PROJECT_IDS: fcmProjects.join(',') } : {}),
+      },
+      ...concurrency(reserved.api),
+    });
+    grantSecretRead(apiFn, props.originVerifySecretArn);
+    // The API can enqueue repairs and late-join INTENTS only. It has no permission on the urgent
+    // and standard send queues (SEC-C-1): a compromised API cannot push an alert to any device.
+    allow(apiFn, ['sqs:SendMessage'], [repairQueue.queueArn, props.lateJoinQueue.arn]);
+
+    // Repair Lambda: re-reads Aurora and rewrites the cell-index entries the API failed to write.
+    const repairFn = new NodejsFunction(this, 'IndexRepairFunction', {
+      entry: fileURLToPath(
+        new URL('../../backend/src/scale/cell-index/repair.ts', import.meta.url),
+      ),
+      depsLockFilePath: fileURLToPath(new URL('../../package-lock.json', import.meta.url)),
+      projectRoot: fileURLToPath(new URL('../../', import.meta.url)),
+      handler: 'handler',
+      runtime: Runtime.NODEJS_22_X,
+      architecture: Architecture.ARM_64,
+      timeout: Duration.seconds(REPAIR_TIMEOUT_SECONDS),
+      memorySize: 256,
+      logGroup: new LogGroup(this, 'IndexRepairLogs', {
+        retention: RetentionDays.ONE_MONTH,
+        removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+      }),
+      environment: { ...dbEnv(props.db, 'ops'), CELL_INDEX_TABLE: props.cellIndexTableName },
+      ...concurrency(reserved.repair),
+    });
+    grantDb(repairFn, props.db, 'ops');
+    allow(
+      repairFn,
+      ['dynamodb:BatchWriteItem', 'dynamodb:PutItem', 'dynamodb:DeleteItem', 'dynamodb:UpdateItem'],
+      [props.cellIndexTableArn],
+    );
+    repairFn.addEventSource(
+      new SqsEventSource(repairQueue, { batchSize: 10, reportBatchItemFailures: true }),
+    );
+    new Alarm(this, 'IndexRepairDlqAlarm', {
+      alarmDescription:
+        'A cell-index repair failed after retries: a device may be missing from the index and miss alerts',
+      metric: repairDlq.metricApproximateNumberOfMessagesVisible({
+        period: Duration.minutes(1),
+        statistic: 'Maximum',
+      }),
+      threshold: 0,
+      evaluationPeriods: 1,
+      comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: TreatMissingData.NOT_BREACHING,
+    });
+
+    grantDb(apiFn, props.db, 'api');
+    allow(apiFn, ['geo:SearchPlaceIndexForText'], [placeIndex.attrArn]);
+    // Read access to the token keyring is kept for VERIFYING check-in tokens (the route is
+    // stateless). Known limitation: the same secret holds the current signing key, so a
+    // compromised API could still mint a token; without send-queue access it can no longer
+    // deliver one to any phone. Asymmetric token signing would close the rest.
+    grantSecretRead(apiFn, props.tokenKeysSecretArn);
+    grantSecretRead(apiFn, props.deviceCredentialKeysSecretArn);
+    // Check-in rows: written with PutItem, read back with GetItem.
+    allow(apiFn, ['dynamodb:PutItem', 'dynamodb:GetItem'], [checkins.tableArn]);
+    // Erasing a device: list its rows through the byDevice index, then batch-delete them.
+    allow(apiFn, ['dynamodb:Query'], [`${checkins.tableArn}/index/byDevice`]);
+    allow(apiFn, ['dynamodb:BatchWriteItem'], [checkins.tableArn]);
+    // Cell index: replace/clear a device's places (BatchWriteItem, DeleteItem), re-point tokens
+    // (UpdateItem), read them back (Query, GetItem) and upsert (PutItem).
+    allow(
+      apiFn,
+      [
+        'dynamodb:BatchWriteItem',
+        'dynamodb:DeleteItem',
+        'dynamodb:UpdateItem',
+        'dynamodb:Query',
+        'dynamodb:GetItem',
+        'dynamodb:PutItem',
+      ],
+      [props.cellIndexTableArn],
+    );
+
+    // Check-in aggregator: turns the checkins stream into per-cell totals.
+    // DynamoDB has no IAM action called TransactWriteItems. A transaction is authorized item by
+    // item: each Put needs dynamodb:PutItem and each Update needs dynamodb:UpdateItem (conditions
+    // need nothing extra). ConditionCheckItem is only for a standalone ConditionCheck, which the
+    // aggregator does not use.
+    const aggregatorDlq = new Queue(this, 'AggregatorDlq', {
+      encryption: QueueEncryption.SQS_MANAGED,
+      retentionPeriod: Duration.days(14),
+    });
+    const aggregatorFn = new NodejsFunction(this, 'AggregatorFunction', {
+      entry: fileURLToPath(
+        new URL('../../backend/src/scale/checkins/aggregator.ts', import.meta.url),
+      ),
+      depsLockFilePath: fileURLToPath(new URL('../../package-lock.json', import.meta.url)),
+      projectRoot: fileURLToPath(new URL('../../', import.meta.url)),
+      handler: 'handler',
+      runtime: Runtime.NODEJS_22_X,
+      architecture: Architecture.ARM_64,
+      timeout: Duration.seconds(AGGREGATOR_TIMEOUT_SECONDS),
+      memorySize: 512,
+      logGroup: new LogGroup(this, 'AggregatorLogs', {
+        retention: RetentionDays.ONE_MONTH,
+        removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+      }),
+      environment: { CHECKIN_TOTALS_TABLE: checkinTotals.tableName },
+      ...concurrency(reserved.aggregator),
+    });
+    allow(aggregatorFn, ['dynamodb:UpdateItem', 'dynamodb:PutItem'], [checkinTotals.tableArn]);
+    aggregatorFn.addEventSource(
+      new DynamoEventSource(checkins, {
+        startingPosition: StartingPosition.TRIM_HORIZON,
+        batchSize: 1000,
+        maxBatchingWindow: Duration.seconds(2),
+        reportBatchItemFailures: true,
+        bisectBatchOnError: true,
+        retryAttempts: 10,
+        parallelizationFactor: 10,
+        onFailure: new SqsDlq(aggregatorDlq),
+      }),
+    );
+    new Alarm(this, 'AggregatorDlqAlarm', {
+      alarmDescription: 'Check-in stream records failed after retries: totals are undercounted',
+      metric: aggregatorDlq.metricApproximateNumberOfMessagesVisible({
+        period: Duration.minutes(1),
+        statistic: 'Maximum',
+      }),
+      threshold: 0,
+      evaluationPeriods: 1,
+      comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: TreatMissingData.NOT_BREACHING,
+    });
+
+    // The stage is created by hand below so we can set throttling on $default.
+    const api = new HttpApi(this, 'HttpApi', {
+      apiName: `relay-${props.stage}-api`,
+      createDefaultStage: false,
+      // Only CloudFront may reach the API; possible only once it has a custom domain to use.
+      disableExecuteApiEndpoint: props.originDomain !== undefined,
+    });
+    const stage = new HttpStage(this, 'DefaultStage', {
+      httpApi: api,
+      stageName: '$default',
+      autoDeploy: true,
+      throttle: props.throttle ?? DEFAULT_THROTTLE[props.stage],
+    });
+
+    const integration = new HttpLambdaIntegration('ApiIntegration', apiFn);
+    for (const { method, path } of API_ROUTES) {
+      api.addRoutes({ path, methods: [method], integration });
+    }
+
+    if (props.originDomain) {
+      const domain = new DomainName(this, 'ApiOriginDomain', {
+        domainName: props.originDomain.domainName,
+        certificate: Certificate.fromCertificateArn(
+          this,
+          'ApiOriginCertificate',
+          props.originDomain.certificateArn,
+        ),
+        endpointType: EndpointType.REGIONAL,
+        securityPolicy: SecurityPolicy.TLS_1_2,
+      });
+      new ApiMapping(this, 'ApiOriginMapping', { api, domainName: domain, stage });
+      // A plain string: the edge stack needs no cross-region reference for it.
+      this.apiDomainName = props.originDomain.domainName;
+      new CfnOutput(this, 'ApiOriginTarget', {
+        description: `CNAME ${props.originDomain.domainName} to this name before deploying the edge stack`,
+        value: domain.regionalDomainName,
+      });
+    } else {
+      // ApiEndpoint is a URL (https://<id>.execute-api.<region>.amazonaws.com); CloudFront wants
+      // the bare host name.
+      this.apiDomainName = Fn.select(2, Fn.split('/', api.apiEndpoint));
+      new CfnOutput(this, 'ApiUrl', { value: stage.url });
+      if (isProd) {
+        Annotations.of(this).addWarningV2(
+          'relay:apiDefaultEndpoint',
+          'prod API keeps its default execute-api endpoint, so callers can skip CloudFront and the ' +
+            'WAF (the origin-verify header still refuses them). Pass -c apiOriginDomainName and ' +
+            '-c apiOriginCertificateArn to disable it.',
+        );
+      }
+    }
+    this.checkinsTableName = checkins.tableName;
+    this.checkinTotalsTableName = checkinTotals.tableName;
+    this.checkinTotalsTableArn = checkinTotals.tableArn;
+
+    Tags.of(this).add('project', 'relay');
+    Tags.of(this).add('stage', props.stage);
+  }
+}

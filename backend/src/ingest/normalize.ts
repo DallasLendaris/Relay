@@ -1,0 +1,199 @@
+import { AlertSchema, isPds, relaySeverityFor } from '@relay/shared';
+import type { Alert } from '@relay/shared';
+import { validateGeometry } from '../geo/validate-geometry.js';
+
+/** `permanent` marks a rejection that retrying can never fix (logged at error level by the poller). */
+export type NormalizeResult =
+  | { ok: true; alert: Alert }
+  | { ok: false; reason: string; sourceId: string | null; permanent?: true };
+
+const URL_PREFIX = 'https://api.weather.gov/alerts/';
+
+type Obj = Record<string, unknown>;
+
+const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
+const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null);
+const strList = (v: unknown): string[] =>
+  Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+
+/** "https://api.weather.gov/alerts/urn:oid:X" and "urn:oid:X" both become "urn:oid:X". */
+function bareId(v: unknown): string | null {
+  const s = str(v);
+  if (s === null) return null;
+  return s.startsWith(URL_PREFIX) ? s.slice(URL_PREFIX.length) : s;
+}
+
+/** A date must be an ISO 8601 string with an offset; it is kept exactly as given. */
+function date(v: unknown): string | null {
+  const s = str(v);
+  if (s === null || !AlertSchema.shape.sent.safeParse(s).success) return null;
+  return Number.isNaN(Date.parse(s)) ? null : s;
+}
+
+/**
+ * NWS impact-based warnings carry their damage threat in `parameters`, an object of string arrays:
+ * tornadoDamageThreat on a Tornado Warning, flashFloodDamageThreat on a Flash Flood Warning.
+ * CATASTROPHIC is an emergency; CONSIDERABLE is a "particularly dangerous situation".
+ */
+function damageThreatFor(event: string, parameters: unknown): string | null {
+  if (!isObj(parameters)) return null;
+  const lower = event.toLowerCase();
+  const key = lower.includes('tornado')
+    ? 'tornadoDamageThreat'
+    : lower.includes('flash flood')
+      ? 'flashFloodDamageThreat'
+      : null;
+  return key ? (strList(parameters[key])[0] ?? null) : null;
+}
+
+/** Test and exercise products that NWS sometimes publishes with status Actual. */
+const PRACTICE_EVENT = /\b(practice|demo|demonstration)\b/i;
+
+const STATE = { Alert: 'active', Update: 'updated', Cancel: 'cancelled' } as const;
+
+/**
+ * Validates one GeoJSON feature from NWS and converts it to a Relay Alert.
+ * Never throws: any problem comes back as { ok: false, reason }.
+ */
+export function normalizeFeature(
+  feature: unknown,
+  opts: { newId(): string; warn?(msg: string, fields: Record<string, unknown>): void },
+): NormalizeResult {
+  let sourceId: string | null = null;
+  const fail = (reason: string): NormalizeResult => ({ ok: false, reason, sourceId });
+  try {
+    if (!isObj(feature)) return fail('feature is not an object');
+    const p = feature['properties'];
+    if (!isObj(p)) return fail('missing properties');
+
+    sourceId = bareId(p['id']) ?? bareId(p['@id']) ?? bareId(feature['id']);
+    if (sourceId === null) return fail('missing id');
+
+    const status = AlertSchema.shape.status.safeParse(p['status']);
+    if (!status.success) return fail(`invalid status ${String(p['status'])}`);
+    if (status.data !== 'Actual') return fail(`status ${status.data}`);
+
+    const messageType = AlertSchema.shape.messageType.safeParse(p['messageType']);
+    if (!messageType.success) return fail(`invalid messageType ${String(p['messageType'])}`);
+    if (messageType.data === 'Ack' || messageType.data === 'Error') {
+      return fail(`unsupported messageType ${messageType.data}`);
+    }
+    const state = STATE[messageType.data];
+
+    const event = str(p['event']);
+    if (event === null) return fail('missing event');
+    if (PRACTICE_EVENT.test(event)) return fail('not_actual: practice or demo event name');
+
+    const severity = AlertSchema.shape.capSeverity.safeParse(p['severity']);
+    if (!severity.success) return fail(`invalid severity ${String(p['severity'])}`);
+    const urgency = AlertSchema.shape.urgency.safeParse(p['urgency']);
+    if (!urgency.success) return fail(`invalid urgency ${String(p['urgency'])}`);
+    const certainty = AlertSchema.shape.certainty.safeParse(p['certainty']);
+    if (!certainty.success) return fail(`invalid certainty ${String(p['certainty'])}`);
+
+    const sent = date(p['sent']);
+    if (sent === null) return fail('missing or invalid sent');
+    const effective = date(p['effective']);
+    if (effective === null) return fail('missing or invalid effective');
+    const expires = date(p['expires']);
+    if (expires === null) return fail('missing or invalid expires');
+    // onset and ends are optional, but if present they must parse.
+    const onset = p['onset'] == null ? null : date(p['onset']);
+    if (p['onset'] != null && onset === null) return fail('invalid onset');
+    const ends = p['ends'] == null ? null : date(p['ends']);
+    if (p['ends'] != null && ends === null) return fail('invalid ends');
+
+    const references: Alert['references'] = [];
+    if (Array.isArray(p['references'])) {
+      for (const r of p['references']) {
+        const ref = isObj(r) ? r : {};
+        const refId = bareId(ref['identifier']) ?? bareId(ref['@id']);
+        const refSent = date(ref['sent']);
+        if (refId === null || refSent === null) {
+          // One bad reference must not throw away a real warning: drop it and keep the alert.
+          opts.warn?.('dropped invalid reference', { sourceId, reference: r });
+          continue;
+        }
+        references.push({ sourceId: refId, sent: refSent });
+      }
+    }
+
+    const geocode = isObj(p['geocode']) ? p['geocode'] : {};
+    const eventCodes = isObj(p['eventCode']) ? p['eventCode'] : {};
+    const geometry = feature['geometry'];
+    const ugcCodes = strList(geocode['UGC']);
+    let keepGeometry = false;
+    if (
+      isObj(geometry) &&
+      (geometry['type'] === 'Polygon' || geometry['type'] === 'MultiPolygon')
+    ) {
+      const check = validateGeometry(geometry);
+      if (check.ok) {
+        keepGeometry = true;
+      } else if (ugcCodes.length > 0) {
+        // Broken polygon but the zones are listed: match by zone instead of failing the alert.
+        opts.warn?.('invalid geometry dropped, using UGC zones', {
+          sourceId,
+          reason: check.reason,
+        });
+      } else {
+        return {
+          ok: false,
+          sourceId,
+          permanent: true,
+          reason: `permanent: invalid_geometry: ${check.reason}`,
+        };
+      }
+    }
+
+    const damageThreat = damageThreatFor(event, p['parameters']);
+    const pds = isPds(event, damageThreat);
+
+    const candidate = {
+      id: opts.newId(),
+      source: 'nws',
+      sourceId,
+      event,
+      eventCode: strList(eventCodes['SAME'])[0] ?? null,
+      relaySeverity: relaySeverityFor(event, severity.data, {
+        damageThreat,
+        urgency: urgency.data,
+      }),
+      capSeverity: severity.data,
+      urgency: urgency.data,
+      certainty: certainty.data,
+      status: status.data,
+      messageType: messageType.data,
+      state,
+      references,
+      area: {
+        description: str(p['areaDesc']) ?? '',
+        geometry: keepGeometry ? geometry : null,
+        ugcCodes,
+        sameCodes: strList(geocode['SAME']),
+        h3Cells: [], // filled later by the matching step
+      },
+      sent,
+      effective,
+      onset,
+      expires,
+      ends,
+      official: {
+        headline: str(p['headline']),
+        description: typeof p['description'] === 'string' ? p['description'] : '',
+        instruction: str(p['instruction']),
+        senderName: typeof p['senderName'] === 'string' ? p['senderName'] : '',
+        language: str(p['language']) ?? 'en-US',
+      },
+      summaries: [],
+      signature: null,
+      ...(pds ? { pds: true } : {}),
+    };
+    // Final safety net: nothing leaves this function unless it fits the shared schema.
+    const parsed = AlertSchema.safeParse(candidate);
+    if (!parsed.success) return fail(`schema: ${parsed.error.issues[0]?.message ?? 'invalid'}`);
+    return { ok: true, alert: parsed.data };
+  } catch (err) {
+    return fail(`unexpected error: ${String(err)}`);
+  }
+}

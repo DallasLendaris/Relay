@@ -1,0 +1,355 @@
+[
+  {
+    "id": "0402c802-d7c5-4008-83a3-4bd83441aabe",
+    "source": "nws",
+    "sourceId": "urn:oid:fake.1",
+    "event": "Flash Flood Warning",
+    "eventCode": null,
+    "relaySeverity": "warning",
+    "capSeverity": "Severe",
+    "urgency": "Immediate",
+    "certainty": "Observed",
+    "status": "Actual",
+    "messageType": "Alert",
+    "state": "active",
+    "references": [],
+    "area": {
+      "description": "Santa Clara County, CA",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-121.696478, 37.28125],
+            [-121.709877, 37.282399],
+            [-121.714636, 37.286078],
+            [-121.745019, 37.265206],
+            [-121.743839, 37.255696],
+            [-121.727264, 37.246431],
+            [-121.710751, 37.234589],
+            [-121.684592, 37.237475],
+            [-121.691223, 37.246621],
+            [-121.696478, 37.28125]
+          ]
+        ]
+      },
+      "ugcCodes": ["CAC085"],
+      "sameCodes": ["006085"],
+      "h3Cells": [
+        "872834408ffffff",
+        "872834409ffffff",
+        "87283440cffffff",
+        "87283440dffffff",
+        "872834454ffffff",
+        "872834456ffffff",
+        "872834472ffffff",
+        "872834473ffffff",
+        "872834476ffffff"
+      ]
+    },
+    "sent": "2026-12-10T17:42:00.000Z",
+    "effective": "2026-12-10T18:00:00.000Z",
+    "onset": null,
+    "expires": "2026-12-11T00:00:00.000Z",
+    "ends": null,
+    "official": {
+      "headline": "Flash Flood Warning issued for Santa Clara County",
+      "description": "Flash flooding is occurring or is imminent in the warned area. Heavy rain is causing creeks and low-lying roads to rise quickly. Excessive runoff may cause flooding of streets, underpasses and small streams.",
+      "instruction": "Move to higher ground now. Do not walk or drive through flood water.",
+      "senderName": "NWS San Francisco Bay Area",
+      "language": "en-US"
+    },
+    "summaries": [],
+    "signature": null
+  },
+  {
+    "id": "f9e69595-b47d-4fe6-941b-5ce17d2f2bb3",
+    "source": "nws",
+    "sourceId": "urn:oid:fake.2",
+    "event": "Red Flag Warning",
+    "eventCode": null,
+    "relaySeverity": "warning",
+    "capSeverity": "Severe",
+    "urgency": "Expected",
+    "certainty": "Likely",
+    "status": "Actual",
+    "messageType": "Alert",
+    "state": "active",
+    "references": [],
+    "area": {
+      "description": "Santa Clara County, CA",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-121.6318, 37.260713],
+            [-121.633047, 37.276696],
+            [-121.650174, 37.276716],
+            [-121.710495, 37.286353],
+            [-121.716088, 37.260225],
+            [-121.713315, 37.23418],
+            [-121.63906, 37.233077],
+            [-121.6318, 37.260713]
+          ]
+        ]
+      },
+      "ugcCodes": ["CAC085"],
+      "sameCodes": ["006085"],
+      "h3Cells": [
+        "872834401ffffff",
+        "872834403ffffff",
+        "872834408ffffff",
+        "872834409ffffff",
+        "87283440affffff",
+        "87283440bffffff",
+        "87283440cffffff",
+        "87283440dffffff",
+        "87283440effffff",
+        "872834419ffffff",
+        "87283441dffffff",
+        "872834454ffffff",
+        "872834456ffffff",
+        "872834472ffffff",
+        "872834476ffffff",
+        "8728344e4ffffff"
+      ]
+    },
+    "sent": "2026-12-10T17:57:00.000Z",
+    "effective": "2026-12-10T18:00:00.000Z",
+    "onset": null,
+    "expires": "2026-12-11T00:00:00.000Z",
+    "ends": null,
+    "official": {
+      "headline": "Red Flag Warning issued for Santa Clara County",
+      "description": "Critical fire weather conditions are expected. Very low humidity combined with strong winds will make any fire start and spread rapidly.",
+      "instruction": "Avoid activities that could start a fire. Report smoke right away.",
+      "senderName": "NWS San Francisco Bay Area",
+      "language": "en-US"
+    },
+    "summaries": [],
+    "signature": null
+  },
+  {
+    "id": "720bb445-03f9-4228-9666-a65e57989354",
+    "source": "nws",
+    "sourceId": "urn:oid:fake.3",
+    "event": "Heat Advisory",
+    "eventCode": null,
+    "relaySeverity": "advisory",
+    "capSeverity": "Moderate",
+    "urgency": "Expected",
+    "certainty": "Likely",
+    "status": "Actual",
+    "messageType": "Alert",
+    "state": "active",
+    "references": [],
+    "area": {
+      "description": "Santa Clara County, CA",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-121.945653, 37.333636],
+            [-121.96408, 37.333373],
+            [-121.973957, 37.333786],
+            [-121.971353, 37.311745],
+            [-121.951675, 37.306157],
+            [-121.942748, 37.3097],
+            [-121.945398, 37.314979],
+            [-121.945653, 37.333636]
+          ]
+        ]
+      },
+      "ugcCodes": ["CAC085"],
+      "sameCodes": ["006085"],
+      "h3Cells": ["872834704ffffff", "872834706ffffff", "872834722ffffff", "872834731ffffff"]
+    },
+    "sent": "2026-12-10T17:42:00.000Z",
+    "effective": "2026-12-10T18:00:00.000Z",
+    "onset": null,
+    "expires": "2026-12-11T00:00:00.000Z",
+    "ends": null,
+    "official": {
+      "headline": "Heat Advisory issued for Santa Clara County",
+      "description": "Hot temperatures are expected with limited overnight relief. Heat-related illness is possible for people without air conditioning, and for outdoor workers.",
+      "instruction": "Limit time outdoors and drink water. Check on neighbors and pets.",
+      "senderName": "NWS San Francisco Bay Area",
+      "language": "en-US"
+    },
+    "summaries": [],
+    "signature": null
+  },
+  {
+    "id": "9c368f7d-db01-48ac-9dad-d957ea5fa5d2",
+    "source": "nws",
+    "sourceId": "urn:oid:fake.4",
+    "event": "Flash Flood Warning",
+    "eventCode": null,
+    "relaySeverity": "warning",
+    "capSeverity": "Severe",
+    "urgency": "Immediate",
+    "certainty": "Observed",
+    "status": "Actual",
+    "messageType": "Alert",
+    "state": "active",
+    "references": [],
+    "area": {
+      "description": "Santa Clara County, CA",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-121.987646, 37.205543],
+            [-121.999681, 37.21942],
+            [-122.019263, 37.222721],
+            [-122.039351, 37.217881],
+            [-122.044295, 37.226978],
+            [-122.053797, 37.215995],
+            [-122.068555, 37.200476],
+            [-122.064925, 37.181129],
+            [-122.036136, 37.17037],
+            [-121.987646, 37.205543]
+          ]
+        ]
+      },
+      "ugcCodes": ["CAC085"],
+      "sameCodes": ["006085"],
+      "h3Cells": [
+        "872834081ffffff",
+        "872834088ffffff",
+        "87283408cffffff",
+        "87283408dffffff",
+        "87283408effffff",
+        "8728340a8ffffff",
+        "8728340a9ffffff",
+        "8728340aaffffff",
+        "8728340abffffff",
+        "8728340f6ffffff"
+      ]
+    },
+    "sent": "2026-12-10T17:56:00.000Z",
+    "effective": "2026-12-10T18:00:00.000Z",
+    "onset": null,
+    "expires": "2026-12-11T00:00:00.000Z",
+    "ends": null,
+    "official": {
+      "headline": "Flash Flood Warning issued for Santa Clara County",
+      "description": "Flash flooding is occurring or is imminent in the warned area. Heavy rain is causing creeks and low-lying roads to rise quickly. Excessive runoff may cause flooding of streets, underpasses and small streams.",
+      "instruction": "Move to higher ground now. Do not walk or drive through flood water.",
+      "senderName": "NWS San Francisco Bay Area",
+      "language": "en-US"
+    },
+    "summaries": [],
+    "signature": null
+  },
+  {
+    "id": "76542848-8a62-42f1-b681-d053b91fcac8",
+    "source": "nws",
+    "sourceId": "urn:oid:fake.5",
+    "event": "Red Flag Warning",
+    "eventCode": null,
+    "relaySeverity": "warning",
+    "capSeverity": "Severe",
+    "urgency": "Expected",
+    "certainty": "Likely",
+    "status": "Actual",
+    "messageType": "Alert",
+    "state": "active",
+    "references": [],
+    "area": {
+      "description": "Santa Clara County, CA",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-121.785857, 37.144948],
+            [-121.789604, 37.150707],
+            [-121.789394, 37.151649],
+            [-121.801392, 37.154584],
+            [-121.803169, 37.154243],
+            [-121.810815, 37.143723],
+            [-121.803099, 37.129829],
+            [-121.788616, 37.133823],
+            [-121.785751, 37.138679],
+            [-121.785857, 37.144948]
+          ]
+        ]
+      },
+      "ugcCodes": ["CAC085"],
+      "sameCodes": ["006085"],
+      "h3Cells": ["872834540ffffff", "872834541ffffff", "872834543ffffff", "87283454effffff"]
+    },
+    "sent": "2026-12-10T17:46:00.000Z",
+    "effective": "2026-12-10T18:00:00.000Z",
+    "onset": null,
+    "expires": "2026-12-11T00:00:00.000Z",
+    "ends": null,
+    "official": {
+      "headline": "Red Flag Warning issued for Santa Clara County",
+      "description": "Critical fire weather conditions are expected. Very low humidity combined with strong winds will make any fire start and spread rapidly.",
+      "instruction": "Avoid activities that could start a fire. Report smoke right away.",
+      "senderName": "NWS San Francisco Bay Area",
+      "language": "en-US"
+    },
+    "summaries": [],
+    "signature": null
+  },
+  {
+    "id": "48dea9c4-7c8a-48ff-84aa-d6e5e658d9db",
+    "source": "nws",
+    "sourceId": "urn:oid:fake.6",
+    "event": "Heat Advisory",
+    "eventCode": null,
+    "relaySeverity": "advisory",
+    "capSeverity": "Moderate",
+    "urgency": "Expected",
+    "certainty": "Likely",
+    "status": "Actual",
+    "messageType": "Alert",
+    "state": "active",
+    "references": [],
+    "area": {
+      "description": "Santa Clara County, CA",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-122.04668, 37.184623],
+            [-122.049221, 37.189572],
+            [-122.077282, 37.202959],
+            [-122.107874, 37.170885],
+            [-122.090247, 37.159971],
+            [-122.087246, 37.163233],
+            [-122.038511, 37.177118],
+            [-122.04668, 37.184623]
+          ]
+        ]
+      },
+      "ugcCodes": ["CAC085"],
+      "sameCodes": ["006085"],
+      "h3Cells": [
+        "87283401affffff",
+        "87283401bffffff",
+        "8728340a8ffffff",
+        "8728340a9ffffff",
+        "8728340abffffff",
+        "8728340adffffff",
+        "8728340f4ffffff",
+        "8728340f6ffffff"
+      ]
+    },
+    "sent": "2026-12-10T17:31:00.000Z",
+    "effective": "2026-12-10T18:00:00.000Z",
+    "onset": null,
+    "expires": "2026-12-11T00:00:00.000Z",
+    "ends": null,
+    "official": {
+      "headline": "Heat Advisory issued for Santa Clara County",
+      "description": "Hot temperatures are expected with limited overnight relief. Heat-related illness is possible for people without air conditioning, and for outdoor workers.",
+      "instruction": "Limit time outdoors and drink water. Check on neighbors and pets.",
+      "senderName": "NWS San Francisco Bay Area",
+      "language": "en-US"
+    },
+    "summaries": [],
+    "signature": null
+  }
+]
