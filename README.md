@@ -142,7 +142,7 @@ Builds the shared package, type-checks every workspace, and synthesizes the AWS 
 
 ## Demo
 
-- **Video:** TODO, link added before submission (3–5 minutes, narrated: server log, phone push, "I'm okay", the cell count going up, then `npm run simulate` and the tests).
+- **Video:** [Relay PoC demo on YouTube](https://www.youtube.com/watch?v=iKVgOrhJIjM). Shows the live phone push and "I'm okay" (on the constructed sample alert), `npm run simulate` on the recorded Nov 13 NWS feed, and the test results.
 - **Simulation log:** [`docs/demo/simulate.log`](docs/demo/simulate.log)
 - **Status page after the scripted run:** [`docs/demo/status-page.png`](docs/demo/status-page.png)
 - **Test run:** [`docs/demo/test-summary.log`](docs/demo/test-summary.log)

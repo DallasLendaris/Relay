@@ -37,7 +37,7 @@ env_vars:
   ]
 
 demo:
-  video: 'TODO-add-video-link'
+  video: 'https://www.youtube.com/watch?v=iKVgOrhJIjM'
   evidence:
     - docs/demo/simulate.log
     - docs/demo/status-page.png
