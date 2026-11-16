@@ -17,6 +17,9 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+      # Major bumps arrive together in one PR instead of one PR (and branch) each.
+      major:
+        update-types: [major]
   - package-ecosystem: docker
     directory: /backend
     schedule:
